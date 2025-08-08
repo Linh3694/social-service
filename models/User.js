@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 // Đồng bộ core schema từ Frappe ERP (apps/erp) mức tối thiểu cho Social
 const userSchema = new mongoose.Schema({
   // Core identity
+  name: { type: String, index: true },
   email: { type: String, required: true, index: true },
   fullname: { type: String },
   fullName: { type: String },
@@ -17,6 +18,27 @@ const userSchema = new mongoose.Schema({
   // Social follow graph
   following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
 }, { timestamps: true });
+
+// Cập nhật/đồng bộ từ Frappe User
+userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser) {
+  if (!frappeUser) throw new Error('Missing frappe user');
+  const query = { email: frappeUser.email };
+  const update = {
+    name: frappeUser.name,
+    email: frappeUser.email,
+    fullname: frappeUser.full_name,
+    fullName: frappeUser.full_name,
+    username: frappeUser.username || frappeUser.name,
+    employeeCode: frappeUser.employee || frappeUser.employee_code,
+    department: frappeUser.department,
+    role: Array.isArray(frappeUser.roles) ? frappeUser.roles[0] : (frappeUser.role || 'user'),
+    active: frappeUser.enabled === 1 || frappeUser.enabled === true,
+    disabled: !(frappeUser.enabled === 1 || frappeUser.enabled === true),
+    avatarUrl: frappeUser.user_image || frappeUser.avatar || '',
+  };
+  const options = { new: true, upsert: true, setDefaultsOnInsert: true };
+  return await this.findOneAndUpdate(query, update, options);
+};
 
 module.exports = mongoose.model('User', userSchema);
 

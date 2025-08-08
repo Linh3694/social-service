@@ -72,7 +72,7 @@ const NewfeedSocket = require('./utils/newfeedSocket');
 const newfeedSocket = new NewfeedSocket(io);
 app.set('newfeedSocket', newfeedSocket);
 
-// Routes: hỗ trợ cả path mới (/api/social) và path cũ (/api/posts) để tương thích
+// Routes: mount path mới (/api/social) và giữ path cũ (/api/posts) để tương thích
 const postRoutes = require('./routes/postRoutes');
 app.use('/api/social', postRoutes);
 app.use('/api/posts', postRoutes);
