@@ -10,6 +10,14 @@ require('dotenv').config({ path: './config.env' });
 const database = require('./config/database');
 const redisClient = require('./config/redis');
 
+// Global safety nets to avoid worker crash
+process.on('unhandledRejection', (reason) => {
+  console.error('[Social Service] Unhandled Rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[Social Service] Uncaught Exception:', err);
+});
+
 const app = express();
 const server = http.createServer(app);
 

@@ -21,7 +21,7 @@ module.exports = async (req, res, next) => {
         const frappeUser = await frappeService.authenticateUser(token);
         user = await User.updateFromFrappe(frappeUser);
       } catch (e) {
-        return res.status(404).json({ message: 'User not found' });
+        return res.status(401).json({ message: 'Unauthorized', detail: 'Frappe auth failed' });
       }
     }
 
@@ -34,7 +34,8 @@ module.exports = async (req, res, next) => {
     };
     next();
   } catch (error) {
-    return res.status(401).json({ message: 'Unauthorized', error: error.message });
+    // Tránh crash và trả JSON rõ ràng để Nginx không trả 502
+    return res.status(500).json({ message: 'Auth middleware error', error: error.message });
   }
 };
 

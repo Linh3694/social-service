@@ -55,9 +55,11 @@ exports.createPost = async (req, res) => {
 
     res.status(201).json({ success: true, message: 'Tạo bài viết thành công', data: populatedPost });
   } catch (error) {
-    if (req.files?.length) {
-      req.files.forEach(file => { const p = path.join(__dirname, '../uploads/posts/', file.filename); if (fs.existsSync(p)) fs.unlinkSync(p); });
-    }
+    try {
+      if (req.files?.length) {
+        req.files.forEach(file => { const p = path.join(__dirname, '../uploads/posts/', file.filename); if (fs.existsSync(p)) fs.unlinkSync(p); });
+      }
+    } catch {}
     res.status(500).json({ success: false, message: 'Lỗi server khi tạo bài viết', error: error.message });
   }
 };
