@@ -37,6 +37,7 @@ router.post('/:postId/reactions', postController.addReaction);
 router.delete('/:postId/reactions', postController.removeReaction);
 router.post('/:postId/comments', postController.addComment);
 router.delete('/:postId/comments/:commentId', postController.deleteComment);
+router.post('/:postId/comments/:commentId/replies', postController.replyComment);
 // Comment reactions
 router.post('/:postId/comments/:commentId/reactions', postController.addCommentReaction);
 router.delete('/:postId/comments/:commentId/reactions', postController.removeCommentReaction);

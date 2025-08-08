@@ -222,6 +222,48 @@ exports.deleteComment = async (req, res) => {
   } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi xóa comment', error: error.message }); }
 };
 
+// Reply vào một comment
+exports.replyComment = async (req, res) => {
+  try {
+    const { postId, commentId } = req.params;
+    const { content } = req.body;
+    const userId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(postId) || !mongoose.Types.ObjectId.isValid(commentId)) {
+      return res.status(400).json({ success: false, message: 'ID không hợp lệ' });
+    }
+    if (!content || content.trim() === '') {
+      return res.status(400).json({ success: false, message: 'Nội dung reply không được để trống' });
+    }
+
+    const post = await Post.findById(postId);
+    if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+
+    const hasParent = post.comments.some((c) => c._id.toString() === commentId.toString());
+    if (!hasParent) return res.status(404).json({ success: false, message: 'Không tìm thấy comment để trả lời' });
+
+    post.comments.push({
+      user: userId,
+      content: content.trim(),
+      createdAt: new Date(),
+      reactions: [],
+      parentComment: commentId,
+    });
+
+    await post.save();
+
+    const updated = await Post.findById(postId)
+      .populate('author', 'fullname avatarUrl email')
+      .populate('reactions.user', 'fullname avatarUrl email')
+      .populate('comments.user', 'fullname avatarUrl email')
+      .populate('tags', 'fullname avatarUrl email');
+
+    return res.status(200).json({ success: true, message: 'Trả lời bình luận thành công', data: updated });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Lỗi server khi trả lời comment', error: error.message });
+  }
+};
+
 // Thêm reaction cho comment
 exports.addCommentReaction = async (req, res) => {
   try {
