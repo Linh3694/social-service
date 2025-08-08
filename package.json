@@ -16,7 +16,8 @@
     "socket.io": "^4.7.2",
     "@socket.io/redis-adapter": "^8.3.0",
     "redis": "^4.6.8",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "axios": "^1.7.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
