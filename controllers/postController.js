@@ -36,8 +36,10 @@ exports.createPost = async (req, res) => {
     if (req.files?.length) {
       req.files.forEach(file => {
         const filePath = `/uploads/posts/${file.filename}`;
-        if (file.mimetype.startsWith('image/')) images.push(filePath);
-        else if (file.mimetype.startsWith('video/')) videos.push(filePath);
+        // Một số thiết bị iOS có thể gửi mimetype rỗng; fallback theo đuôi file
+        const mime = file.mimetype || (file.originalname?.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
+        if (mime.startsWith('image/')) images.push(filePath);
+        else if (mime.startsWith('video/')) videos.push(filePath);
       });
     }
 
