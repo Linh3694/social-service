@@ -10,6 +10,13 @@ module.exports = async (req, res, next) => {
 
     let user = null;
     let decoded = null;
+    try {
+      console.log('[Auth] incoming', {
+        method: req.method,
+        url: req.originalUrl,
+        tokenLen: token?.length || 0,
+      });
+    } catch {}
     // 1) Thử verify JWT với nhiều secret (nội bộ + backend)
     const candidateSecrets = [process.env.JWT_SECRET, process.env.BACKEND_JWT_SECRET].filter(Boolean);
     for (const secret of candidateSecrets) {
@@ -24,8 +31,14 @@ module.exports = async (req, res, next) => {
     if (!user) {
       try {
         const frappeUser = await frappeService.authenticateUser(token);
+        // Cập nhật/khởi tạo user local từ dữ liệu Frappe nếu cần
         user = await User.updateFromFrappe(frappeUser);
       } catch (e) {
+        console.warn('[Auth] Frappe authenticate failed', {
+          error: e?.message,
+          method: req.method,
+          url: req.originalUrl,
+        });
         // 3) Nếu vẫn thất bại, cho phép các request READ (GET) tiếp tục với minimal identity để không chặn newsfeed
         if (decoded && req.method === 'GET') {
           req.user = {
