@@ -222,6 +222,84 @@ exports.deleteComment = async (req, res) => {
   } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi xóa comment', error: error.message }); }
 };
 
+// Thêm reaction cho comment
+exports.addCommentReaction = async (req, res) => {
+  try {
+    const { postId, commentId } = req.params;
+    const { type = 'like' } = req.body;
+    const userId = req.user._id;
+    if (!mongoose.Types.ObjectId.isValid(postId) || !mongoose.Types.ObjectId.isValid(commentId)) {
+      return res.status(400).json({ success: false, message: 'ID không hợp lệ' });
+    }
+    if (!type || typeof type !== 'string' || type.trim() === '') {
+      return res.status(400).json({ success: false, message: 'Loại reaction không hợp lệ' });
+    }
+
+    const post = await Post.findById(postId);
+    if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+
+    const idx = post.comments.findIndex((c) => c._id.toString() === commentId.toString());
+    if (idx === -1) return res.status(404).json({ success: false, message: 'Không tìm thấy comment' });
+
+    const comment = post.comments[idx];
+    const reactionIdx = (comment.reactions || []).findIndex(
+      (r) => r.user.toString() === userId.toString()
+    );
+
+    if (reactionIdx !== -1) {
+      comment.reactions[reactionIdx].type = type.trim();
+      comment.reactions[reactionIdx].createdAt = new Date();
+    } else {
+      comment.reactions = comment.reactions || [];
+      comment.reactions.push({ user: userId, type: type.trim(), createdAt: new Date() });
+    }
+
+    await post.save();
+    const updated = await Post.findById(postId)
+      .populate('author', 'fullname avatarUrl email')
+      .populate('reactions.user', 'fullname avatarUrl email')
+      .populate('comments.user', 'fullname avatarUrl email')
+      .populate('tags', 'fullname avatarUrl email');
+
+    return res.status(200).json({ success: true, message: 'Thêm reaction cho comment thành công', data: updated });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Lỗi server khi thêm reaction cho comment', error: error.message });
+  }
+};
+
+// Xoá reaction của comment
+exports.removeCommentReaction = async (req, res) => {
+  try {
+    const { postId, commentId } = req.params;
+    const userId = req.user._id;
+    if (!mongoose.Types.ObjectId.isValid(postId) || !mongoose.Types.ObjectId.isValid(commentId)) {
+      return res.status(400).json({ success: false, message: 'ID không hợp lệ' });
+    }
+
+    const post = await Post.findById(postId);
+    if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+
+    const idx = post.comments.findIndex((c) => c._id.toString() === commentId.toString());
+    if (idx === -1) return res.status(404).json({ success: false, message: 'Không tìm thấy comment' });
+
+    const comment = post.comments[idx];
+    comment.reactions = (comment.reactions || []).filter(
+      (r) => r.user.toString() !== userId.toString()
+    );
+
+    await post.save();
+    const updated = await Post.findById(postId)
+      .populate('author', 'fullname avatarUrl email')
+      .populate('reactions.user', 'fullname avatarUrl email')
+      .populate('comments.user', 'fullname avatarUrl email')
+      .populate('tags', 'fullname avatarUrl email');
+
+    return res.status(200).json({ success: true, message: 'Xoá reaction của comment thành công', data: updated });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Lỗi server khi xoá reaction của comment', error: error.message });
+  }
+};
+
 exports.togglePinPost = async (req, res) => {
   try { const { postId } = req.params; if (!mongoose.Types.ObjectId.isValid(postId)) return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
     if (req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Chỉ admin mới có quyền pin/unpin bài viết' });

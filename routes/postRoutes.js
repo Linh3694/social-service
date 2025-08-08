@@ -37,6 +37,9 @@ router.post('/:postId/reactions', postController.addReaction);
 router.delete('/:postId/reactions', postController.removeReaction);
 router.post('/:postId/comments', postController.addComment);
 router.delete('/:postId/comments/:commentId', postController.deleteComment);
+// Comment reactions
+router.post('/:postId/comments/:commentId/reactions', postController.addCommentReaction);
+router.delete('/:postId/comments/:commentId/reactions', postController.removeCommentReaction);
 router.patch('/:postId/pin', postController.togglePinPost);
 
 module.exports = router;
