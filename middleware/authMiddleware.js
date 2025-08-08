@@ -10,11 +10,15 @@ module.exports = async (req, res, next) => {
 
     let user = null;
     let decoded = null;
-    // 1) Thử decode JWT nội bộ
-    try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-      user = await User.findById(decoded.id).select('fullname fullName email role department');
-    } catch {}
+    // 1) Thử verify JWT với nhiều secret (nội bộ + backend)
+    const candidateSecrets = [process.env.JWT_SECRET, process.env.BACKEND_JWT_SECRET].filter(Boolean);
+    for (const secret of candidateSecrets) {
+      if (user) break;
+      try {
+        decoded = jwt.verify(token, secret);
+        user = await User.findById(decoded.id).select('fullname fullName email role department');
+      } catch {}
+    }
 
     // 2) Nếu chưa có user local, thử Frappe
     if (!user) {

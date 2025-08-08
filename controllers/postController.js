@@ -13,6 +13,10 @@ async function notify(event, data) {
 exports.createPost = async (req, res) => {
   try {
     const { content, type = 'Chia sẻ', visibility = 'public', department, tags = [], badgeInfo } = req.body;
+    // Bảo vệ khi req.user chưa đầy đủ (trường hợp GET pass-through không áp dụng cho POST)
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ success: false, message: 'Unauthorized - Missing user context' });
+    }
     const authorId = req.user._id;
     if (!content || content.trim() === '') return res.status(400).json({ message: 'Nội dung bài viết không được để trống' });
 
@@ -21,7 +25,7 @@ exports.createPost = async (req, res) => {
       try { parsedTags = JSON.parse(tags); } catch { parsedTags = tags.split(',').map(t => t.trim()).filter(Boolean); }
     }
 
-    if (parsedTags.length > 0) {
+    if (Array.isArray(parsedTags) && parsedTags.length > 0) {
       const validUsers = await User.find({ _id: { $in: parsedTags } }).select('_id');
       const validIds = validUsers.map(u => u._id.toString());
       const invalid = parsedTags.filter(id => !validIds.includes(id));
