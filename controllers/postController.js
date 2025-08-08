@@ -35,7 +35,8 @@ exports.createPost = async (req, res) => {
     let images = [], videos = [];
     if (req.files?.length) {
       req.files.forEach(file => {
-        const filePath = `/uploads/posts/${file.filename}`;
+        const relative = `/uploads/posts/${file.filename}`;
+        const filePath = `/api/social${relative}`;
         // Một số thiết bị iOS có thể gửi mimetype rỗng; fallback theo đuôi file
         const mime = file.mimetype || (file.originalname?.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
         if (mime.startsWith('image/')) images.push(filePath);
