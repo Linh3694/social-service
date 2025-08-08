@@ -65,7 +65,7 @@ app.get('/health', async (req, res) => {
 
 // Models (ensure registered)
 require('./models/Post');
-const User = require('./models/User');
+// User model is already required above for socket auth
 
 // Socket for newfeed
 const NewfeedSocket = require('./utils/newfeedSocket');
