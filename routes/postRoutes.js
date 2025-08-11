@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const postController = require('../controllers/postController');
-const authMiddleware = require('../middleware/authMiddleware');
+const { authenticate, optionalAuth } = require('../middleware/authMiddleware');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -17,31 +17,34 @@ const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 }, fileFil
   if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('video/')) cb(null, true); else cb(new Error('Chỉ cho phép upload hình ảnh và video!'), false);
 }});
 
-router.use(authMiddleware);
+// Public/optional GETs
+router.get('/trending', optionalAuth, postController.getTrendingPosts);
+router.get('/search', optionalAuth, postController.searchPosts);
+router.get('/newsfeed', optionalAuth, postController.getNewsfeed);
+router.get('/:postId', optionalAuth, postController.getPostById);
+router.get('/:postId/stats', optionalAuth, postController.getPostEngagementStats);
+router.get('/:postId/related', optionalAuth, postController.getRelatedPosts);
+router.get('/contributors/top', optionalAuth, postController.getTopContributors || ((req, res)=>res.status(501).json({message:'Not implemented'})));
 
-router.get('/trending', postController.getTrendingPosts);
-router.get('/search', postController.searchPosts);
-router.get('/newsfeed', postController.getNewsfeed);
-router.get('/personalized', postController.getPersonalizedFeed);
-router.get('/following', postController.getFollowingPosts);
-router.get('/pinned', postController.getPinnedPosts);
+// Auth-required feeds
+router.get('/personalized', authenticate, postController.getPersonalizedFeed);
+router.get('/following', authenticate, postController.getFollowingPosts);
+router.get('/pinned', authenticate, postController.getPinnedPosts);
 router.get('/contributors/top', postController.getTopContributors || ((req, res)=>res.status(501).json({message:'Not implemented'})));
 
-router.post('/', upload.array('files', 10), postController.createPost);
-router.get('/:postId', postController.getPostById);
-router.put('/:postId', upload.array('files', 10), postController.updatePost);
-router.delete('/:postId', postController.deletePost);
-router.get('/:postId/stats', postController.getPostEngagementStats);
-router.get('/:postId/related', postController.getRelatedPosts);
-router.post('/:postId/reactions', postController.addReaction);
-router.delete('/:postId/reactions', postController.removeReaction);
-router.post('/:postId/comments', postController.addComment);
-router.delete('/:postId/comments/:commentId', postController.deleteComment);
-router.post('/:postId/comments/:commentId/replies', postController.replyComment);
+// Write operations require auth
+router.post('/', authenticate, upload.array('files', 10), postController.createPost);
+router.put('/:postId', authenticate, upload.array('files', 10), postController.updatePost);
+router.delete('/:postId', authenticate, postController.deletePost);
+router.post('/:postId/reactions', authenticate, postController.addReaction);
+router.delete('/:postId/reactions', authenticate, postController.removeReaction);
+router.post('/:postId/comments', authenticate, postController.addComment);
+router.delete('/:postId/comments/:commentId', authenticate, postController.deleteComment);
+router.post('/:postId/comments/:commentId/replies', authenticate, postController.replyComment);
 // Comment reactions
-router.post('/:postId/comments/:commentId/reactions', postController.addCommentReaction);
-router.delete('/:postId/comments/:commentId/reactions', postController.removeCommentReaction);
-router.patch('/:postId/pin', postController.togglePinPost);
+router.post('/:postId/comments/:commentId/reactions', authenticate, postController.addCommentReaction);
+router.delete('/:postId/comments/:commentId/reactions', authenticate, postController.removeCommentReaction);
+router.patch('/:postId/pin', authenticate, postController.togglePinPost);
 
 module.exports = router;
 
