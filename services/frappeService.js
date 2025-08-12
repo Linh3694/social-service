@@ -57,8 +57,13 @@ class FrappeService {
         console.log('[FrappeService] ← ERP body preview:', preview);
       } catch {}
 
-      const data = erpResp.data;
-      if (data?.status === 'success' && data?.user && data?.authenticated) {
+      const raw = erpResp.data;
+      const data = raw && (raw.message || raw);
+      if (
+        data &&
+        ((data.status === 'success' && data.user && (data.authenticated === true || data.authenticated === undefined)) ||
+          (!!data.user && data.authenticated !== false))
+      ) {
         return data.user;
       } else {
         try { console.warn('[FrappeService] ERP responded but not authenticated'); } catch {}
