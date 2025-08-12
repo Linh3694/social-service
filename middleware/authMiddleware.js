@@ -7,7 +7,10 @@ const authenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization || '';
     const token = authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ message: 'Unauthorized - No token' });
+    if (!token) {
+      console.warn('[Auth] Missing Authorization header');
+      return res.status(401).json({ message: 'Unauthorized', detail: 'No token' });
+    }
 
     let user = null;
     let decoded = null;
@@ -19,7 +22,12 @@ const authenticate = async (req, res, next) => {
       try {
         const frappeUser = await frappeService.authenticateUser(token);
         user = await User.updateFromFrappe(frappeUser);
+        if (!user) {
+          console.warn('[Auth] Frappe returned no user context');
+          return res.status(401).json({ message: 'Unauthorized', detail: 'Frappe user not found' });
+        }
       } catch (e) {
+        console.error('[Auth] Frappe auth failed:', e?.message || e);
         return res.status(401).json({ message: 'Unauthorized', detail: 'Auth failed' });
       }
     }
@@ -30,8 +38,11 @@ const authenticate = async (req, res, next) => {
       role: user.role,
       department: user.department,
     };
+    // Debug: quick trace
+    try { console.log('[Auth] OK user=', req.user.email, 'role=', req.user.role); } catch {}
     next();
   } catch (error) {
+    console.error('[Auth] middleware error:', error?.message || error);
     return res.status(500).json({ message: 'Auth middleware error', error: error.message });
   }
 };
