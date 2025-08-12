@@ -22,6 +22,19 @@ const userSchema = new mongoose.Schema({
 // Cập nhật/đồng bộ từ Frappe User
 userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser) {
   if (!frappeUser) throw new Error('Missing frappe user');
+  const normalizeRoles = (val) => {
+    if (!val) return [];
+    if (Array.isArray(val)) {
+      return val
+        .map((r) => (typeof r === 'string' ? r : (r && (r.role || r.name)) || null))
+        .filter(Boolean);
+    }
+    return [];
+  };
+  const roles = normalizeRoles(frappeUser.roles).length
+    ? normalizeRoles(frappeUser.roles)
+    : normalizeRoles(frappeUser.user_roles);
+  const primaryRole = roles[0] || frappeUser.role || 'user';
   const query = { email: frappeUser.email };
   const update = {
     name: frappeUser.name,
@@ -31,7 +44,7 @@ userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser
     username: frappeUser.username || frappeUser.name,
     employeeCode: frappeUser.employee || frappeUser.employee_code,
     department: frappeUser.department,
-    role: Array.isArray(frappeUser.roles) ? frappeUser.roles[0] : (frappeUser.role || 'user'),
+    role: typeof primaryRole === 'string' ? primaryRole : 'user',
     active: frappeUser.enabled === 1 || frappeUser.enabled === true,
     disabled: !(frappeUser.enabled === 1 || frappeUser.enabled === true),
     avatarUrl: frappeUser.user_image || frappeUser.avatar || '',

@@ -16,7 +16,16 @@ const authenticate = async (req, res, next) => {
     let decoded = null;
     try { decoded = jwt.verify(token, process.env.JWT_SECRET || 'breakpoint'); } catch {}
     if (decoded) {
-      try { user = await User.findById(decoded.id).select('fullname fullName email role department'); } catch {}
+      try {
+        // Ưu tiên tìm theo email trong claim
+        if (decoded.email) {
+          user = await User.findOne({ email: decoded.email }).select('fullname fullName email role department');
+        }
+        // Backward: nếu có id
+        if (!user && decoded.id) {
+          user = await User.findById(decoded.id).select('fullname fullName email role department');
+        }
+      } catch {}
     }
     if (!user) {
       try {

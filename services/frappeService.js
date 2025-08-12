@@ -53,15 +53,8 @@ class FrappeService {
     }
 
     // 2) Fallback: dùng phương thức chuẩn của Frappe
-    const me = await this.api.get('/api/method/frappe.auth.get_logged_user', {
-      headers: { ...commonHeaders, 'X-Frappe-CSRF-Token': token },
-    });
-    const userId = me.data?.message;
-    if (!userId) throw new Error('Invalid Frappe auth response');
-    const userRes = await this.api.get(`/api/resource/User/${userId}`, {
-      headers: { ...commonHeaders, 'X-Frappe-CSRF-Token': token },
-    });
-    return userRes.data?.data;
+    // 2) Nếu Bearer không được map session, coi như không xác thực
+    throw new Error('Frappe did not accept Bearer token');
   }
 }
 
