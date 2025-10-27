@@ -2,7 +2,7 @@ module.exports = {
   apps: [{
     name: 'social-service',
     script: 'app.js',
-    instances: 2,
+    instances: 1,
     instance_var: 'INSTANCE_ID',
     autorestart: true,
     watch: false,
