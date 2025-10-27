@@ -17,9 +17,12 @@ const authenticate = async (req, res, next) => {
     try { decoded = jwt.verify(token, process.env.JWT_SECRET || 'breakpoint'); } catch {}
     if (decoded) {
       try {
-        // Ưu tiên tìm theo email trong claim
-        if (decoded.email) {
-          user = await User.findOne({ email: decoded.email }).select('fullname fullName email role department');
+        // Ưu tiên tìm theo email trong claim (hỗ trợ cả sub và email từ Frappe JWT)
+        // - Frappe JWT: decoded.sub (chuẩn JWT) hoặc decoded.email
+        // - Local JWT: decoded.email hoặc decoded.id
+        const userEmail = decoded.sub || decoded.email;
+        if (userEmail) {
+          user = await User.findOne({ email: userEmail }).select('fullname fullName email role department');
         }
         // Backward: nếu có id
         if (!user && decoded.id) {
@@ -65,13 +68,27 @@ const optionalAuth = async (req, res, next) => {
     try { decoded = jwt.verify(token, process.env.JWT_SECRET || 'breakpoint'); } catch {}
     if (!decoded) { req.user = null; return next(); }
     try {
-      const user = await User.findById(decoded.id).select('fullname fullName email role department');
+      // Hỗ trợ cả Frappe JWT (sub/email) và local JWT (id)
+      const userEmail = decoded.sub || decoded.email;
+      let user = null;
+      
+      if (userEmail) {
+        user = await User.findOne({ email: userEmail }).select('fullname fullName email role department');
+      }
+      
+      if (!user && decoded.id) {
+        user = await User.findById(decoded.id).select('fullname fullName email role department');
+      }
+      
       if (user) {
         req.user = { _id: user._id, fullname: user.fullname || user.fullName, email: user.email, role: user.role, department: user.department };
       } else {
-        req.user = { _id: decoded.id };
+        // Fallback: tạo user object từ token claims
+        req.user = { _id: decoded.id || userEmail, email: userEmail };
       }
-    } catch { req.user = { _id: decoded.id }; }
+    } catch { 
+      req.user = { _id: decoded.id || decoded.sub || decoded.email }; 
+    }
     return next();
   } catch { req.user = null; return next(); }
 };

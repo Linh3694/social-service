@@ -59,15 +59,32 @@ class FrappeService {
 
       const raw = erpResp.data;
       const data = raw && (raw.message || raw);
-      if (
-        data &&
-        ((data.status === 'success' && data.user && (data.authenticated === true || data.authenticated === undefined)) ||
-          (!!data.user && data.authenticated !== false))
-      ) {
-        return data.user;
-      } else {
-        try { console.warn('[FrappeService] ERP responded but not authenticated'); } catch {}
+      
+      // Check various response structures from Frappe
+      if (data) {
+        // Structure 1: { success: true, data: { user: {...} } }
+        if (data.success === true && data.data && data.data.user) {
+          console.log('[FrappeService] ✅ ERP auth successful (structure 1)');
+          return data.data.user;
+        }
+        // Structure 2: { status: 'success', user: {...} }
+        if (data.status === 'success' && data.user) {
+          console.log('[FrappeService] ✅ ERP auth successful (structure 2)');
+          return data.user;
+        }
+        // Structure 3: { user: {...}, authenticated: true }
+        if (data.user && data.authenticated === true) {
+          console.log('[FrappeService] ✅ ERP auth successful (structure 3)');
+          return data.user;
+        }
+        // Structure 4: Just { user: {...} } without explicit authenticated flag
+        if (data.user && data.authenticated !== false) {
+          console.log('[FrappeService] ✅ ERP auth successful (structure 4 - implicit)');
+          return data.user;
+        }
       }
+      
+      try { console.warn('[FrappeService] ERP responded but not authenticated, data:', JSON.stringify(data).substring(0, 200)); } catch {}
     } catch (e) {
       try {
         const status = e?.response?.status;
