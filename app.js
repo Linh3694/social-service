@@ -52,9 +52,23 @@ global.io = io;
   } catch (e) { console.warn('[Social Service] Redis adapter not available:', e.message); }
 })();
 
+// CORS Configuration
+// Hỗ trợ: WIS frontend, Parent Portal, Workspace Mobile (via nginx proxy)
 const corsOptions = {
-  origin: (process.env.ALLOWED_ORIGINS || '').split(',').filter(Boolean).length ? (process.env.ALLOWED_ORIGINS || '').split(',') : ['http://localhost:3000','http://localhost:5173'],
+  origin: (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean).length ? 
+    (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean) : 
+    [
+      'http://localhost:3000',
+      'http://localhost:5173',
+      'https://wis.wellspring.edu.vn',
+      'https://wis-staging.wellspring.edu.vn',
+      'https://parentportal.wellspring.edu.vn',
+      'https://parentportal-staging.wellspring.edu.vn',
+      'https://admin.sis.wellspring.edu.vn'
+    ],
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
 };
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
@@ -84,8 +98,14 @@ app.set('newfeedSocket', newfeedSocket);
 
 // Routes: mount path mới (/api/social) và giữ path cũ (/api/posts) để tương thích
 const postRoutes = require('./routes/postRoutes');
+const userRoutes = require('./routes/userRoutes');
+
+// Post routes
 app.use('/api/social', postRoutes);
 app.use('/api/posts', postRoutes);
+
+// User sync routes - đồng bộ user từ Frappe
+app.use('/api/social/user', userRoutes);
 
 // Start
 const PORT = process.env.PORT || 5010;

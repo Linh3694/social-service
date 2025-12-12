@@ -1,21 +1,27 @@
 const axios = require('axios');
 require('dotenv').config({ path: './config.env' });
 
+/**
+ * 🔗 Frappe Service - Social Service
+ * Service để tương tác với Frappe ERP API
+ * Pattern tương tự ticket-service và inventory-service
+ */
 class FrappeService {
   constructor() {
     this.baseURL = process.env.FRAPPE_API_URL || 'https://admin.sis.wellspring.edu.vn';
     this.apiKey = process.env.FRAPPE_API_KEY;
     this.apiSecret = process.env.FRAPPE_API_SECRET;
-    // Bật đồng bộ Frappe mặc định nếu không cấu hình (tránh break auth ở môi trường chưa khai báo biến)
+    // Bật đồng bộ Frappe mặc định nếu không cấu hình
     this.enabled = (process.env.ENABLE_FRAPPE_SYNC || 'true') === 'true';
+    this.timeout = parseInt(process.env.AUTH_TIMEOUT) || 20000;
 
     this.api = axios.create({
       baseURL: this.baseURL,
-      timeout: 20000,
+      timeout: this.timeout,
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     });
 
-    // Chỉ thêm API Key/Secret khi request chưa có Authorization sẵn (ví dụ Bearer từ mobile)
+    // Chỉ thêm API Key/Secret khi request chưa có Authorization sẵn
     this.api.interceptors.request.use((config) => {
       const headers = config.headers || {};
       const hasAuthorizationHeader = Object.keys(headers).some(
@@ -29,33 +35,34 @@ class FrappeService {
     });
   }
 
+  /**
+   * 🔐 Build auth headers cho request
+   */
+  buildAuthHeaders(token) {
+    if (!token) return {};
+    return {
+      'Authorization': `Bearer ${token}`,
+      'X-Frappe-CSRF-Token': token,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+  }
+
+  /**
+   * 🔑 Xác thực user bằng Bearer token từ mobile app
+   */
   async authenticateUser(token) {
     if (!this.enabled) throw new Error('Frappe sync is disabled');
 
-    const commonHeaders = {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    };
+    const commonHeaders = this.buildAuthHeaders(token);
 
     // 1) Thử endpoint ERP tuỳ biến (ưu tiên vì app mobile đang dùng)
     const url = '/api/method/erp.api.erp_common_user.auth.get_current_user';
     try {
-      try {
-        console.log('[FrappeService] → GET', `${this.baseURL}${url}`, {
-          authHeader: 'Bearer <hidden>',
-          tokenLen: typeof token === 'string' ? token.length : 0,
-        });
-      } catch {}
+      console.log('[FrappeService] → GET', `${this.baseURL}${url}`);
 
       const erpResp = await this.api.get(url, { headers: commonHeaders });
-      try {
-        console.log('[FrappeService] ← ERP status:', erpResp.status);
-        const preview = typeof erpResp.data === 'string'
-          ? erpResp.data.slice(0, 800)
-          : JSON.stringify(erpResp.data).slice(0, 800);
-        console.log('[FrappeService] ← ERP body preview:', preview);
-      } catch {}
+      console.log('[FrappeService] ← ERP status:', erpResp.status);
 
       const raw = erpResp.data;
       const data = raw && (raw.message || raw);
@@ -86,24 +93,205 @@ class FrappeService {
       
       try { console.warn('[FrappeService] ERP responded but not authenticated, data:', JSON.stringify(data).substring(0, 200)); } catch {}
     } catch (e) {
-      try {
-        const status = e?.response?.status;
-        const respData = e?.response?.data;
-        const preview = typeof respData === 'string'
-          ? respData.slice(0, 800)
-          : JSON.stringify(respData || {}).slice(0, 800);
-        console.error('[FrappeService] ERP request failed', {
-          status,
-          body: preview,
-          message: e?.message,
-        });
-      } catch {}
-      // Tiếp tục fallback dưới
+      console.error('[FrappeService] ERP request failed:', e?.message);
     }
 
-    // 2) Fallback: dùng phương thức chuẩn của Frappe
-    // 2) Nếu Bearer không được map session, coi như không xác thực
+    // 2) Fallback: Nếu Bearer không được map session, coi như không xác thực
     throw new Error('Frappe did not accept Bearer token');
+  }
+
+  /**
+   * 📋 Lấy chi tiết user từ Frappe theo email
+   * @param {string} userEmail - User email hoặc username
+   * @param {string} token - Bearer token
+   */
+  async getUserDetail(userEmail, token) {
+    try {
+      console.log(`[FrappeService] Fetching user detail: ${userEmail}`);
+      
+      const response = await this.api.get(`/api/resource/User/${userEmail}`, {
+        headers: this.buildAuthHeaders(token)
+      });
+
+      if (!response.data?.data) {
+        throw new Error('Invalid user data from Frappe');
+      }
+
+      const user = response.data.data;
+      
+      // Normalize roles
+      const roles = Array.isArray(user.roles)
+        ? user.roles.map(r => typeof r === 'string' ? r : r?.role).filter(Boolean)
+        : [];
+
+      return {
+        name: user.name,
+        email: user.email || user.name,
+        full_name: user.full_name || user.first_name,
+        first_name: user.first_name,
+        middle_name: user.middle_name,
+        last_name: user.last_name,
+        roles: roles,
+        enabled: user.enabled === 1 ? 1 : 0,
+        disabled: user.disabled,
+        docstatus: user.docstatus,
+        user_image: user.user_image || '',
+        department: user.department || '',
+        location: user.location,
+        job_title: user.job_title,
+        designation: user.designation,
+        phone: user.phone || '',
+        mobile_no: user.mobile_no || '',
+        employee_code: user.employee_code,
+        microsoft_id: user.microsoft_id,
+        user_type: user.user_type,
+      };
+    } catch (error) {
+      console.error(`[FrappeService] Get user detail failed for ${userEmail}:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * 👥 Lấy tất cả enabled users từ Frappe
+   * Sử dụng custom endpoint để lấy tất cả users trong 1 request
+   * @param {string} token - Bearer token
+   */
+  async getAllEnabledUsers(token) {
+    try {
+      console.log('[FrappeService] Fetching all enabled users from Frappe...');
+
+      // Gọi custom endpoint để lấy ALL users trong 1 request
+      const response = await this.api.get(
+        '/api/method/erp.api.erp_common_user.user_sync.get_all_enabled_users',
+        { headers: this.buildAuthHeaders(token) }
+      );
+
+      const result = response.data.message || response.data;
+      
+      if (!result.success) {
+        throw new Error(result.error || result.message || 'Failed to fetch users');
+      }
+
+      const users = result.data || [];
+      const userTypeStats = result.user_types || {};
+
+      console.log(`[FrappeService] ✅ Found ${users.length} enabled users`);
+      console.log(`[FrappeService] 📊 User Types: System=${userTypeStats['System User'] || 0}, Website=${userTypeStats['Website User'] || 0}`);
+
+      // Return users với format chuẩn
+      return users.map(user => ({
+        name: user.name,
+        email: user.email || user.name,
+        full_name: user.full_name,
+        first_name: user.first_name,
+        middle_name: user.middle_name,
+        last_name: user.last_name,
+        user_image: user.user_image,
+        enabled: user.enabled,
+        disabled: user.disabled,
+        location: user.location,
+        department: user.department,
+        job_title: user.job_title,
+        designation: user.designation,
+        employee_code: user.employee_code,
+        microsoft_id: user.microsoft_id,
+        docstatus: user.docstatus,
+        user_type: user.user_type,
+        roles: user.roles || [],
+      }));
+    } catch (error) {
+      console.error('[FrappeService] Error fetching enabled users:', error.message);
+      if (error.response) {
+        console.error('[FrappeService] Response status:', error.response.status);
+      }
+      return [];
+    }
+  }
+
+  /**
+   * 📄 Lấy danh sách users theo page (fallback khi custom endpoint không khả dụng)
+   * @param {string} token - Bearer token  
+   * @param {number} page - Page number (0-based)
+   * @param {number} pageSize - Number of users per page
+   */
+  async getUsersPage(token, page = 0, pageSize = 100) {
+    try {
+      console.log(`[FrappeService] Fetching users page ${page}, size ${pageSize}`);
+
+      const response = await this.api.get('/api/resource/User', {
+        params: {
+          fields: JSON.stringify([
+            'name', 'email', 'full_name', 'first_name', 'middle_name', 'last_name',
+            'user_image', 'enabled', 'disabled', 'docstatus', 'location', 'department',
+            'job_title', 'designation', 'employee_code', 'microsoft_id', 'user_type'
+          ]),
+          filters: JSON.stringify([['User', 'enabled', '=', 1]]),
+          limit_start: page * pageSize,
+          limit_page_length: pageSize,
+          order_by: 'name asc'
+        },
+        headers: this.buildAuthHeaders(token)
+      });
+
+      const users = response.data?.data || [];
+      console.log(`[FrappeService] Fetched ${users.length} users from page ${page}`);
+      return users;
+    } catch (error) {
+      console.error('[FrappeService] Get users page failed:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * 🔍 Verify token và lấy thông tin user hiện tại
+   * @param {string} token - Bearer token
+   */
+  async verifyTokenAndGetUser(token) {
+    try {
+      console.log('[FrappeService] Verifying token with Frappe...');
+      
+      // Bước 1: Lấy logged user
+      const userResponse = await this.api.get('/api/method/frappe.auth.get_logged_user', {
+        headers: this.buildAuthHeaders(token)
+      });
+
+      if (!userResponse.data?.message) {
+        throw new Error('No user information in Frappe response');
+      }
+
+      const userName = userResponse.data.message;
+      console.log(`[FrappeService] ✅ Token verified. User: ${userName}`);
+
+      // Bước 2: Lấy full user details
+      const userDetails = await this.getUserDetail(userName, token);
+      return userDetails;
+    } catch (error) {
+      console.error('[FrappeService] Token verification failed:', error.message);
+      throw new Error(`Frappe token verification failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * 📝 Gọi Frappe method
+   * @param {string} methodName - Method name trong format 'module.method_name'
+   * @param {Object} params - Parameters
+   * @param {string} token - Bearer token
+   */
+  async callMethod(methodName, params = {}, token) {
+    try {
+      console.log(`[FrappeService] Calling method: ${methodName}`);
+      
+      const response = await this.api.post(`/api/method/${methodName}`, params, {
+        headers: this.buildAuthHeaders(token)
+      });
+
+      console.log(`[FrappeService] ✅ Method ${methodName} executed successfully`);
+      return response.data?.message;
+    } catch (error) {
+      console.error(`[FrappeService] Call method failed (${methodName}):`, error.message);
+      throw error;
+    }
   }
 }
 
