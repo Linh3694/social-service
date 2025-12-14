@@ -293,6 +293,49 @@ class FrappeService {
       throw error;
     }
   }
+
+  /**
+   * 📨 Gửi Wislife notification đến Frappe
+   * Pattern giống ticket-service
+   * @param {string} eventType - Event type (e.g., 'new_post_broadcast', 'post_reacted')
+   * @param {Object} eventData - Event data
+   */
+  async sendWislifeNotification(eventType, eventData) {
+    try {
+      console.log(`[FrappeService] 📱 Sending Wislife notification: ${eventType}`);
+      
+      const response = await this.api.post(
+        '/api/method/erp.api.notification.wislife.handle_wislife_event',
+        {
+          event_type: eventType,
+          event_data: eventData
+        },
+        {
+          headers: {
+            'X-Service-Name': 'social-service',
+            'X-Request-Source': 'service-to-service',
+            'Authorization': `token ${this.apiKey}:${this.apiSecret}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      if (response.data?.success) {
+        console.log(`[FrappeService] ✅ Wislife notification sent: ${eventType}`);
+        return { success: true };
+      } else {
+        console.warn(`[FrappeService] ⚠️ Wislife notification response:`, response.data);
+        return { success: false, message: response.data?.message };
+      }
+    } catch (error) {
+      console.error(`[FrappeService] ❌ Send Wislife notification failed (${eventType}):`, error.message);
+      if (error.response) {
+        console.error(`[FrappeService] Response status: ${error.response.status}`);
+        console.error(`[FrappeService] Response data:`, error.response.data);
+      }
+      return { success: false, message: error.message };
+    }
+  }
 }
 
 module.exports = new FrappeService();

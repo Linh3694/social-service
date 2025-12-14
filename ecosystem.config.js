@@ -9,13 +9,17 @@ module.exports = {
     max_memory_restart: '1G',
     env: {
       NODE_ENV: 'development',
-      PORT: 5040
+      PORT: 5010,
+      SERVICE_NAME: 'social-service',
+      LOG_LEVEL: 'debug'
     },
     env_production: {
       NODE_ENV: 'production',
-      PORT: 5040
+      PORT: 5010,
+      SERVICE_NAME: 'social-service',
+      LOG_LEVEL: 'info'
     },
-    error_file: './logs/err.log',
+    error_file: './logs/error.log',
     out_file: './logs/out.log',
     log_file: './logs/combined.log',
     time: true,

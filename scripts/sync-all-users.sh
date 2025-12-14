@@ -16,3 +16,4 @@ fi
 
 cd "$SCRIPT_DIR/.."
 node scripts/sync-all-users.js "$@"
+

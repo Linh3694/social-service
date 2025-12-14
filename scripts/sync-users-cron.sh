@@ -27,3 +27,4 @@ echo "Exit code: $EXIT_CODE"
 echo "======================================"
 
 exit $EXIT_CODE
+

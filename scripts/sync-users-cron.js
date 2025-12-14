@@ -98,3 +98,4 @@ const syncAllUsers = async () => {
 
 // Run sync
 syncAllUsers();
+

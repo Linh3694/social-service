@@ -5,9 +5,15 @@ const Post = require('../models/Post');
 const User = require('../models/User');
 const PostService = require('../services/postService');
 const redisClient = require('../config/redis');
+const frappeService = require('../services/frappeService');
 
 async function notify(event, data) {
-  try { await redisClient.publishToNotification(event, data); } catch (e) { console.error('[Social Service] notify error:', e.message); }
+  try {
+    // Gửi notification đến Frappe qua HTTP API (giống ticket-service)
+    await frappeService.sendWislifeNotification(event, data);
+  } catch (e) {
+    console.error('[Social Service] notify error:', e.message);
+  }
 }
 
 exports.createPost = async (req, res) => {
@@ -58,6 +64,22 @@ exports.createPost = async (req, res) => {
 
     if (parsedTags.length > 0) {
       await notify('post_tagged', { postId: post._id.toString(), recipients: parsedTags, authorId, authorName: req.user.fullname });
+    }
+
+    // Gửi notification đến tất cả users nếu author là BOD/Admin
+    const authorRoles = req.user.roles || [];
+    const isBODorAdmin = authorRoles.some(role => 
+      role === 'Mobile BOD' || role === 'Mobile IT'
+    );
+    
+    if (isBODorAdmin) {
+      await notify('new_post_broadcast', {
+        postId: post._id.toString(),
+        authorId: authorId.toString(),
+        authorName: req.user.fullname,
+        content: content.trim().substring(0, 100),
+        type: type
+      });
     }
 
     res.status(201).json({ success: true, message: 'Tạo bài viết thành công', data: populatedPost });
@@ -204,9 +226,26 @@ exports.addComment = async (req, res) => {
     const updated = await Post.findById(postId)
       .populate('author', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email');
+    
+    // Gửi notification cho author của post
     if (post.author.toString() !== userId.toString()) {
-      await notify('post_commented', { postId, recipientId: post.author.toString(), userId: userId.toString(), content: content.trim() });
+      await notify('post_commented', { postId, recipientId: post.author.toString(), userId: userId.toString(), userName: req.user.fullname, content: content.trim() });
     }
+    
+    // Parse @mentions từ content và gửi notification
+    const mentionRegex = /@([A-ZÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬĐÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴ][a-zàáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]*(?:\s+[A-ZÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬĐÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴ][a-zàáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]*){0,2})/g;
+    const mentions = content.match(mentionRegex);
+    if (mentions && mentions.length > 0) {
+      const newCommentId = updated.comments[updated.comments.length - 1]._id;
+      await notify('post_mention', {
+        postId: postId.toString(),
+        commentId: newCommentId.toString(),
+        mentionedNames: mentions.map(m => m.replace('@', '')),
+        userId: userId.toString(),
+        userName: req.user.fullname
+      });
+    }
+    
     res.status(200).json({ success: true, message: 'Thêm comment thành công', data: updated });
   } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi thêm comment', error: error.message }); }
 };
@@ -261,6 +300,19 @@ exports.replyComment = async (req, res) => {
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('tags', 'fullname avatarUrl email');
 
+    // Gửi notification cho author của parent comment
+    const parentComment = post.comments.find(c => c._id.toString() === commentId.toString());
+    if (parentComment && parentComment.user.toString() !== userId.toString()) {
+      await notify('comment_replied', {
+        postId: postId.toString(),
+        commentId: commentId.toString(),
+        recipientId: parentComment.user.toString(),
+        userId: userId.toString(),
+        userName: req.user.fullname,
+        content: content.trim().substring(0, 100)
+      });
+    }
+
     return res.status(200).json({ success: true, message: 'Trả lời bình luận thành công', data: updated });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Lỗi server khi trả lời comment', error: error.message });
@@ -305,6 +357,18 @@ exports.addCommentReaction = async (req, res) => {
       .populate('reactions.user', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('tags', 'fullname avatarUrl email');
+
+    // Gửi notification cho author của comment
+    if (comment.user.toString() !== userId.toString()) {
+      await notify('comment_reacted', {
+        postId: postId.toString(),
+        commentId: commentId.toString(),
+        recipientId: comment.user.toString(),
+        userId: userId.toString(),
+        userName: req.user.fullname,
+        reactionType: type.trim()
+      });
+    }
 
     return res.status(200).json({ success: true, message: 'Thêm reaction cho comment thành công', data: updated });
   } catch (error) {
