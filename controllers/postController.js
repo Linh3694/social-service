@@ -75,7 +75,7 @@ exports.createPost = async (req, res) => {
     if (isBODorAdmin) {
       await notify('new_post_broadcast', {
         postId: post._id.toString(),
-        authorId: authorId.toString(),
+        authorEmail: req.user.email,
         authorName: req.user.fullname,
         content: content.trim().substring(0, 100),
         type: type
@@ -195,7 +195,17 @@ exports.addReaction = async (req, res) => {
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('tags', 'fullname avatarUrl email');
     if (post.author.toString() !== userId.toString()) {
-      await notify('post_reacted', { postId, recipientId: post.author.toString(), userId: userId.toString(), reactionType: type.trim() });
+      // Lấy email của post author để gửi notification
+      const author = await User.findById(post.author).select('email');
+      if (author?.email) {
+        await notify('post_reacted', { 
+          postId, 
+          recipientEmail: author.email, 
+          userEmail: req.user.email,
+          userName: req.user.fullname, 
+          reactionType: type.trim() 
+        });
+      }
     }
     res.status(200).json({ success: true, message: 'Thêm reaction thành công', data: updated });
   } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi thêm reaction', error: error.message }); }
@@ -229,7 +239,16 @@ exports.addComment = async (req, res) => {
     
     // Gửi notification cho author của post
     if (post.author.toString() !== userId.toString()) {
-      await notify('post_commented', { postId, recipientId: post.author.toString(), userId: userId.toString(), userName: req.user.fullname, content: content.trim() });
+      const author = await User.findById(post.author).select('email');
+      if (author?.email) {
+        await notify('post_commented', { 
+          postId, 
+          recipientEmail: author.email, 
+          userEmail: req.user.email,
+          userName: req.user.fullname, 
+          content: content.trim() 
+        });
+      }
     }
     
     // Parse @mentions từ content và gửi notification
@@ -303,14 +322,17 @@ exports.replyComment = async (req, res) => {
     // Gửi notification cho author của parent comment
     const parentComment = post.comments.find(c => c._id.toString() === commentId.toString());
     if (parentComment && parentComment.user.toString() !== userId.toString()) {
-      await notify('comment_replied', {
-        postId: postId.toString(),
-        commentId: commentId.toString(),
-        recipientId: parentComment.user.toString(),
-        userId: userId.toString(),
-        userName: req.user.fullname,
-        content: content.trim().substring(0, 100)
-      });
+      const commentAuthor = await User.findById(parentComment.user).select('email');
+      if (commentAuthor?.email) {
+        await notify('comment_replied', {
+          postId: postId.toString(),
+          commentId: commentId.toString(),
+          recipientEmail: commentAuthor.email,
+          userEmail: req.user.email,
+          userName: req.user.fullname,
+          content: content.trim().substring(0, 100)
+        });
+      }
     }
 
     return res.status(200).json({ success: true, message: 'Trả lời bình luận thành công', data: updated });
@@ -360,14 +382,17 @@ exports.addCommentReaction = async (req, res) => {
 
     // Gửi notification cho author của comment
     if (comment.user.toString() !== userId.toString()) {
-      await notify('comment_reacted', {
-        postId: postId.toString(),
-        commentId: commentId.toString(),
-        recipientId: comment.user.toString(),
-        userId: userId.toString(),
-        userName: req.user.fullname,
-        reactionType: type.trim()
-      });
+      const commentAuthor = await User.findById(comment.user).select('email');
+      if (commentAuthor?.email) {
+        await notify('comment_reacted', {
+          postId: postId.toString(),
+          commentId: commentId.toString(),
+          recipientEmail: commentAuthor.email,
+          userEmail: req.user.email,
+          userName: req.user.fullname,
+          reactionType: type.trim()
+        });
+      }
     }
 
     return res.status(200).json({ success: true, message: 'Thêm reaction cho comment thành công', data: updated });
