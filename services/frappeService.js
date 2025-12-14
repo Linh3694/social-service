@@ -296,7 +296,7 @@ class FrappeService {
 
   /**
    * 📨 Gửi Wislife notification đến Frappe
-   * Pattern giống ticket-service
+   * Pattern giống ticket-service: local auth với headers X-Service-Name và X-Request-Source
    * @param {string} eventType - Event type (e.g., 'new_post_broadcast', 'post_reacted')
    * @param {Object} eventData - Event data
    */
@@ -304,8 +304,9 @@ class FrappeService {
     try {
       console.log(`[FrappeService] 📱 Sending Wislife notification: ${eventType}`);
       
-      const response = await this.api.post(
-        '/api/method/erp.api.notification.wislife.handle_wislife_event',
+      // Gọi trực tiếp endpoint với allow_guest=True, không cần API key
+      const response = await axios.post(
+        `${this.baseURL}/api/method/erp.api.notification.wislife.handle_wislife_event`,
         {
           event_type: eventType,
           event_data: eventData
@@ -314,13 +315,12 @@ class FrappeService {
           headers: {
             'X-Service-Name': 'social-service',
             'X-Request-Source': 'service-to-service',
-            'Authorization': `token ${this.apiKey}:${this.apiSecret}`,
             'Content-Type': 'application/json'
           }
         }
       );
 
-      if (response.data?.success) {
+      if (response.data?.message?.success !== false) {
         console.log(`[FrappeService] ✅ Wislife notification sent: ${eventType}`);
         return { success: true };
       } else {
