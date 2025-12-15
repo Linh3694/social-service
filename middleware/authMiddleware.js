@@ -30,9 +30,23 @@ const authenticate = async (req, res, next) => {
         }
       } catch {}
     }
-    if (!user) {
+    // Nếu không tìm thấy user HOẶC user tìm thấy nhưng roles rỗng -> sync từ Frappe
+    if (!user || !user.roles || user.roles.length === 0) {
       try {
+        // Bước 1: Xác thực token với Frappe
         const frappeUser = await frappeService.authenticateUser(token);
+        
+        // Bước 2: Nếu không có roles đầy đủ, lấy thêm user detail
+        if (!frappeUser.roles || frappeUser.roles.length === 0) {
+          console.log('[Auth] User from auth endpoint missing roles, fetching detail...');
+          const userEmail = frappeUser.email || frappeUser.name;
+          const userDetail = await frappeService.getUserDetail(userEmail, token);
+          if (userDetail && userDetail.roles && userDetail.roles.length > 0) {
+            frappeUser.roles = userDetail.roles;
+          }
+        }
+        
+        // Bước 3: Update/sync user vào MongoDB
         user = await User.updateFromFrappe(frappeUser);
         if (!user) {
           console.warn('[Auth] Frappe returned no user context');
