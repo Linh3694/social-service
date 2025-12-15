@@ -22,11 +22,11 @@ const authenticate = async (req, res, next) => {
         // - Local JWT: decoded.email hoặc decoded.id
         const userEmail = decoded.sub || decoded.email;
         if (userEmail) {
-          user = await User.findOne({ email: userEmail }).select('fullname fullName email role department');
+          user = await User.findOne({ email: userEmail }).select('fullname fullName email role roles department');
         }
         // Backward: nếu có id
         if (!user && decoded.id) {
-          user = await User.findById(decoded.id).select('fullname fullName email role department');
+          user = await User.findById(decoded.id).select('fullname fullName email role roles department');
         }
       } catch {}
     }
@@ -48,10 +48,11 @@ const authenticate = async (req, res, next) => {
       fullname: user.fullname || user.fullName,
       email: user.email,
       role: user.role,
+      roles: user.roles || [],
       department: user.department,
     };
     // Debug: quick trace
-    try { console.log('[Auth] OK user=', req.user.email, 'role=', req.user.role); } catch {}
+    try { console.log('[Auth] OK user=', req.user.email, 'role=', req.user.role, 'roles=', req.user.roles); } catch {}
     next();
   } catch (error) {
     console.error('[Auth] middleware error:', error?.message || error);
@@ -73,15 +74,15 @@ const optionalAuth = async (req, res, next) => {
       let user = null;
       
       if (userEmail) {
-        user = await User.findOne({ email: userEmail }).select('fullname fullName email role department');
+        user = await User.findOne({ email: userEmail }).select('fullname fullName email role roles department');
       }
       
       if (!user && decoded.id) {
-        user = await User.findById(decoded.id).select('fullname fullName email role department');
+        user = await User.findById(decoded.id).select('fullname fullName email role roles department');
       }
       
       if (user) {
-        req.user = { _id: user._id, fullname: user.fullname || user.fullName, email: user.email, role: user.role, department: user.department };
+        req.user = { _id: user._id, fullname: user.fullname || user.fullName, email: user.email, role: user.role, roles: user.roles || [], department: user.department };
       } else {
         // Fallback: tạo user object từ token claims
         req.user = { _id: decoded.id || userEmail, email: userEmail };
