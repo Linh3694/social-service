@@ -138,16 +138,34 @@ exports.updatePost = async (req, res) => {
     const { postId } = req.params;
     const { content, type, visibility, department, tags, badgeInfo, images, videos, isPinned } = req.body;
     const userId = req.user._id;
-    if (!mongoose.Types.ObjectId.isValid(postId)) return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
+    
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
+    }
+    
     const post = await Post.findById(postId);
-    if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
-    if (post.author.toString() !== userId.toString() && req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Bạn không có quyền chỉnh sửa bài viết này' });
+    if (!post) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+    }
+    
+    // Kiểm tra quyền: author hoặc Mobile BOD
+    const userRoles = req.user.roles || [];
+    const isMobileBOD = userRoles.some(role => role === 'Mobile BOD');
+    const isAuthor = post.author.toString() === userId.toString();
+    
+    if (!isAuthor && !isMobileBOD) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền chỉnh sửa bài viết này' });
+    }
+    
     if (tags && tags.length > 0) {
       const validUsers = await User.find({ _id: { $in: tags } }).select('_id');
       const validIds = validUsers.map(u => u._id.toString());
       const invalid = tags.filter(id => !validIds.includes(id));
-      if (invalid.length) return res.status(400).json({ success: false, message: 'Một số người dùng được tag không tồn tại', invalidTags: invalid });
+      if (invalid.length) {
+        return res.status(400).json({ success: false, message: 'Một số người dùng được tag không tồn tại', invalidTags: invalid });
+      }
     }
+    
     const updateData = {};
     if (content !== undefined) updateData.content = content.trim();
     if (type !== undefined) updateData.type = type;
@@ -157,26 +175,48 @@ exports.updatePost = async (req, res) => {
     if (images !== undefined) updateData.images = images;
     if (videos !== undefined) updateData.videos = videos;
     if (badgeInfo !== undefined) updateData.badgeInfo = badgeInfo;
-    if (isPinned !== undefined && req.user.role === 'admin') updateData.isPinned = isPinned;
+    // Chỉ Mobile BOD mới được update isPinned qua updatePost (không khuyến khích, nên dùng pin/unpin endpoint)
+    if (isPinned !== undefined && isMobileBOD) updateData.isPinned = isPinned;
+    
     const updated = await Post.findByIdAndUpdate(postId, updateData, { new: true, runValidators: true })
       .populate('author', 'fullname avatarUrl email department jobTitle')
       .populate('tags', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('reactions.user', 'fullname avatarUrl email');
+      
     res.status(200).json({ success: true, message: 'Cập nhật bài viết thành công', data: updated });
-  } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi cập nhật bài viết', error: error.message }); }
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Lỗi server khi cập nhật bài viết', error: error.message });
+  }
 };
 
 exports.deletePost = async (req, res) => {
   try {
-    const { postId } = req.params; const userId = req.user._id;
-    if (!mongoose.Types.ObjectId.isValid(postId)) return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
+    const { postId } = req.params;
+    const userId = req.user._id;
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
+    }
+    
     const post = await Post.findById(postId);
-    if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
-    if (post.author.toString() !== userId.toString() && req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa bài viết này' });
+    if (!post) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+    }
+    
+    // Kiểm tra quyền: author hoặc Mobile BOD
+    const userRoles = req.user.roles || [];
+    const isMobileBOD = userRoles.some(role => role === 'Mobile BOD');
+    const isAuthor = post.author.toString() === userId.toString();
+    
+    if (!isAuthor && !isMobileBOD) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa bài viết này' });
+    }
+    
     await Post.findByIdAndDelete(postId);
     res.status(200).json({ success: true, message: 'Xóa bài viết thành công' });
-  } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi xóa bài viết', error: error.message }); }
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Lỗi server khi xóa bài viết', error: error.message });
+  }
 };
 
 exports.addReaction = async (req, res) => {
@@ -270,17 +310,47 @@ exports.addComment = async (req, res) => {
 };
 
 exports.deleteComment = async (req, res) => {
-  try { const { postId, commentId } = req.params; const userId = req.user._id;
-    if (!mongoose.Types.ObjectId.isValid(postId) || !mongoose.Types.ObjectId.isValid(commentId)) return res.status(400).json({ success: false, message: 'ID không hợp lệ' });
-    const post = await Post.findById(postId); if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+  try {
+    const { postId, commentId } = req.params;
+    const userId = req.user._id;
+    
+    if (!mongoose.Types.ObjectId.isValid(postId) || !mongoose.Types.ObjectId.isValid(commentId)) {
+      return res.status(400).json({ success: false, message: 'ID không hợp lệ' });
+    }
+    
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+    }
+    
     const idx = post.comments.findIndex(c => c._id.toString() === commentId.toString());
-    if (idx === -1) return res.status(404).json({ success: false, message: 'Không tìm thấy comment' });
+    if (idx === -1) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy comment' });
+    }
+    
     const comment = post.comments[idx];
-    if (comment.user.toString() !== userId.toString() && post.author.toString() !== userId.toString() && req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa comment này' });
-    post.comments.splice(idx, 1); await post.save();
-    const updated = await Post.findById(postId).populate('author', 'fullname avatarUrl email').populate('comments.user', 'fullname avatarUrl email');
+    
+    // Kiểm tra quyền: comment author, post author, hoặc Mobile BOD
+    const userRoles = req.user.roles || [];
+    const isMobileBOD = userRoles.some(role => role === 'Mobile BOD');
+    const isCommentAuthor = comment.user.toString() === userId.toString();
+    const isPostAuthor = post.author.toString() === userId.toString();
+    
+    if (!isCommentAuthor && !isPostAuthor && !isMobileBOD) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa comment này' });
+    }
+    
+    post.comments.splice(idx, 1);
+    await post.save();
+    
+    const updated = await Post.findById(postId)
+      .populate('author', 'fullname avatarUrl email')
+      .populate('comments.user', 'fullname avatarUrl email');
+      
     res.status(200).json({ success: true, message: 'Xóa comment thành công', data: updated });
-  } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi xóa comment', error: error.message }); }
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Lỗi server khi xóa comment', error: error.message });
+  }
 };
 
 // Reply vào một comment
@@ -434,14 +504,92 @@ exports.removeCommentReaction = async (req, res) => {
   }
 };
 
-exports.togglePinPost = async (req, res) => {
-  try { const { postId } = req.params; if (!mongoose.Types.ObjectId.isValid(postId)) return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
-    if (req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Chỉ admin mới có quyền pin/unpin bài viết' });
-    const post = await Post.findById(postId); if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
-    post.isPinned = !post.isPinned; await post.save();
-    const updated = await Post.findById(postId).populate('author', 'fullname avatarUrl email department jobTitle');
-    res.status(200).json({ success: true, message: post.isPinned ? 'Pin bài viết thành công' : 'Unpin bài viết thành công', data: updated });
-  } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi pin/unpin bài viết', error: error.message }); }
+// Pin một bài viết (chỉ Mobile BOD)
+exports.pinPost = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
+    }
+
+    // Kiểm tra quyền Mobile BOD
+    const userRoles = req.user.roles || [];
+    const isMobileBOD = userRoles.some(role => role === 'Mobile BOD');
+    if (!isMobileBOD) {
+      return res.status(403).json({ success: false, message: 'Chỉ Mobile BOD mới có quyền ghim bài viết' });
+    }
+
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+    }
+
+    // Đặt isPinned = true
+    post.isPinned = true;
+    await post.save();
+
+    const updated = await Post.findById(postId)
+      .populate('author', 'fullname avatarUrl email department jobTitle')
+      .populate('tags', 'fullname avatarUrl email')
+      .populate('comments.user', 'fullname avatarUrl email')
+      .populate('reactions.user', 'fullname avatarUrl email');
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Đã ghim bài viết lên đầu', 
+      data: updated 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Lỗi server khi ghim bài viết', 
+      error: error.message 
+    });
+  }
+};
+
+// Unpin một bài viết (chỉ Mobile BOD)
+exports.unpinPost = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
+    }
+
+    // Kiểm tra quyền Mobile BOD
+    const userRoles = req.user.roles || [];
+    const isMobileBOD = userRoles.some(role => role === 'Mobile BOD');
+    if (!isMobileBOD) {
+      return res.status(403).json({ success: false, message: 'Chỉ Mobile BOD mới có quyền bỏ ghim bài viết' });
+    }
+
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+    }
+
+    // Đặt isPinned = false
+    post.isPinned = false;
+    await post.save();
+
+    const updated = await Post.findById(postId)
+      .populate('author', 'fullname avatarUrl email department jobTitle')
+      .populate('tags', 'fullname avatarUrl email')
+      .populate('comments.user', 'fullname avatarUrl email')
+      .populate('reactions.user', 'fullname avatarUrl email');
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Đã bỏ ghim bài viết', 
+      data: updated 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Lỗi server khi bỏ ghim bài viết', 
+      error: error.message 
+    });
+  }
 };
 
 exports.getPinnedPosts = async (req, res) => {

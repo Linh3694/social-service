@@ -44,7 +44,9 @@ router.post('/:postId/comments/:commentId/replies', authenticate, postController
 // Comment reactions
 router.post('/:postId/comments/:commentId/reactions', authenticate, postController.addCommentReaction);
 router.delete('/:postId/comments/:commentId/reactions', authenticate, postController.removeCommentReaction);
-router.patch('/:postId/pin', authenticate, postController.togglePinPost);
+// Pin/Unpin post - Chỉ Mobile BOD
+router.post('/:postId/pin', authenticate, postController.pinPost);
+router.delete('/:postId/pin', authenticate, postController.unpinPost);
 
 module.exports = router;
 
