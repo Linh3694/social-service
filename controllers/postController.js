@@ -107,6 +107,7 @@ exports.getNewsfeed = async (req, res) => {
         .populate('author', 'fullname avatarUrl email department jobTitle')
         .populate('tags', 'fullname avatarUrl email')
         .populate('comments.user', 'fullname avatarUrl email')
+        .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
         .populate('reactions.user', 'fullname avatarUrl email')
         .sort(sortOptions)
         .skip(skip)
@@ -125,6 +126,7 @@ exports.getPostById = async (req, res) => {
       .populate('author', 'fullname avatarUrl email department jobTitle')
       .populate('tags', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
+      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('reactions.user', 'fullname avatarUrl email');
     if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
     const userDepartment = req.user.department;
@@ -182,6 +184,7 @@ exports.updatePost = async (req, res) => {
       .populate('author', 'fullname avatarUrl email department jobTitle')
       .populate('tags', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
+      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('reactions.user', 'fullname avatarUrl email');
       
     res.status(200).json({ success: true, message: 'Cập nhật bài viết thành công', data: updated });
@@ -233,6 +236,7 @@ exports.addReaction = async (req, res) => {
       .populate('author', 'fullname avatarUrl email')
       .populate('reactions.user', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
+      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('tags', 'fullname avatarUrl email');
     if (post.author.toString() !== userId.toString()) {
       // Lấy email của post author để gửi notification
@@ -345,7 +349,8 @@ exports.deleteComment = async (req, res) => {
     
     const updated = await Post.findById(postId)
       .populate('author', 'fullname avatarUrl email')
-      .populate('comments.user', 'fullname avatarUrl email');
+      .populate('comments.user', 'fullname avatarUrl email')
+      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle');
       
     res.status(200).json({ success: true, message: 'Xóa comment thành công', data: updated });
   } catch (error) {
@@ -448,6 +453,7 @@ exports.addCommentReaction = async (req, res) => {
       .populate('author', 'fullname avatarUrl email')
       .populate('reactions.user', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
+      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('tags', 'fullname avatarUrl email');
 
     // Gửi notification cho author của comment
@@ -496,6 +502,7 @@ exports.removeCommentReaction = async (req, res) => {
       .populate('author', 'fullname avatarUrl email')
       .populate('reactions.user', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
+      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('tags', 'fullname avatarUrl email');
 
     return res.status(200).json({ success: true, message: 'Xoá reaction của comment thành công', data: updated });
@@ -532,6 +539,7 @@ exports.pinPost = async (req, res) => {
       .populate('author', 'fullname avatarUrl email department jobTitle')
       .populate('tags', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
+      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('reactions.user', 'fullname avatarUrl email');
 
     res.status(200).json({ 
@@ -576,6 +584,7 @@ exports.unpinPost = async (req, res) => {
       .populate('author', 'fullname avatarUrl email department jobTitle')
       .populate('tags', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
+      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('reactions.user', 'fullname avatarUrl email');
 
     res.status(200).json({ 
