@@ -108,7 +108,7 @@ exports.getNewsfeed = async (req, res) => {
         .populate('tags', 'fullname avatarUrl email')
         .populate('comments.user', 'fullname avatarUrl email')
         .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-        .populate('reactions.user', 'fullname avatarUrl email')
+        .populate('reactions.user', 'fullname avatarUrl email jobTitle')
         .sort(sortOptions)
         .skip(skip)
         .limit(parseInt(limit)),
@@ -127,7 +127,7 @@ exports.getPostById = async (req, res) => {
       .populate('tags', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('reactions.user', 'fullname avatarUrl email');
+      .populate('reactions.user', 'fullname avatarUrl email jobTitle');
     if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
     const userDepartment = req.user.department;
     if (post.visibility === 'department' && post.department && post.department !== userDepartment) return res.status(403).json({ success: false, message: 'Bạn không có quyền xem bài viết này' });
@@ -185,7 +185,7 @@ exports.updatePost = async (req, res) => {
       .populate('tags', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('reactions.user', 'fullname avatarUrl email');
+      .populate('reactions.user', 'fullname avatarUrl email jobTitle');
       
     res.status(200).json({ success: true, message: 'Cập nhật bài viết thành công', data: updated });
   } catch (error) {
@@ -234,7 +234,7 @@ exports.addReaction = async (req, res) => {
     await post.save();
     const updated = await Post.findById(postId)
       .populate('author', 'fullname avatarUrl email')
-      .populate('reactions.user', 'fullname avatarUrl email')
+      .populate('reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('tags', 'fullname avatarUrl email');
@@ -263,7 +263,7 @@ exports.removeReaction = async (req, res) => {
     await post.save();
     const updated = await Post.findById(postId)
       .populate('author', 'fullname avatarUrl email')
-      .populate('reactions.user', 'fullname avatarUrl email')
+      .populate('reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('tags', 'fullname avatarUrl email');
     res.status(200).json({ success: true, message: 'Xóa reaction thành công', data: updated });
@@ -390,7 +390,7 @@ exports.replyComment = async (req, res) => {
 
     const updated = await Post.findById(postId)
       .populate('author', 'fullname avatarUrl email')
-      .populate('reactions.user', 'fullname avatarUrl email')
+      .populate('reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('tags', 'fullname avatarUrl email');
 
@@ -451,7 +451,7 @@ exports.addCommentReaction = async (req, res) => {
     await post.save();
     const updated = await Post.findById(postId)
       .populate('author', 'fullname avatarUrl email')
-      .populate('reactions.user', 'fullname avatarUrl email')
+      .populate('reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('tags', 'fullname avatarUrl email');
@@ -500,7 +500,7 @@ exports.removeCommentReaction = async (req, res) => {
     await post.save();
     const updated = await Post.findById(postId)
       .populate('author', 'fullname avatarUrl email')
-      .populate('reactions.user', 'fullname avatarUrl email')
+      .populate('reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('tags', 'fullname avatarUrl email');
@@ -540,7 +540,7 @@ exports.pinPost = async (req, res) => {
       .populate('tags', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('reactions.user', 'fullname avatarUrl email');
+      .populate('reactions.user', 'fullname avatarUrl email jobTitle');
 
     res.status(200).json({ 
       success: true, 
@@ -585,7 +585,7 @@ exports.unpinPost = async (req, res) => {
       .populate('tags', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('reactions.user', 'fullname avatarUrl email');
+      .populate('reactions.user', 'fullname avatarUrl email jobTitle');
 
     res.status(200).json({ 
       success: true, 
