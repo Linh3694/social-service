@@ -14,7 +14,7 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const { formatVietnameseName, detectNameFormat } = require('../utils/nameUtils');
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/social-service';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/wis_social';
 
 async function connectDB() {
   try {
