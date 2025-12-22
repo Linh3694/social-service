@@ -41,4 +41,8 @@ router.get('/stats', optionalAuth, userController.getUserStats);
 // GET /api/social/user/debug/fetch-users
 router.get('/debug/fetch-users', authenticate, userController.debugFetchUsers);
 
+// 🔍 ENDPOINT DEBUG: Check roles của user hiện tại (AUTHENTICATED)
+// GET /api/social/user/check-roles
+router.get('/check-roles', authenticate, userController.checkMyRoles);
+
 module.exports = router;

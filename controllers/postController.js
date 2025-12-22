@@ -71,11 +71,16 @@ exports.createPost = async (req, res) => {
 
     // Gửi notification đến tất cả users nếu author là BOD/Admin
     const authorRoles = req.user.roles || [];
+    console.log(`[CreatePost] 📋 Author: ${req.user.email}, Roles: [${authorRoles.join(', ')}]`);
+    
     const isBODorAdmin = authorRoles.some(role => 
       role === 'Mobile BOD' || role === 'Mobile IT'
     );
     
+    console.log(`[CreatePost] 🔍 isBODorAdmin: ${isBODorAdmin}`);
+    
     if (isBODorAdmin) {
+      console.log(`[CreatePost] 📣 Sending new_post_broadcast notification...`);
       notify('new_post_broadcast', {
         postId: post._id.toString(),
         authorEmail: req.user.email,
@@ -83,6 +88,8 @@ exports.createPost = async (req, res) => {
         content: content.trim().substring(0, 100),
         type: type
       });
+    } else {
+      console.log(`[CreatePost] ⏭️ User không có role BOD/IT, skip broadcast notification`);
     }
 
     res.status(201).json({ success: true, message: 'Tạo bài viết thành công', data: populatedPost });

@@ -578,6 +578,55 @@ const getUserStats = async (req, res) => {
   }
 };
 
+/**
+ * 🔍 Debug endpoint: Kiểm tra roles của user hiện tại
+ * GET /api/social/user/check-roles
+ */
+const checkMyRoles = async (req, res) => {
+  try {
+    const userEmail = req.user?.email;
+    
+    // Lấy user từ MongoDB
+    const userFromDB = await User.findOne({ email: userEmail });
+    
+    // Lấy user từ Frappe (nếu có token)
+    const token = req.headers.authorization?.split(' ')[1];
+    let userFromFrappe = null;
+    try {
+      userFromFrappe = await frappeService.getUserDetail(userEmail, token);
+    } catch (e) {
+      console.log('[checkMyRoles] Cannot fetch from Frappe:', e.message);
+    }
+    
+    res.json({
+      success: true,
+      data: {
+        reqUser: {
+          email: req.user?.email,
+          roles: req.user?.roles || [],
+          role: req.user?.role,
+        },
+        mongodb: userFromDB ? {
+          email: userFromDB.email,
+          roles: userFromDB.roles || [],
+          role: userFromDB.role,
+          fullname: userFromDB.fullname,
+        } : null,
+        frappe: userFromFrappe ? {
+          email: userFromFrappe.email,
+          roles: userFromFrappe.roles || [],
+          full_name: userFromFrappe.full_name,
+        } : null,
+        hasMobileBOD: (req.user?.roles || []).includes('Mobile BOD'),
+        hasMobileIT: (req.user?.roles || []).includes('Mobile IT'),
+      }
+    });
+  } catch (error) {
+    console.error('[checkMyRoles] Error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   // Sync endpoints
   syncUsersManual,
@@ -594,6 +643,7 @@ module.exports = {
   
   // Debug
   debugFetchUsers,
+  checkMyRoles,
   
   // Redis event handler
   handleUserRedisEvent,
