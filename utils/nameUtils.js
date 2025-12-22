@@ -8,21 +8,32 @@
  * Cần phát hiện và đảo ngược nếu cần.
  */
 
-// Danh sách họ phổ biến Việt Nam (dùng để detect format)
-const VIETNAMESE_SURNAMES = [
-  // Họ đơn phổ biến
+// Danh sách họ phổ biến Việt Nam - SẮP XẾP THEO ĐỘ PHỔ BIẾN (cao nhất trước)
+// Khi có nhiều họ trong tên, ưu tiên họ phổ biến hơn
+const VIETNAMESE_SURNAMES_PRIORITY = [
+  // Tier 1: Rất phổ biến (>5% dân số)
   'nguyễn', 'nguyen', 'trần', 'tran', 'lê', 'le', 'phạm', 'pham',
+  // Tier 2: Phổ biến (2-5%)
   'huỳnh', 'huynh', 'hoàng', 'hoang', 'vũ', 'vu', 'võ', 'vo',
   'phan', 'trương', 'truong', 'bùi', 'bui', 'đặng', 'dang',
   'đỗ', 'do', 'ngô', 'ngo', 'hồ', 'ho', 'dương', 'duong',
-  'đinh', 'dinh', 'lý', 'ly', 'lương', 'luong', 'mai', 'đào', 'dao',
+  // Tier 3: Khá phổ biến (1-2%)
+  'đinh', 'dinh', 'lý', 'ly', 'lương', 'luong', 'đào', 'dao',
   'trịnh', 'trinh', 'tô', 'to', 'tạ', 'ta', 'chu', 'châu', 'chau',
-  'quách', 'quach', 'cao', 'la', 'thái', 'thai', 'lưu', 'luu',
-  'phùng', 'phung', 'vương', 'vuong', 'từ', 'tu', 'hà', 'ha',
-  'kiều', 'kieu', 'đoàn', 'doan', 'tăng', 'tang', 'lam', 'mã', 'ma',
+  'quách', 'quach', 'thái', 'thai', 'lưu', 'luu',
+  'phùng', 'phung', 'vương', 'vuong', 'từ', 'tu',
+  'kiều', 'kieu', 'đoàn', 'doan', 'tăng', 'tang', 'mã', 'ma',
   'tống', 'tong', 'triệu', 'trieu', 'nghiêm', 'nghiem', 'thạch', 'thach',
-  'quang', 'doãn', 'doan', 'khương', 'khuong', 'ninh',
-  // Họ ghép phổ biến
+  'doãn', 'khương', 'khuong', 'ninh',
+  // Tier 4: Ít phổ biến - những họ này cũng có thể là TÊN
+  'hà', 'ha', 'cao', 'la', 'mai', 'lam', 'quang'
+];
+
+// Flat list để check nhanh
+const VIETNAMESE_SURNAMES = [...VIETNAMESE_SURNAMES_PRIORITY];
+
+// Họ ghép phổ biến
+const COMPOUND_SURNAMES = [
   'nguyễn đình', 'nguyen dinh', 'nguyễn văn', 'nguyen van',
   'trần văn', 'tran van', 'lê văn', 'le van', 'phạm văn', 'pham van'
 ];
@@ -62,6 +73,20 @@ function isVietnameseSurname(word) {
 }
 
 /**
+ * Lấy độ ưu tiên của họ (số càng nhỏ = càng phổ biến)
+ * @param {string} word 
+ * @returns {number} - Index trong mảng priority, -1 nếu không phải họ VN
+ */
+function getSurnamePriority(word) {
+  if (!word) return -1;
+  const normalized = removeVietnameseTones(word.toLowerCase());
+  const index = VIETNAMESE_SURNAMES_PRIORITY.findIndex(surname => 
+    normalized === removeVietnameseTones(surname)
+  );
+  return index;
+}
+
+/**
  * Kiểm tra xem một từ có phải là tên đệm Việt Nam không
  * @param {string} word 
  * @returns {boolean}
@@ -76,48 +101,61 @@ function isVietnameseMiddleName(word) {
 
 /**
  * Phát hiện format của tên và trả về vị trí họ
+ * Logic mới: Tìm TẤT CẢ các vị trí có họ VN, chọn họ PHỔ BIẾN NHẤT
+ * 
  * @param {string[]} parts - Mảng các phần của tên
  * @returns {{format: 'vietnamese'|'western'|'middle_surname'|'unknown', surnameIndex: number}}
+ * 
+ * @example
+ * detectNameFormat(['Cao', 'Linh', 'Nguyễn']) // Cả Cao và Nguyễn là họ, nhưng Nguyễn phổ biến hơn
+ * // → { format: 'western', surnameIndex: 2 } (Nguyễn ở cuối)
  */
 function detectNameFormat(parts) {
   if (parts.length < 2) return { format: 'unknown', surnameIndex: -1 };
   
-  const firstPart = parts[0];
-  const lastPart = parts[parts.length - 1];
+  // Bước 1: Tìm TẤT CẢ các vị trí có họ VN và priority của chúng
+  const surnamePositions = [];
+  for (let i = 0; i < parts.length; i++) {
+    const priority = getSurnamePriority(parts[i]);
+    if (priority >= 0) {
+      surnamePositions.push({ index: i, priority: priority, word: parts[i] });
+    }
+  }
   
-  // Nếu phần đầu là họ VN → đã chuẩn format VN
-  if (isVietnameseSurname(firstPart)) {
-    // Double check: phần cuối không phải họ
-    if (!isVietnameseSurname(lastPart) || parts.length === 1) {
+  // Không có họ VN nào
+  if (surnamePositions.length === 0) {
+    return { format: 'unknown', surnameIndex: -1 };
+  }
+  
+  // Chỉ có 1 họ → dùng họ đó
+  if (surnamePositions.length === 1) {
+    const pos = surnamePositions[0];
+    if (pos.index === 0) {
       return { format: 'vietnamese', surnameIndex: 0 };
+    } else if (pos.index === parts.length - 1) {
+      return { format: 'western', surnameIndex: pos.index };
+    } else {
+      return { format: 'middle_surname', surnameIndex: pos.index };
     }
   }
   
-  // Nếu phần cuối là họ VN → format Tây, cần đảo
-  if (isVietnameseSurname(lastPart)) {
-    return { format: 'western', surnameIndex: parts.length - 1 };
+  // Có NHIỀU họ → chọn họ PHỔ BIẾN NHẤT (priority nhỏ nhất)
+  // Ví dụ: "Cao Linh Nguyễn" → Cao (priority ~16) vs Nguyễn (priority 0) → chọn Nguyễn
+  surnamePositions.sort((a, b) => a.priority - b.priority);
+  const bestSurname = surnamePositions[0];
+  
+  // Nếu họ phổ biến nhất ở vị trí đầu → format VN đúng
+  if (bestSurname.index === 0) {
+    return { format: 'vietnamese', surnameIndex: 0 };
   }
   
-  // *** MỚI: Kiểm tra họ ở GIỮA tên (ví dụ: "Anh Đoàn Vân" → họ Đoàn ở vị trí 1)
-  // Case này xảy ra khi Microsoft Auth format sai: First + Last + Middle
-  for (let i = 1; i < parts.length - 1; i++) {
-    if (isVietnameseSurname(parts[i])) {
-      // Tìm thấy họ ở giữa - cần sắp xếp lại
-      return { format: 'middle_surname', surnameIndex: i };
-    }
+  // Nếu họ phổ biến nhất ở vị trí cuối → format Tây
+  if (bestSurname.index === parts.length - 1) {
+    return { format: 'western', surnameIndex: bestSurname.index };
   }
   
-  // Nếu có 3 phần và phần giữa là tên đệm VN
-  if (parts.length >= 3) {
-    const middlePart = parts[1];
-    
-    // Format VN: Họ + Đệm + Tên → phần 2 là đệm
-    if (isVietnameseMiddleName(middlePart) && isVietnameseSurname(firstPart)) {
-      return { format: 'vietnamese', surnameIndex: 0 };
-    }
-  }
-  
-  return { format: 'unknown', surnameIndex: -1 };
+  // Họ phổ biến nhất ở giữa → format middle_surname
+  return { format: 'middle_surname', surnameIndex: bestSurname.index };
 }
 
 /**
@@ -210,7 +248,9 @@ module.exports = {
   formatVietnameseNameWithTitleCase,
   isVietnameseName,
   isVietnameseSurname,
+  getSurnamePriority,
   detectNameFormat,
   removeVietnameseTones
 };
+
 
