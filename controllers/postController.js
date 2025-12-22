@@ -8,13 +8,15 @@ const redisClient = require('../config/redis');
 const frappeService = require('../services/frappeService');
 const { resolveMentions, getMentionedUserEmails } = require('../utils/mentionUtils');
 
-async function notify(event, data) {
-  try {
-    // Gửi notification đến Frappe qua HTTP API (giống ticket-service)
-    await frappeService.sendWislifeNotification(event, data);
-  } catch (e) {
-    console.error('[Social Service] notify error:', e.message);
-  }
+/**
+ * Gửi notification đến Frappe (fire-and-forget, không block response)
+ * Timeout ngắn để không chờ quá lâu
+ */
+function notify(event, data) {
+  // Fire and forget - không await để không block response
+  frappeService.sendWislifeNotification(event, data)
+    .then(() => console.log(`[Social Service] ✅ Notification sent: ${event}`))
+    .catch(e => console.error(`[Social Service] ⚠️ Notification error (${event}):`, e.message));
 }
 
 exports.createPost = async (req, res) => {
@@ -64,7 +66,7 @@ exports.createPost = async (req, res) => {
     if (newfeedSocket) await newfeedSocket.broadcastNewPost(populatedPost);
 
     if (parsedTags.length > 0) {
-      await notify('post_tagged', { postId: post._id.toString(), recipients: parsedTags, authorId, authorName: req.user.fullname });
+      notify('post_tagged', { postId: post._id.toString(), recipients: parsedTags, authorId, authorName: req.user.fullname });
     }
 
     // Gửi notification đến tất cả users nếu author là BOD/Admin
@@ -74,7 +76,7 @@ exports.createPost = async (req, res) => {
     );
     
     if (isBODorAdmin) {
-      await notify('new_post_broadcast', {
+      notify('new_post_broadcast', {
         postId: post._id.toString(),
         authorEmail: req.user.email,
         authorName: req.user.fullname,
@@ -243,7 +245,7 @@ exports.addReaction = async (req, res) => {
       // Lấy email của post author để gửi notification
       const author = await User.findById(post.author).select('email');
       if (author?.email) {
-        await notify('post_reacted', { 
+        notify('post_reacted', { 
           postId, 
           recipientEmail: author.email, 
           userEmail: req.user.email,
@@ -308,7 +310,7 @@ exports.addComment = async (req, res) => {
     if (post.author.toString() !== userId.toString()) {
       const author = await User.findById(post.author).select('email');
       if (author?.email) {
-        await notify('post_commented', { 
+        notify('post_commented', { 
           postId, 
           recipientEmail: author.email, 
           userEmail: req.user.email,
@@ -341,7 +343,7 @@ exports.addComment = async (req, res) => {
           .filter(Boolean);
         
         if (mentionedEmails.length > 0) {
-          await notify('post_mention', {
+          notify('post_mention', {
             postId: postId.toString(),
             commentId: newCommentId.toString(),
             mentionedEmails: mentionedEmails, // Gửi emails trực tiếp
@@ -451,7 +453,7 @@ exports.replyComment = async (req, res) => {
     if (parentComment && parentComment.user.toString() !== userId.toString()) {
       const commentAuthor = await User.findById(parentComment.user).select('email');
       if (commentAuthor?.email) {
-        await notify('comment_replied', {
+        notify('comment_replied', {
           postId: postId.toString(),
           commentId: commentId.toString(),
           recipientEmail: commentAuthor.email,
@@ -482,7 +484,7 @@ exports.replyComment = async (req, res) => {
           .filter(Boolean);
         
         if (mentionedEmails.length > 0) {
-          await notify('post_mention', {
+          notify('post_mention', {
             postId: postId.toString(),
             commentId: newReplyId.toString(),
             mentionedEmails: mentionedEmails,
@@ -545,7 +547,7 @@ exports.addCommentReaction = async (req, res) => {
     if (comment.user.toString() !== userId.toString()) {
       const commentAuthor = await User.findById(comment.user).select('email');
       if (commentAuthor?.email) {
-        await notify('comment_reacted', {
+        notify('comment_reacted', {
           postId: postId.toString(),
           commentId: commentId.toString(),
           recipientEmail: commentAuthor.email,

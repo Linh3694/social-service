@@ -305,6 +305,7 @@ class FrappeService {
       console.log(`[FrappeService] 📱 Sending Wislife notification: ${eventType}`);
       
       // Gọi trực tiếp endpoint với allow_guest=True, không cần API key
+      // Timeout 5s để không block quá lâu
       const response = await axios.post(
         `${this.baseURL}/api/method/erp.api.notification.wislife.handle_wislife_event`,
         {
@@ -312,6 +313,7 @@ class FrappeService {
           event_data: eventData
         },
         {
+          timeout: 5000, // 5 second timeout - nếu quá lâu thì skip
           headers: {
             'X-Service-Name': 'social-service',
             'X-Request-Source': 'service-to-service',
