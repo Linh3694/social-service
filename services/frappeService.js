@@ -301,42 +301,54 @@ class FrappeService {
    * @param {Object} eventData - Event data
    */
   async sendWislifeNotification(eventType, eventData) {
-    try {
-      console.log(`[FrappeService] 📱 Sending Wislife notification: ${eventType}`);
-      
-      // Gọi trực tiếp endpoint với allow_guest=True, không cần API key
-      // Timeout 5s để không block quá lâu
-      const response = await axios.post(
-        `${this.baseURL}/api/method/erp.api.notification.wislife.handle_wislife_event`,
-        {
-          event_type: eventType,
-          event_data: eventData
-        },
-        {
-          timeout: 5000, // 5 second timeout - nếu quá lâu thì skip
-          headers: {
-            'X-Service-Name': 'social-service',
-            'X-Request-Source': 'service-to-service',
-            'Content-Type': 'application/json'
+    const MAX_RETRIES = 2;
+    const TIMEOUT_MS = 10000; // 10 giây - Frappe chỉ enqueue job, respond nhanh
+    
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        console.log(`[FrappeService] 📱 Sending Wislife notification: ${eventType} (attempt ${attempt}/${MAX_RETRIES})`);
+        
+        const response = await axios.post(
+          `${this.baseURL}/api/method/erp.api.notification.wislife.handle_wislife_event`,
+          {
+            event_type: eventType,
+            event_data: eventData
+          },
+          {
+            timeout: TIMEOUT_MS,
+            headers: {
+              'X-Service-Name': 'social-service',
+              'X-Request-Source': 'service-to-service',
+              'Content-Type': 'application/json'
+            }
           }
-        }
-      );
+        );
 
-      if (response.data?.message?.success !== false) {
-        console.log(`[FrappeService] ✅ Wislife notification sent: ${eventType}`);
-        return { success: true };
-      } else {
-        console.warn(`[FrappeService] ⚠️ Wislife notification response:`, response.data);
-        return { success: false, message: response.data?.message };
+        if (response.data?.message?.success !== false) {
+          console.log(`[FrappeService] ✅ Wislife notification sent: ${eventType}`);
+          return { success: true };
+        } else {
+          console.warn(`[FrappeService] ⚠️ Wislife notification response:`, response.data);
+          return { success: false, message: response.data?.message };
+        }
+      } catch (error) {
+        const isTimeout = error.code === 'ECONNABORTED' || error.message.includes('timeout');
+        console.error(`[FrappeService] ❌ Notification failed (${eventType}), attempt ${attempt}: ${error.message}`);
+        
+        // Retry nếu timeout và chưa hết retry
+        if (isTimeout && attempt < MAX_RETRIES) {
+          console.log(`[FrappeService] 🔄 Retrying in 2 seconds...`);
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        
+        if (error.response) {
+          console.error(`[FrappeService] Response status: ${error.response.status}`);
+        }
+        return { success: false, message: error.message };
       }
-    } catch (error) {
-      console.error(`[FrappeService] ❌ Send Wislife notification failed (${eventType}):`, error.message);
-      if (error.response) {
-        console.error(`[FrappeService] Response status: ${error.response.status}`);
-        console.error(`[FrappeService] Response data:`, error.response.data);
-      }
-      return { success: false, message: error.message };
     }
+    return { success: false, message: 'Max retries exceeded' };
   }
 }
 
