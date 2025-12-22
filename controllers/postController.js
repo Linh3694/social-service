@@ -393,17 +393,29 @@ exports.deleteComment = async (req, res) => {
     
     const comment = post.comments[idx];
     
-    // Kiểm tra quyền: comment author, post author, hoặc Mobile BOD
+    // Kiểm tra quyền: comment/reply author, post author, hoặc Mobile BOD
     const userRoles = req.user.roles || [];
     const isMobileBOD = userRoles.some(role => role === 'Mobile BOD');
     const isCommentAuthor = comment.user.toString() === userId.toString();
     const isPostAuthor = post.author.toString() === userId.toString();
     
     if (!isCommentAuthor && !isPostAuthor && !isMobileBOD) {
-      return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa comment này' });
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa bình luận này' });
     }
     
-    post.comments.splice(idx, 1);
+    // Nếu là comment gốc (không có parentComment), xóa luôn các replies của nó
+    const isParentComment = !comment.parentComment;
+    if (isParentComment) {
+      // Lọc bỏ comment gốc và tất cả replies có parentComment = commentId
+      post.comments = post.comments.filter(c => 
+        c._id.toString() !== commentId.toString() && 
+        (!c.parentComment || c.parentComment.toString() !== commentId.toString())
+      );
+    } else {
+      // Chỉ xóa reply này
+      post.comments.splice(idx, 1);
+    }
+    
     await post.save();
     
     const updated = await Post.findById(postId)
@@ -411,9 +423,13 @@ exports.deleteComment = async (req, res) => {
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle');
       
-    res.status(200).json({ success: true, message: 'Xóa comment thành công', data: updated });
+    res.status(200).json({ 
+      success: true, 
+      message: isParentComment ? 'Xóa bình luận và các trả lời thành công' : 'Xóa trả lời thành công', 
+      data: updated 
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Lỗi server khi xóa comment', error: error.message });
+    res.status(500).json({ success: false, message: 'Lỗi server khi xóa bình luận', error: error.message });
   }
 };
 
