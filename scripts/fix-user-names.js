@@ -29,18 +29,48 @@ async function connectDB() {
 async function fixUserNames() {
   console.log('\n🔍 Scanning users for name format issues...\n');
   
+  // Debug: Đếm tổng số users trong collection
+  const totalCount = await User.countDocuments({});
+  console.log(`📊 Total users in collection: ${totalCount}`);
+  
+  // Debug: Xem cấu trúc của 1 user
+  const sampleUser = await User.findOne({}).lean();
+  if (sampleUser) {
+    console.log('\n📝 Sample user structure:');
+    console.log(`   Keys: ${Object.keys(sampleUser).join(', ')}`);
+    console.log(`   email: ${sampleUser.email}`);
+    console.log(`   fullname: ${sampleUser.fullname}`);
+    console.log(`   fullName: ${sampleUser.fullName}`);
+    console.log(`   name: ${sampleUser.name}`);
+    console.log('');
+  }
+  
+  // Tìm users có fullname HOẶC fullName (cả 2 variants)
   const users = await User.find({
-    fullname: { $exists: true, $ne: null, $ne: '' }
+    $or: [
+      { fullname: { $exists: true, $ne: null, $ne: '' } },
+      { fullName: { $exists: true, $ne: null, $ne: '' } }
+    ]
   }).lean();
   
-  console.log(`📊 Total users with fullname: ${users.length}\n`);
+  console.log(`📊 Users with fullname/fullName: ${users.length}\n`);
+  
+  // Debug: show first few users
+  if (users.length > 0) {
+    console.log('📝 Sample users with names:');
+    users.slice(0, 5).forEach((u, i) => {
+      console.log(`   ${i + 1}. ${u.email}: fullname="${u.fullname}", fullName="${u.fullName}"`);
+    });
+    console.log('');
+  }
   
   let fixedCount = 0;
   let skippedCount = 0;
   const fixes = [];
   
   for (const user of users) {
-    const originalName = user.fullname;
+    // Lấy tên từ fullname hoặc fullName
+    const originalName = user.fullname || user.fullName;
     if (!originalName) continue;
     
     const parts = originalName.trim().split(/\s+/).filter(Boolean);
@@ -60,7 +90,7 @@ async function fixUserNames() {
         format: format
       });
       
-      // Update in DB
+      // Update in DB - cập nhật CẢ HAI fields
       await User.updateOne(
         { _id: user._id },
         { 
