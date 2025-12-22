@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const frappeService = require('../services/frappeService');
+const { searchUsersForMention } = require('../utils/mentionUtils');
 
 const FRAPPE_API_URL = process.env.FRAPPE_API_URL || 'https://admin.sis.wellspring.edu.vn';
 
@@ -493,6 +494,61 @@ const debugFetchUsers = async (req, res) => {
 };
 
 /**
+ * 🔍 ENDPOINT: Search users cho mention (@)
+ * GET /api/social/user/search?q=query&limit=10&department=xxx
+ * 
+ * Query params:
+ * - q: Search query (tên người dùng)
+ * - limit: Số kết quả tối đa (default: 10, max: 20)
+ * - department: Filter theo department (optional)
+ * - exclude: User IDs cần loại trừ, cách nhau bởi dấu phẩy (optional)
+ */
+const searchUsers = async (req, res) => {
+  try {
+    const { q, limit = 10, department, exclude } = req.query;
+
+    // Validate query
+    if (!q || q.trim().length < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Query parameter "q" is required (min 1 character)'
+      });
+    }
+
+    // Parse options
+    const searchLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 20);
+    const excludeIds = exclude ? exclude.split(',').filter(Boolean) : [];
+
+    // Loại trừ user hiện tại nếu có
+    if (req.user && req.user._id) {
+      excludeIds.push(req.user._id.toString());
+    }
+
+    console.log(`🔍 [User Search] Query: "${q}", Limit: ${searchLimit}, Department: ${department || 'all'}`);
+
+    // Search users
+    const users = await searchUsersForMention(q.trim(), {
+      limit: searchLimit,
+      excludeIds,
+      department: department || null
+    });
+
+    res.status(200).json({
+      success: true,
+      data: users,
+      count: users.length,
+      query: q.trim()
+    });
+  } catch (error) {
+    console.error('[User Search] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+/**
  * 📊 ENDPOINT: Lấy stats về users
  * GET /api/social/user/stats
  */
@@ -534,6 +590,7 @@ module.exports = {
   getUserByEmail,
   getCurrentUser,
   getUserStats,
+  searchUsers,
   
   // Debug
   debugFetchUsers,

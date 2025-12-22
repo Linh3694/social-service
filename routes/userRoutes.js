@@ -29,7 +29,11 @@ router.get('/email/:email', userController.getUserByEmail);
 // GET /api/social/user/me
 router.get('/me', authenticate, userController.getCurrentUser);
 
-// 📊 ENDPOINT 6: Get user stats (OPTIONAL AUTH)
+// 🔍 ENDPOINT 6: Search users cho mention (AUTHENTICATED)
+// GET /api/social/user/search?q=query&limit=10
+router.get('/search', authenticate, userController.searchUsers);
+
+// 📊 ENDPOINT 7: Get user stats (OPTIONAL AUTH)
 // GET /api/social/user/stats
 router.get('/stats', optionalAuth, userController.getUserStats);
 
