@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { formatVietnameseName } = require('../utils/nameUtils');
 
 /**
  * 🧑‍💼 Social Service - User Model
@@ -71,9 +72,12 @@ userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser
   }
 
   // Normalize fullname với nhiều fallback options
-  const fullName = frappeUser.full_name || frappeUser.fullname || frappeUser.fullName ||
+  const rawFullName = frappeUser.full_name || frappeUser.fullname || frappeUser.fullName ||
     [frappeUser.first_name, frappeUser.middle_name, frappeUser.last_name].filter(Boolean).join(' ') ||
     frappeUser.name;
+  
+  // Format tên theo chuẩn Việt Nam (Họ + Đệm + Tên)
+  const fullName = formatVietnameseName(rawFullName);
 
   // Normalize roles: hỗ trợ cả string array và object array
   const roles = Array.isArray(frappeUser.roles)
