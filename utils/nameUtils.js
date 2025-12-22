@@ -75,12 +75,12 @@ function isVietnameseMiddleName(word) {
 }
 
 /**
- * Phát hiện format của tên
+ * Phát hiện format của tên và trả về vị trí họ
  * @param {string[]} parts - Mảng các phần của tên
- * @returns {'vietnamese'|'western'|'unknown'}
+ * @returns {{format: 'vietnamese'|'western'|'middle_surname'|'unknown', surnameIndex: number}}
  */
 function detectNameFormat(parts) {
-  if (parts.length < 2) return 'unknown';
+  if (parts.length < 2) return { format: 'unknown', surnameIndex: -1 };
   
   const firstPart = parts[0];
   const lastPart = parts[parts.length - 1];
@@ -89,13 +89,22 @@ function detectNameFormat(parts) {
   if (isVietnameseSurname(firstPart)) {
     // Double check: phần cuối không phải họ
     if (!isVietnameseSurname(lastPart) || parts.length === 1) {
-      return 'vietnamese';
+      return { format: 'vietnamese', surnameIndex: 0 };
     }
   }
   
   // Nếu phần cuối là họ VN → format Tây, cần đảo
   if (isVietnameseSurname(lastPart)) {
-    return 'western';
+    return { format: 'western', surnameIndex: parts.length - 1 };
+  }
+  
+  // *** MỚI: Kiểm tra họ ở GIỮA tên (ví dụ: "Anh Đoàn Vân" → họ Đoàn ở vị trí 1)
+  // Case này xảy ra khi Microsoft Auth format sai: First + Last + Middle
+  for (let i = 1; i < parts.length - 1; i++) {
+    if (isVietnameseSurname(parts[i])) {
+      // Tìm thấy họ ở giữa - cần sắp xếp lại
+      return { format: 'middle_surname', surnameIndex: i };
+    }
   }
   
   // Nếu có 3 phần và phần giữa là tên đệm VN
@@ -104,16 +113,11 @@ function detectNameFormat(parts) {
     
     // Format VN: Họ + Đệm + Tên → phần 2 là đệm
     if (isVietnameseMiddleName(middlePart) && isVietnameseSurname(firstPart)) {
-      return 'vietnamese';
-    }
-    
-    // Format Tây: Tên + Đệm + Họ → phần 2 có thể là đệm, phần cuối là họ
-    if (isVietnameseSurname(lastPart)) {
-      return 'western';
+      return { format: 'vietnamese', surnameIndex: 0 };
     }
   }
   
-  return 'unknown';
+  return { format: 'unknown', surnameIndex: -1 };
 }
 
 /**
@@ -125,7 +129,8 @@ function detectNameFormat(parts) {
  * @example
  * formatVietnameseName('Duy Hiếu Nguyễn') // → 'Nguyễn Duy Hiếu'
  * formatVietnameseName('Nguyễn Hải Linh') // → 'Nguyễn Hải Linh' (giữ nguyên)
- * formatVietnameseName('John Smith') // → 'John Smith' (không phải tên VN)
+ * formatVietnameseName('Anh Đoàn Vân')    // → 'Đoàn Vân Anh' (họ ở giữa)
+ * formatVietnameseName('John Smith')      // → 'John Smith' (không phải tên VN)
  */
 function formatVietnameseName(fullName) {
   if (!fullName || typeof fullName !== 'string') {
@@ -137,19 +142,29 @@ function formatVietnameseName(fullName) {
   
   const parts = trimmed.split(/\s+/).filter(Boolean);
   
-  // Nếu chỉ có 1-2 từ, khó xác định format → giữ nguyên
+  // Nếu chỉ có 1 từ → giữ nguyên
   if (parts.length <= 1) {
     return trimmed;
   }
   
-  const format = detectNameFormat(parts);
+  const { format, surnameIndex } = detectNameFormat(parts);
   
   if (format === 'western') {
     // Đảo ngược: First Middle Last → Last Middle First
     // Ví dụ: ['Duy', 'Hiếu', 'Nguyễn'] → ['Nguyễn', 'Duy', 'Hiếu']
-    // Logic: lấy phần cuối (họ) đưa lên đầu
-    const lastName = parts.pop(); // Lấy phần cuối
+    const lastName = parts.pop(); // Lấy phần cuối (họ)
     return [lastName, ...parts].join(' ');
+  }
+  
+  if (format === 'middle_surname') {
+    // Họ ở giữa: First Surname Middle → Surname Middle First
+    // Ví dụ: ['Anh', 'Đoàn', 'Vân'] → ['Đoàn', 'Vân', 'Anh']
+    // surnameIndex = 1 (Đoàn)
+    const surname = parts[surnameIndex];
+    const beforeSurname = parts.slice(0, surnameIndex); // ['Anh']
+    const afterSurname = parts.slice(surnameIndex + 1);  // ['Vân']
+    // Sắp xếp: Họ + phần sau + phần trước
+    return [surname, ...afterSurname, ...beforeSurname].join(' ');
   }
   
   // Format VN hoặc unknown → giữ nguyên

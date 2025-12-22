@@ -113,6 +113,8 @@ async function resolveMentions(content) {
 
 /**
  * Search users cho mention dropdown
+ * Hỗ trợ search nhiều từ: "Hai Linh" sẽ tìm người có cả "Hai" VÀ "Linh"
+ * 
  * @param {string} query - Search query (sau @)
  * @param {Object} options - { limit, excludeIds, department }
  * @returns {Promise<Array>} - Array of user suggestions
@@ -126,8 +128,8 @@ async function searchUsersForMention(query, options = {}) {
 
   const searchTerm = query.trim();
   
-  // Tạo regex search - hỗ trợ cả có dấu và không dấu
-  const searchTermNoTones = removeVietnameseTones(searchTerm);
+  // Tách thành nhiều từ để tìm kiếm
+  const searchWords = searchTerm.split(/\s+/).filter(w => w.length > 0);
   
   // Build filter
   const filter = {
@@ -146,46 +148,75 @@ async function searchUsersForMention(query, options = {}) {
   }
 
   try {
-    // Tìm kiếm theo fullname - ưu tiên match chính xác trước
+    let orConditions = [];
+    
+    if (searchWords.length === 1) {
+      // Search 1 từ: tìm như cũ
+      const word = searchWords[0];
+      orConditions = [
+        // Tìm bắt đầu bằng query
+        { fullname: { $regex: new RegExp(`^${escapeRegex(word)}`, 'i') } },
+        // Tìm chứa query ở bất kỳ đâu
+        { fullname: { $regex: new RegExp(escapeRegex(word), 'i') } },
+        // Tìm theo email
+        { email: { $regex: new RegExp(escapeRegex(word), 'i') } }
+      ];
+    } else {
+      // Search nhiều từ: tất cả từ phải xuất hiện trong fullname
+      // Ví dụ: "Hai Linh" → phải có cả "Hai" VÀ "Linh"
+      const andConditions = searchWords.map(word => ({
+        fullname: { $regex: new RegExp(escapeRegex(word), 'i') }
+      }));
+      
+      orConditions = [
+        // Tìm chứa TẤT CẢ các từ
+        { $and: andConditions },
+        // Backup: tìm nguyên cụm (exact phrase)
+        { fullname: { $regex: new RegExp(escapeRegex(searchTerm), 'i') } }
+      ];
+    }
+
     const users = await User.find({
       ...filter,
-      $or: [
-        // Tìm bắt đầu bằng query (exact match đầu tên)
-        { fullname: { $regex: new RegExp(`^${escapeRegex(searchTerm)}`, 'i') } },
-        // Tìm chứa query ở bất kỳ đâu
-        { fullname: { $regex: new RegExp(escapeRegex(searchTerm), 'i') } },
-        // Tìm theo email
-        { email: { $regex: new RegExp(escapeRegex(searchTerm), 'i') } }
-      ]
+      $or: orConditions
     })
       .select('_id fullname email avatarUrl department jobTitle')
-      .limit(limit * 2) // Lấy nhiều hơn để sort sau
+      .limit(limit * 3) // Lấy nhiều hơn để sort sau
       .lean();
 
-    // Sort results: ưu tiên match đầu tên
+    // Sort results: ưu tiên match tốt nhất
     const sortedUsers = users.sort((a, b) => {
       const aFullname = (a.fullname || '').toLowerCase();
       const bFullname = (b.fullname || '').toLowerCase();
       const searchLower = searchTerm.toLowerCase();
       
-      // Ưu tiên 1: Bắt đầu bằng search term
-      const aStartsWith = aFullname.startsWith(searchLower);
-      const bStartsWith = bFullname.startsWith(searchLower);
+      // Ưu tiên 1: Match nguyên cụm từ
+      const aExactMatch = aFullname.includes(searchLower);
+      const bExactMatch = bFullname.includes(searchLower);
+      if (aExactMatch && !bExactMatch) return -1;
+      if (!aExactMatch && bExactMatch) return 1;
       
+      // Ưu tiên 2: Bắt đầu bằng từ đầu tiên
+      const firstWord = searchWords[0].toLowerCase();
+      const aStartsWith = aFullname.startsWith(firstWord);
+      const bStartsWith = bFullname.startsWith(firstWord);
       if (aStartsWith && !bStartsWith) return -1;
       if (!aStartsWith && bStartsWith) return 1;
       
-      // Ưu tiên 2: Chứa search term ở vị trí sớm hơn
-      const aIndex = aFullname.indexOf(searchLower);
-      const bIndex = bFullname.indexOf(searchLower);
-      
-      if (aIndex !== bIndex) {
-        if (aIndex === -1) return 1;
-        if (bIndex === -1) return -1;
-        return aIndex - bIndex;
+      // Ưu tiên 3: Số từ match nhiều hơn (cho multi-word search)
+      if (searchWords.length > 1) {
+        const aMatchCount = searchWords.filter(w => 
+          aFullname.includes(w.toLowerCase())
+        ).length;
+        const bMatchCount = searchWords.filter(w => 
+          bFullname.includes(w.toLowerCase())
+        ).length;
+        if (aMatchCount !== bMatchCount) {
+          return bMatchCount - aMatchCount; // Nhiều match hơn lên trước
+        }
       }
       
-      // Ưu tiên 3: Tên ngắn hơn
+      // Ưu tiên 4: Tên ngắn hơn
       return aFullname.length - bFullname.length;
     });
 
