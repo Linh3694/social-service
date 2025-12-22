@@ -53,6 +53,8 @@ userSchema.index({ role: 1 });
 userSchema.index({ roles: 1 });
 userSchema.index({ active: 1 });
 userSchema.index({ department: 1 });
+// Text index cho search mention - hỗ trợ tìm kiếm theo tên
+userSchema.index({ fullname: 'text', email: 'text' });
 
 /**
  * 🔄 Cập nhật/đồng bộ user từ Frappe

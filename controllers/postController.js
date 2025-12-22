@@ -6,6 +6,7 @@ const User = require('../models/User');
 const PostService = require('../services/postService');
 const redisClient = require('../config/redis');
 const frappeService = require('../services/frappeService');
+const { resolveMentions, getMentionedUserEmails } = require('../utils/mentionUtils');
 
 async function notify(event, data) {
   try {
@@ -271,15 +272,37 @@ exports.removeReaction = async (req, res) => {
 };
 
 exports.addComment = async (req, res) => {
-  try { const { postId } = req.params; const { content } = req.body; const userId = req.user._id;
-    if (!mongoose.Types.ObjectId.isValid(postId)) return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
-    if (!content || content.trim() === '') return res.status(400).json({ success: false, message: 'Nội dung comment không được để trống' });
-    const post = await Post.findById(postId); if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
-    post.comments.push({ user: userId, content: content.trim(), createdAt: new Date(), reactions: [] });
+  try {
+    const { postId } = req.params;
+    const { content, mentions: clientMentions } = req.body; // clientMentions: array of user IDs từ frontend
+    const userId = req.user._id;
+    
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
+    }
+    if (!content || content.trim() === '') {
+      return res.status(400).json({ success: false, message: 'Nội dung comment không được để trống' });
+    }
+    
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+    }
+    
+    // Thêm comment
+    post.comments.push({ 
+      user: userId, 
+      content: content.trim(), 
+      createdAt: new Date(), 
+      reactions: [] 
+    });
     await post.save();
+    
     const updated = await Post.findById(postId)
       .populate('author', 'fullname avatarUrl email')
       .populate('comments.user', 'fullname avatarUrl email');
+    
+    const newCommentId = updated.comments[updated.comments.length - 1]._id;
     
     // Gửi notification cho author của post
     if (post.author.toString() !== userId.toString()) {
@@ -295,22 +318,49 @@ exports.addComment = async (req, res) => {
       }
     }
     
-    // Parse @mentions từ content và gửi notification
-    const mentionRegex = /@([A-ZÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬĐÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴ][a-zàáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]*(?:\s+[A-ZÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬĐÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴ][a-zàáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]*){0,2})/g;
-    const mentions = content.match(mentionRegex);
-    if (mentions && mentions.length > 0) {
-      const newCommentId = updated.comments[updated.comments.length - 1]._id;
-      await notify('post_mention', {
-        postId: postId.toString(),
-        commentId: newCommentId.toString(),
-        mentionedNames: mentions.map(m => m.replace('@', '')),
-        userId: userId.toString(),
-        userName: req.user.fullname
-      });
+    // Xử lý mentions - hỗ trợ cả client gửi lên và parse từ content
+    try {
+      let mentionedUsers = [];
+      
+      // Ưu tiên 1: Sử dụng mentions từ client (đã chọn từ dropdown)
+      if (Array.isArray(clientMentions) && clientMentions.length > 0) {
+        mentionedUsers = await User.find({
+          _id: { $in: clientMentions },
+          active: true
+        }).select('_id email fullname');
+      } else {
+        // Fallback: Parse mentions từ content text
+        mentionedUsers = await resolveMentions(content);
+      }
+      
+      // Gửi notification cho từng người được mention (trừ người comment)
+      if (mentionedUsers.length > 0) {
+        const mentionedEmails = mentionedUsers
+          .filter(u => u._id.toString() !== userId.toString())
+          .map(u => u.email)
+          .filter(Boolean);
+        
+        if (mentionedEmails.length > 0) {
+          await notify('post_mention', {
+            postId: postId.toString(),
+            commentId: newCommentId.toString(),
+            mentionedEmails: mentionedEmails, // Gửi emails trực tiếp
+            userId: userId.toString(),
+            userName: req.user.fullname
+          });
+          
+          console.log(`📢 [Mention] Sent notifications to ${mentionedEmails.length} users`);
+        }
+      }
+    } catch (mentionError) {
+      // Log error nhưng không fail request
+      console.error('[Mention] Error processing mentions:', mentionError.message);
     }
     
     res.status(200).json({ success: true, message: 'Thêm comment thành công', data: updated });
-  } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi thêm comment', error: error.message }); }
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Lỗi server khi thêm comment', error: error.message });
+  }
 };
 
 exports.deleteComment = async (req, res) => {
@@ -362,7 +412,7 @@ exports.deleteComment = async (req, res) => {
 exports.replyComment = async (req, res) => {
   try {
     const { postId, commentId } = req.params;
-    const { content } = req.body;
+    const { content, mentions: clientMentions } = req.body;
     const userId = req.user._id;
 
     if (!mongoose.Types.ObjectId.isValid(postId) || !mongoose.Types.ObjectId.isValid(commentId)) {
@@ -394,6 +444,8 @@ exports.replyComment = async (req, res) => {
       .populate('comments.user', 'fullname avatarUrl email')
       .populate('tags', 'fullname avatarUrl email');
 
+    const newReplyId = updated.comments[updated.comments.length - 1]._id;
+
     // Gửi notification cho author của parent comment
     const parentComment = post.comments.find(c => c._id.toString() === commentId.toString());
     if (parentComment && parentComment.user.toString() !== userId.toString()) {
@@ -408,6 +460,39 @@ exports.replyComment = async (req, res) => {
           content: content.trim().substring(0, 100)
         });
       }
+    }
+
+    // Xử lý mentions trong reply
+    try {
+      let mentionedUsers = [];
+      
+      if (Array.isArray(clientMentions) && clientMentions.length > 0) {
+        mentionedUsers = await User.find({
+          _id: { $in: clientMentions },
+          active: true
+        }).select('_id email fullname');
+      } else {
+        mentionedUsers = await resolveMentions(content);
+      }
+      
+      if (mentionedUsers.length > 0) {
+        const mentionedEmails = mentionedUsers
+          .filter(u => u._id.toString() !== userId.toString())
+          .map(u => u.email)
+          .filter(Boolean);
+        
+        if (mentionedEmails.length > 0) {
+          await notify('post_mention', {
+            postId: postId.toString(),
+            commentId: newReplyId.toString(),
+            mentionedEmails: mentionedEmails,
+            userId: userId.toString(),
+            userName: req.user.fullname
+          });
+        }
+      }
+    } catch (mentionError) {
+      console.error('[Mention] Error in reply:', mentionError.message);
     }
 
     return res.status(200).json({ success: true, message: 'Trả lời bình luận thành công', data: updated });
