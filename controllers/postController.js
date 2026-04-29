@@ -50,13 +50,18 @@ function normalizeLookupKey(value) {
 function buildGuardianLookup(guardians = []) {
   const lookup = new Map();
   guardians.forEach((guardian) => {
+    const uniqueMatchKeys = (guardian.matchKeys || []).filter((key) => (
+      key &&
+      key !== guardian.guardian_name &&
+      key !== guardian.fullname &&
+      key !== guardian.fullName
+    ));
     [
       guardian.name,
       guardian.guardian_id,
-      guardian.guardian_name,
       guardian.email,
       guardian.portalEmail,
-      ...(guardian.matchKeys || []),
+      ...uniqueMatchKeys,
     ].forEach((key) => {
       const normalized = normalizeLookupKey(key);
       if (normalized) lookup.set(normalized, guardian);
@@ -72,8 +77,6 @@ function findGuardianForUser(user, guardianLookup) {
     user.name,
     user.username,
     user.email,
-    user.fullname,
-    user.fullName,
     user.email?.split('@')[0],
   ];
   for (const candidate of candidates) {

@@ -430,7 +430,7 @@ class FrappeService {
       if (!guardian) return;
       const guardianId = guardian.guardian_id || guardian.name || relationship?.guardian;
       const email = guardian.email || guardian.user || '';
-      const key = guardianId || email || guardian.guardian_name;
+      const key = guardianId || email;
       if (!key) return;
 
       const portalEmail = guardian.guardian_id
@@ -463,7 +463,6 @@ class FrappeService {
         existing.guardian_id,
         existing.email,
         existing.portalEmail,
-        existing.guardian_name,
       ].filter(Boolean).map((value) => String(value).toLowerCase())));
 
       guardianMap.set(key, existing);
