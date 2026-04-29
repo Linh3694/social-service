@@ -32,11 +32,11 @@ function parsePagination(query) {
 
 function populatePostQuery(query) {
   return query
-    .populate('author', 'fullname avatarUrl email department jobTitle')
-    .populate('tags', 'fullname avatarUrl email')
-    .populate('comments.user', 'fullname avatarUrl email')
-    .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-    .populate('reactions.user', 'fullname avatarUrl email jobTitle');
+    .populate('author', 'fullname fullName avatarUrl email department jobTitle')
+    .populate('tags', 'fullname fullName avatarUrl email')
+    .populate('comments.user', 'fullname fullName avatarUrl email')
+    .populate('comments.reactions.user', 'fullname fullName avatarUrl email jobTitle')
+    .populate('reactions.user', 'fullname fullName avatarUrl email jobTitle');
 }
 
 function paginationResponse(posts, totalPosts, page, limit) {
@@ -57,6 +57,55 @@ function normalizeAudience(value, classId) {
   if (value === 'class' || classId) return 'class';
   if (value === 'department') return 'department';
   return 'public';
+}
+
+function buildStudentClassFilters(scopes, schoolYearId) {
+  return scopes
+    .filter((scope) => scope.classId && (!schoolYearId || scope.schoolYearId === schoolYearId))
+    .map((scope) => ({
+      classId: scope.classId,
+      ...(scope.schoolYearId ? { schoolYearId: scope.schoolYearId } : {}),
+    }));
+}
+
+function isPostInStudentScopes(post, classFilters) {
+  if (!post || post.audienceType !== 'class') return false;
+  return classFilters.some((filter) => {
+    if (String(post.classId || '') !== String(filter.classId || '')) return false;
+    if (filter.schoolYearId) {
+      return String(post.schoolYearId || '') === String(filter.schoolYearId);
+    }
+    return true;
+  });
+}
+
+function paginatePostComments(post, query) {
+  const { page, limit, skip } = parsePagination({
+    page: query.commentPage || query.page || '1',
+    limit: query.commentLimit || query.limit || '20',
+  });
+  const comments = Array.isArray(post.comments) ? [...post.comments] : [];
+  const rootComments = comments
+    .filter((comment) => !comment.parentComment)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const visibleRoots = rootComments.slice(skip, skip + limit);
+  const visibleRootIds = new Set(visibleRoots.map((comment) => comment._id.toString()));
+  const visibleReplies = comments
+    .filter((comment) => comment.parentComment && visibleRootIds.has(comment.parentComment.toString()))
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const visibleComments = [...visibleRoots, ...visibleReplies];
+
+  return {
+    comments: visibleComments,
+    pagination: {
+      currentPage: page,
+      totalPages: Math.ceil(rootComments.length / limit),
+      totalComments: comments.length,
+      totalRootComments: rootComments.length,
+      hasNext: page < Math.ceil(rootComments.length / limit),
+      hasPrev: page > 1,
+    },
+  };
 }
 
 async function buildClassPostMetadata({ audienceType, classId, schoolYearId, token }) {
@@ -252,12 +301,7 @@ exports.getStudentFeed = async (req, res) => {
     }
 
     const scopes = await frappeService.getStudentClassScopes(String(studentId), token);
-    const classFilters = scopes
-      .filter((scope) => scope.classId && (!schoolYearId || scope.schoolYearId === schoolYearId))
-      .map((scope) => ({
-        classId: scope.classId,
-        ...(scope.schoolYearId ? { schoolYearId: scope.schoolYearId } : {}),
-      }));
+    const classFilters = buildStudentClassFilters(scopes, schoolYearId);
 
     if (classFilters.length === 0) {
       const { page, limit } = parsePagination(req.query);
@@ -296,6 +340,74 @@ exports.getStudentFeed = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Lỗi server khi lấy Nhật ký học sinh',
+      error: upstreamMessage,
+      upstreamStatus,
+    });
+  }
+};
+
+exports.getStudentPostDetail = async (req, res) => {
+  const { postId } = req.params;
+  const { studentId, schoolYearId } = req.query;
+
+  try {
+    if (!studentId) {
+      return res.status(400).json({ success: false, message: 'Thiếu studentId' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
+    }
+
+    const token = getBearerToken(req);
+    const hasAccess = await frappeService.verifyGuardianStudentAccess(String(studentId), token);
+    if (!hasAccess) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xem Nhật ký của học sinh này' });
+    }
+
+    const scopes = await frappeService.getStudentClassScopes(String(studentId), token);
+    const classFilters = buildStudentClassFilters(scopes, schoolYearId);
+    if (classFilters.length === 0) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xem bài viết này' });
+    }
+
+    const post = await populatePostQuery(Post.findById(postId));
+    if (!post) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+    }
+    if (!isPostInStudentScopes(post, classFilters)) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xem bài viết này' });
+    }
+
+    const { comments, pagination } = paginatePostComments(post, req.query);
+    const detailPost = post.toObject();
+    detailPost.comments = comments;
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        post: detailPost,
+        commentPagination: pagination,
+      },
+      classScopes: scopes,
+    });
+  } catch (error) {
+    const upstreamStatus = error?.response?.status;
+    const upstreamData = error?.response?.data;
+    const upstreamMessage =
+      upstreamData?.message?.message ||
+      upstreamData?.message ||
+      upstreamData?._server_messages ||
+      upstreamData?.exception ||
+      error.message;
+    console.error('[StudentPostDetail] Lỗi lấy chi tiết Nhật ký:', {
+      status: upstreamStatus,
+      message: upstreamMessage,
+      studentId,
+      postId,
+    });
+    return res.status(500).json({
+      success: false,
+      message: 'Lỗi server khi lấy chi tiết Nhật ký',
       error: upstreamMessage,
       upstreamStatus,
     });

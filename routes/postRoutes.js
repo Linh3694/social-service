@@ -23,6 +23,7 @@ router.get('/search', optionalAuth, postController.searchPosts);
 router.get('/newsfeed', optionalAuth, postController.getNewsfeed);
 router.get('/class-feed', authenticate, postController.getClassFeed);
 router.get('/student-feed', optionalAuth, postController.getStudentFeed);
+router.get('/student-post/:postId', optionalAuth, postController.getStudentPostDetail);
 router.get('/:postId', optionalAuth, postController.getPostById);
 router.get('/:postId/stats', optionalAuth, postController.getPostEngagementStats);
 router.get('/:postId/related', optionalAuth, postController.getRelatedPosts);
