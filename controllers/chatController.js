@@ -152,12 +152,19 @@ async function buildConversationPayload(scope, type) {
   };
 }
 
-async function ensureClassConversations({ classId, schoolYearId, token }) {
-  const scope = await frappeService.getClassChatScope(classId, schoolYearId, token);
+async function ensureClassConversations({ classId, schoolYearId, token, trustedScope }) {
+  // Với guardian, token Parent Portal chỉ dùng để lấy scope hợp lệ trước đó.
+  // Sau khi đã verify scope, đọc metadata lớp bằng service key để tránh Frappe Resource API trả 403.
+  const scope = await frappeService.getClassChatScope(classId, schoolYearId, trustedScope ? null : token);
   if (!scope?.classId || !scope?.schoolYearId) {
     const err = new Error('Không tìm thấy lớp/năm học để tạo nhóm chat');
     err.statusCode = 404;
     throw err;
+  }
+
+  if (trustedScope) {
+    scope.className = trustedScope.className || scope.className;
+    scope.schoolYearName = trustedScope.schoolYearName || scope.schoolYearName;
   }
 
   const conversations = [];
@@ -227,9 +234,13 @@ function serializeConversation(conversation, user) {
   };
 }
 
-async function emitToConversation(conversationId, event, payload) {
+async function emitToConversation(conversation, event, payload) {
   if (global.io) {
-    global.io.to(`chat_${conversationId}`).emit(event, payload);
+    const conversationId = String(conversation?._id || conversation);
+    const userRooms = (conversation?.participants || [])
+      .map((participant) => participant.user && `user_${participant.user}`)
+      .filter(Boolean);
+    global.io.to([`chat_${conversationId}`, ...userRooms]).emit(event, payload);
   }
 }
 
@@ -253,7 +264,8 @@ exports.listConversations = async (req, res) => {
         const ensured = await ensureClassConversations({
           classId: scope.classId,
           schoolYearId: scope.schoolYearId,
-          token,
+        token: null,
+        trustedScope: scope,
         });
         conversations.push(...ensured);
       }
@@ -369,7 +381,7 @@ exports.sendMessage = async (req, res) => {
     await conversation.save();
 
     const populated = await ChatMessage.findById(message._id).populate('sender', USER_SELECT);
-    await emitToConversation(conversation._id, 'chat:message', {
+    await emitToConversation(conversation, 'chat:message', {
       conversation: serializeConversation(conversation, req.user),
       message: populated,
     });
@@ -397,7 +409,7 @@ exports.markRead = async (req, res) => {
       { $push: { readBy: { user: req.user._id, readAt: new Date() } } }
     );
 
-    await emitToConversation(conversation._id, 'chat:read', {
+    await emitToConversation(conversation, 'chat:read', {
       conversationId: String(conversation._id),
       userId: String(req.user._id),
     });
