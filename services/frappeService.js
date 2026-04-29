@@ -310,14 +310,14 @@ class FrappeService {
     return response.data?.data || [];
   }
 
-  async getClassMetadata(classId) {
-    const cls = await this.getResource('SIS Class', classId);
+  async getClassMetadata(classId, token) {
+    const cls = await this.getResource('SIS Class', classId, token);
     if (!cls) return null;
 
     let schoolYear = null;
     if (cls.school_year_id) {
       try {
-        schoolYear = await this.getResource('SIS School Year', cls.school_year_id);
+        schoolYear = await this.getResource('SIS School Year', cls.school_year_id, token);
       } catch (error) {
         console.warn('[FrappeService] Không lấy được năm học của lớp:', error.message);
       }
@@ -333,13 +333,35 @@ class FrappeService {
     };
   }
 
-  async getStudentClassScopes(studentId) {
-    const rows = await this.listResources('SIS Class Student', {
-      filters: JSON.stringify([['SIS Class Student', 'student_id', '=', studentId]]),
-      fields: JSON.stringify(['name', 'class_id', 'school_year_id', 'class_type']),
-      limit_page_length: 1000,
-      order_by: 'modified desc',
-    });
+  async getStudentClassScopes(studentId, token) {
+    if (token) {
+      try {
+        const response = await this.callMethod(
+          'erp.api.parent_portal.journal.get_student_class_scopes',
+          { student_id: studentId },
+          token
+        );
+        const payload = response?.data || response;
+        if (Array.isArray(payload?.scopes)) {
+          return payload.scopes;
+        }
+      } catch (error) {
+        console.warn('[FrappeService] Parent portal journal scope failed, fallback resource:', error.message);
+      }
+    }
+
+    let rows = [];
+    try {
+      rows = await this.listResources('SIS Class Student', {
+        filters: JSON.stringify([['SIS Class Student', 'student_id', '=', studentId]]),
+        fields: JSON.stringify(['name', 'class_id', 'school_year_id', 'class_type']),
+        limit_page_length: 1000,
+        order_by: 'modified desc',
+      }, token);
+    } catch (error) {
+      console.warn('[FrappeService] Không lấy được lịch sử lớp qua Resource API:', error.message);
+      return [];
+    }
 
     const scopes = [];
     const seen = new Set();
@@ -351,7 +373,7 @@ class FrappeService {
 
       let metadata = null;
       try {
-        metadata = await this.getClassMetadata(row.class_id);
+        metadata = await this.getClassMetadata(row.class_id, token);
       } catch (error) {
         console.warn('[FrappeService] Không lấy được metadata lớp của học sinh:', error.message);
       }

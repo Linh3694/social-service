@@ -59,7 +59,7 @@ function normalizeAudience(value, classId) {
   return 'public';
 }
 
-async function buildClassPostMetadata({ audienceType, classId, schoolYearId }) {
+async function buildClassPostMetadata({ audienceType, classId, schoolYearId, token }) {
   if (audienceType !== 'class') return {};
   if (!classId || !schoolYearId) {
     const err = new Error('Vui lòng chọn lớp và năm học cho bài viết Nhật ký');
@@ -67,7 +67,7 @@ async function buildClassPostMetadata({ audienceType, classId, schoolYearId }) {
     throw err;
   }
 
-  const metadata = await frappeService.getClassMetadata(classId);
+  const metadata = await frappeService.getClassMetadata(classId, token);
   if (!metadata) {
     const err = new Error('Không tìm thấy lớp để đăng bài');
     err.statusCode = 400;
@@ -134,7 +134,12 @@ exports.createPost = async (req, res) => {
     }
 
     const audienceType = normalizeAudience(rawAudienceType, classId);
-    const classMetadata = await buildClassPostMetadata({ audienceType, classId, schoolYearId });
+    const classMetadata = await buildClassPostMetadata({
+      audienceType,
+      classId,
+      schoolYearId,
+      token: getBearerToken(req),
+    });
     const postData = {
       author: authorId,
       content: content.trim(),
@@ -246,7 +251,7 @@ exports.getStudentFeed = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Bạn không có quyền xem Nhật ký của học sinh này' });
     }
 
-    const scopes = await frappeService.getStudentClassScopes(String(studentId));
+    const scopes = await frappeService.getStudentClassScopes(String(studentId), token);
     const classFilters = scopes
       .filter((scope) => scope.classId && (!schoolYearId || scope.schoolYearId === schoolYearId))
       .map((scope) => ({
