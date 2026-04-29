@@ -464,14 +464,37 @@ exports.updatePost = async (req, res) => {
       }
     }
     
+    const normalizeMediaList = (value) => {
+      if (value === undefined) return undefined;
+      if (Array.isArray(value)) return value;
+      return [value].filter(Boolean);
+    };
+
+    let nextImages = normalizeMediaList(images);
+    let nextVideos = normalizeMediaList(videos);
+    if (req.files?.length) {
+      req.files.forEach(file => {
+        const relative = `/uploads/posts/${file.filename}`;
+        const filePath = `/api/social${relative}`;
+        const mime = file.mimetype || (file.originalname?.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
+        if (mime.startsWith('image/')) {
+          if (!nextImages) nextImages = [...(post.images || [])];
+          nextImages.push(filePath);
+        } else if (mime.startsWith('video/')) {
+          if (!nextVideos) nextVideos = [...(post.videos || [])];
+          nextVideos.push(filePath);
+        }
+      });
+    }
+
     const updateData = {};
     if (content !== undefined) updateData.content = content.trim();
     if (type !== undefined) updateData.type = type;
     if (visibility !== undefined) updateData.visibility = visibility;
     if (department !== undefined) updateData.department = department;
     if (tags !== undefined) updateData.tags = tags;
-    if (images !== undefined) updateData.images = images;
-    if (videos !== undefined) updateData.videos = videos;
+    if (nextImages !== undefined) updateData.images = nextImages;
+    if (nextVideos !== undefined) updateData.videos = nextVideos;
     if (badgeInfo !== undefined) updateData.badgeInfo = badgeInfo;
     // Chỉ Mobile BOD mới được update isPinned qua updatePost (không khuyến khích, nên dùng pin/unpin endpoint)
     if (isPinned !== undefined && isMobileBOD) updateData.isPinned = isPinned;
