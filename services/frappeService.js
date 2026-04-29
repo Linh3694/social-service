@@ -379,9 +379,10 @@ class FrappeService {
           return payload.scopes;
         }
       } catch (error) {
-        console.warn('[FrappeService] Parent portal journal scope failed, fallback resource:', error.message);
+        console.warn('[FrappeService] Parent portal journal scope failed:', error.message);
         if (token) {
           // Với Parent Portal, không fallback Resource API vì sẽ bỏ qua kiểm tra quan hệ guardian-student.
+          // Cần deploy Frappe method get_student_class_scopes để trả đúng scope lớp.
           return [];
         }
       }
@@ -438,15 +439,6 @@ class FrappeService {
   }
 
   async verifyGuardianStudentAccess(studentId, token) {
-    try {
-      const data = await this.getCurrentGuardianData(token);
-      const payload = data?.data || data;
-      const students = Array.isArray(payload?.students) ? payload.students : [];
-      if (students.some((student) => student?.name === studentId)) return true;
-    } catch (error) {
-      console.warn('[FrappeService] Guardian comprehensive data failed, fallback relationship:', error.message);
-    }
-
     // Không dùng Resource API để verify quan hệ guardian-student vì service key có thể thiếu quyền
     // hoặc vô tình bỏ qua rule truy cập. Scope method của Frappe sẽ kiểm tra quan hệ khi đã deploy.
     const decoded = this.verifyParentPortalToken(token);
