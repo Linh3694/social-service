@@ -291,6 +291,25 @@ exports.getClassFeed = async (req, res) => {
   }
 };
 
+exports.getClassGuardianDirectory = async (req, res) => {
+  try {
+    const { classId, schoolYearId } = req.query;
+    if (!classId) {
+      return res.status(400).json({ success: false, message: 'Thiếu classId' });
+    }
+
+    const data = await frappeService.getClassGuardianDirectory(String(classId), schoolYearId ? String(schoolYearId) : undefined);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    console.error('[PostController] getClassGuardianDirectory error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Lỗi server khi lấy danh sách phụ huynh của lớp',
+      error: error.message,
+    });
+  }
+};
+
 exports.getStudentFeed = async (req, res) => {
   const { studentId, schoolYearId } = req.query;
   try {

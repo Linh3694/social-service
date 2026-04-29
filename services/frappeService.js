@@ -346,6 +346,33 @@ class FrappeService {
     return response.data?.data || [];
   }
 
+  async getDoctypeFieldnames(doctype) {
+    try {
+      const meta = await this.getResource('DocType', doctype, null);
+      return new Set((meta?.fields || []).map((field) => field.fieldname).filter(Boolean));
+    } catch (error) {
+      console.warn(`[FrappeService] Không đọc được DocType ${doctype}:`, error.message);
+      return new Set();
+    }
+  }
+
+  async callFrappeGetMethod(methodName, params = {}, token) {
+    const response = await this.api.get(`/api/method/${methodName}`, {
+      params,
+      headers: token ? this.buildAuthHeaders(token) : undefined,
+    });
+    const message = response.data?.message ?? response.data;
+    return message?.data ?? message;
+  }
+
+  async callFrappePostMethod(methodName, params = {}, token) {
+    const response = await this.api.post(`/api/method/${methodName}`, params, {
+      headers: token ? this.buildAuthHeaders(token) : undefined,
+    });
+    const message = response.data?.message ?? response.data;
+    return message?.data ?? message;
+  }
+
   async getClassMetadata(classId, token) {
     const cls = await this.getResource('SIS Class', classId, token);
     if (!cls) return null;
@@ -366,6 +393,142 @@ class FrappeService {
       schoolYearTitle: schoolYear?.title_vn || schoolYear?.title_en || cls.school_year_id,
       campusId: cls.campus_id,
       classType: cls.class_type,
+    };
+  }
+
+  async getClassGuardianDirectory(classId, schoolYearId) {
+    if (!classId) return { guardians: [], students: [] };
+
+    // Đọc metadata doctype trước để tránh hard-code field không tồn tại khi query Resource API.
+    const [classStudentFields, studentFields] = await Promise.all([
+      this.getDoctypeFieldnames('SIS Class Student'),
+      this.getDoctypeFieldnames('SIS Student'),
+    ]);
+
+    const classStudentSelect = ['name', 'class_id', 'student_id', 'school_year_id', 'class_type']
+      .filter((field) => field === 'name' || classStudentFields.size === 0 || classStudentFields.has(field));
+    const filters = [['SIS Class Student', 'class_id', '=', classId]];
+    if (schoolYearId) filters.push(['SIS Class Student', 'school_year_id', '=', schoolYearId]);
+
+    const classRows = await this.listResources('SIS Class Student', {
+      filters: JSON.stringify(filters),
+      fields: JSON.stringify(classStudentSelect),
+      limit_page_length: 1000,
+      order_by: 'student_id asc',
+    }, null);
+
+    const studentIds = Array.from(new Set(classRows.map((row) => row.student_id).filter(Boolean)));
+    if (studentIds.length === 0) return { guardians: [], students: [] };
+
+    let students = [];
+    try {
+      const payload = await this.callFrappePostMethod('erp.api.erp_sis.student.batch_get_students', {
+        student_ids: studentIds,
+      }, null);
+      students = Array.isArray(payload) ? payload : payload?.data || [];
+    } catch (error) {
+      console.warn('[FrappeService] batch_get_students failed, fallback Resource API:', error.message);
+    }
+
+    if (!Array.isArray(students) || students.length === 0) {
+      const studentSelect = ['name', 'student_name', 'student_code', 'family_code']
+        .filter((field) => field === 'name' || studentFields.size === 0 || studentFields.has(field));
+      students = await this.listResources('SIS Student', {
+        filters: JSON.stringify([['SIS Student', 'name', 'in', studentIds]]),
+        fields: JSON.stringify(studentSelect),
+        limit_page_length: 1000,
+      }, null);
+    }
+
+    const studentMap = new Map(students.map((student) => [student.name, student]));
+    const familyCodes = Array.from(
+      new Set(students.map((student) => student.family_code).filter(Boolean))
+    );
+
+    const guardianMap = new Map();
+    const addGuardian = (guardian, relationship, studentId, familyCode) => {
+      if (!guardian) return;
+      const guardianId = guardian.guardian_id || guardian.name || relationship?.guardian;
+      const email = guardian.email || guardian.user || '';
+      const key = guardianId || email || guardian.guardian_name;
+      if (!key) return;
+
+      const portalEmail = guardian.guardian_id
+        ? `${guardian.guardian_id}@parent.wellspring.edu.vn`
+        : undefined;
+      const existing = guardianMap.get(key) || {
+        name: guardian.name || relationship?.guardian,
+        guardian_id: guardian.guardian_id,
+        guardian_name: guardian.guardian_name || guardian.full_name || guardian.name,
+        email,
+        portalEmail,
+        guardian_image: guardian.guardian_image || guardian.user_image || guardian.avatar_url || '',
+        phone_number: guardian.phone_number,
+        students: [],
+        matchKeys: [],
+      };
+
+      const student = studentMap.get(studentId) || { name: studentId };
+      if (studentId && !existing.students.some((item) => item.student_id === studentId)) {
+        existing.students.push({
+          student_id: studentId,
+          student_name: student.student_name,
+          student_code: student.student_code,
+          family_code: familyCode || student.family_code,
+        });
+      }
+
+      existing.matchKeys = Array.from(new Set([
+        existing.name,
+        existing.guardian_id,
+        existing.email,
+        existing.portalEmail,
+        existing.guardian_name,
+      ].filter(Boolean).map((value) => String(value).toLowerCase())));
+
+      guardianMap.set(key, existing);
+    };
+
+    await Promise.all(familyCodes.map(async (familyCode) => {
+      try {
+        const family = await this.callFrappeGetMethod('erp.api.erp_sis.family.get_family_details', {
+          family_code: familyCode,
+        }, null);
+        const relationships = Array.isArray(family?.relationships) ? family.relationships : [];
+        const guardiansByKey = family?.guardians && typeof family.guardians === 'object'
+          ? family.guardians
+          : {};
+
+        relationships.forEach((relationship) => {
+          const studentId =
+            relationship.student ||
+            relationship.student_id ||
+            relationship.student_details?.name;
+          if (!studentIds.includes(studentId)) return;
+
+          const guardian =
+            relationship.guardian_details ||
+            guardiansByKey[relationship.guardian] ||
+            guardiansByKey[relationship.guardian_name] ||
+            { name: relationship.guardian, guardian_name: relationship.guardian_name };
+          addGuardian(guardian, relationship, studentId, familyCode);
+        });
+      } catch (error) {
+        console.warn(`[FrappeService] Không lấy được family details ${familyCode}:`, error.message);
+      }
+    }));
+
+    return {
+      students: studentIds.map((studentId) => {
+        const student = studentMap.get(studentId) || { name: studentId };
+        return {
+          student_id: studentId,
+          student_name: student.student_name,
+          student_code: student.student_code,
+          family_code: student.family_code,
+        };
+      }),
+      guardians: Array.from(guardianMap.values()),
     };
   }
 

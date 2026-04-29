@@ -22,6 +22,7 @@ router.get('/trending', optionalAuth, postController.getTrendingPosts);
 router.get('/search', optionalAuth, postController.searchPosts);
 router.get('/newsfeed', optionalAuth, postController.getNewsfeed);
 router.get('/class-feed', authenticate, postController.getClassFeed);
+router.get('/class-guardian-directory', authenticate, postController.getClassGuardianDirectory);
 router.get('/student-feed', optionalAuth, postController.getStudentFeed);
 router.get('/student-post/:postId', optionalAuth, postController.getStudentPostDetail);
 router.get('/:postId', optionalAuth, postController.getPostById);

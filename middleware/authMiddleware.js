@@ -22,28 +22,37 @@ const authenticate = async (req, res, next) => {
         // - Local JWT: decoded.email hoặc decoded.id
         const userEmail = decoded.sub || decoded.email;
         if (userEmail) {
-          user = await User.findOne({ email: userEmail }).select('fullname fullName email role roles department');
+          user = await User.findOne({ email: userEmail }).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image');
         }
         // Backward: nếu có id
         if (!user && decoded.id) {
-          user = await User.findById(decoded.id).select('fullname fullName email role roles department');
+          user = await User.findById(decoded.id).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image');
         }
       } catch {}
     }
-    // Nếu không tìm thấy user HOẶC user tìm thấy nhưng roles rỗng -> sync từ Frappe
-    if (!user || !user.roles || user.roles.length === 0) {
+    const isParentPortalToken = Boolean(decoded?.guardian);
+    // Nếu là token guardian thì luôn refresh để lấy ảnh mới từ Parent Portal.
+    if (isParentPortalToken || !user || !user.roles || user.roles.length === 0) {
       try {
         // Bước 1: Xác thực token với Frappe
         let frappeUser;
         try {
-          frappeUser = await frappeService.authenticateUser(token);
+          if (isParentPortalToken) {
+            frappeUser = await frappeService.authenticateParentGuardian(token);
+          } else {
+            frappeUser = await frappeService.authenticateUser(token);
+          }
         } catch (authError) {
           // Token Parent Portal OTP không phải lúc nào cũng đi qua endpoint user chung.
           frappeUser = await frappeService.authenticateParentGuardian(token);
         }
+
+        if (!frappeUser && !isParentPortalToken) {
+          frappeUser = await frappeService.authenticateUser(token);
+        }
         
         // Bước 2: Nếu không có roles đầy đủ, lấy thêm user detail
-        if (!frappeUser.roles || frappeUser.roles.length === 0) {
+        if (!isParentPortalToken && (!frappeUser.roles || frappeUser.roles.length === 0)) {
           console.log('[Auth] User from auth endpoint missing roles, fetching detail...');
           const userEmail = frappeUser.email || frappeUser.name;
           const userDetail = await frappeService.getUserDetail(userEmail, token);
@@ -70,6 +79,10 @@ const authenticate = async (req, res, next) => {
       role: user.role,
       roles: user.roles || [],
       department: user.department,
+      avatarUrl: user.avatarUrl,
+      user_image: user.user_image,
+      sis_photo: user.sis_photo,
+      guardian_image: user.guardian_image,
     };
     // Debug: quick trace
     try { console.log('[Auth] OK user=', req.user.email, 'role=', req.user.role, 'roles=', req.user.roles); } catch {}
