@@ -4,7 +4,6 @@ const User = require('../models/User');
 const frappeService = require('../services/frappeService');
 
 const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
-const CONVERSATION_TYPES = ['class_general', 'homeroom_guardians'];
 
 function getBearerToken(req) {
   const authHeader = req.headers.authorization || '';
@@ -136,8 +135,25 @@ function buildCurrentTeacherParticipant(user) {
   };
 }
 
-async function buildConversationPayload(scope, type, requestUser) {
-  const guardians = scope.guardians || [];
+function getStudentId(student) {
+  return student?.student_id || student?.studentId || student?.name;
+}
+
+function getStudentName(student) {
+  return student?.student_name || student?.studentName || student?.name || getStudentId(student);
+}
+
+function studentConversationType(studentId) {
+  return `student_guardians:${studentId}`;
+}
+
+async function buildConversationPayload(scope, type, requestUser, targetStudent) {
+  const targetStudentId = getStudentId(targetStudent);
+  const guardians = targetStudentId
+    ? (scope.guardians || []).filter((guardian) => (
+      (guardian.students || []).some((student) => getStudentId(student) === targetStudentId)
+    ))
+    : scope.guardians || [];
   const teachers = scope.teachers || [];
   const { byEmail, byGuardianId } = await attachMongoUsers({ teachers, guardians });
 
@@ -200,7 +216,7 @@ async function buildConversationPayload(scope, type, requestUser) {
   const schoolYearName = scope.schoolYearName || scope.schoolYearTitle || scope.schoolYearId;
   const title = type === 'class_general'
     ? `${className} - ${schoolYearName}`
-    : `GVCN ${className} - ${schoolYearName}`;
+    : `GVCN ${getStudentName(targetStudent)} - ${className}`;
 
   return {
     type,
@@ -212,7 +228,9 @@ async function buildConversationPayload(scope, type, requestUser) {
     status: scope.isActive === false ? 'locked' : 'active',
     lockedReason: scope.isActive === false ? 'Lớp/năm học cũ chỉ cho xem lại lịch sử' : undefined,
     participants: [...teacherParticipants, ...guardianParticipants],
-    studentIds: (scope.students || []).map((student) => student.student_id).filter(Boolean),
+    studentIds: targetStudentId
+      ? [targetStudentId]
+      : (scope.students || []).map((student) => getStudentId(student)).filter(Boolean),
     guardians: guardianSnapshots,
     teachers: teacherSnapshots,
   };
@@ -248,11 +266,18 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
     scope.schoolYearName = trustedScope.schoolYearName || scope.schoolYearName;
   }
 
+  const conversationSpecs = [
+    { type: 'class_general' },
+    ...(scope.students || [])
+      .map((student) => ({ type: studentConversationType(getStudentId(student)), student }))
+      .filter((spec) => spec.type !== 'student_guardians:undefined'),
+  ];
+
   const conversations = [];
-  for (const type of CONVERSATION_TYPES) {
-    const payload = await buildConversationPayload(scope, type, user);
+  for (const spec of conversationSpecs) {
+    const payload = await buildConversationPayload(scope, spec.type, user, spec.student);
     const conversation = await ChatConversation.findOneAndUpdate(
-      { classId: payload.classId, schoolYearId: payload.schoolYearId, type },
+      { classId: payload.classId, schoolYearId: payload.schoolYearId, type: payload.type },
       {
         $set: {
           title: payload.title,
@@ -268,7 +293,7 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
         $setOnInsert: {
           classId: payload.classId,
           schoolYearId: payload.schoolYearId,
-          type,
+          type: payload.type,
         },
       },
       { new: true, upsert: true, setDefaultsOnInsert: true }

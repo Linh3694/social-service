@@ -23,7 +23,6 @@ const memberSnapshotSchema = new mongoose.Schema({
 const chatConversationSchema = new mongoose.Schema({
   type: {
     type: String,
-    enum: ['class_general', 'homeroom_guardians'],
     required: true,
     index: true,
   },
