@@ -29,6 +29,8 @@ const userSchema = new mongoose.Schema({
   
   // Profile
   avatarUrl: { type: String, default: '' },
+  user_image: { type: String, default: '' },
+  sis_photo: { type: String, default: '' },
   phone: { type: String, trim: true, sparse: true },
   mobileNo: { type: String, trim: true, sparse: true },
   
@@ -107,6 +109,8 @@ userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser
     active: isEnabled,
     disabled: !isEnabled,
     avatarUrl: frappeUser.user_image || frappeUser.userImage || frappeUser.avatar || frappeUser.avatar_url || '',
+    user_image: frappeUser.user_image || frappeUser.userImage || '',
+    sis_photo: frappeUser.sis_photo || frappeUser.photo || '',
     phone: frappeUser.phone || undefined,
     mobileNo: frappeUser.mobile_no || undefined,
     provider: 'frappe',

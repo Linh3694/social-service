@@ -32,11 +32,11 @@ function parsePagination(query) {
 
 function populatePostQuery(query) {
   return query
-    .populate('author', 'fullname fullName avatarUrl email department jobTitle')
-    .populate('tags', 'fullname fullName avatarUrl email')
-    .populate('comments.user', 'fullname fullName avatarUrl email')
-    .populate('comments.reactions.user', 'fullname fullName avatarUrl email jobTitle')
-    .populate('reactions.user', 'fullname fullName avatarUrl email jobTitle');
+    .populate('author', 'fullname fullName avatarUrl user_image sis_photo email department jobTitle')
+    .populate('tags', 'fullname fullName avatarUrl user_image sis_photo email')
+    .populate('comments.user', 'fullname fullName avatarUrl user_image sis_photo email')
+    .populate('comments.reactions.user', 'fullname fullName avatarUrl user_image sis_photo email jobTitle')
+    .populate('reactions.user', 'fullname fullName avatarUrl user_image sis_photo email jobTitle');
 }
 
 function paginationResponse(posts, totalPosts, page, limit) {
