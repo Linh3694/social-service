@@ -48,6 +48,14 @@ class FrappeService {
     };
   }
 
+  buildParentPortalAuthHeaders(token) {
+    return {
+      ...(token ? { 'X-Parent-Portal-Token': token } : {}),
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+  }
+
   /**
    * 🔑 Xác thực user bằng Bearer token từ mobile app
    */
@@ -336,12 +344,12 @@ class FrappeService {
   async getStudentClassScopes(studentId, token) {
     if (token) {
       try {
-        const response = await this.callMethod(
-          'erp.api.parent_portal.journal.get_student_class_scopes',
+        const response = await this.api.post(
+          '/api/method/erp.api.parent_portal.journal.get_student_class_scopes',
           { student_id: studentId },
-          token
+          { headers: this.buildParentPortalAuthHeaders(token) }
         );
-        const payload = response?.data || response;
+        const payload = response?.data?.message?.data || response?.data?.message || response?.data;
         if (Array.isArray(payload?.scopes)) {
           return payload.scopes;
         }
@@ -394,7 +402,7 @@ class FrappeService {
   async getCurrentGuardianData(token) {
     const response = await this.api.get(
       '/api/method/erp.api.parent_portal.otp_auth.get_current_guardian_comprehensive_data',
-      { headers: this.buildAuthHeaders(token) }
+      { headers: this.buildParentPortalAuthHeaders(token) }
     );
     return response.data?.message || response.data;
   }
