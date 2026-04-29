@@ -472,9 +472,16 @@ class FrappeService {
     const normalizeFamiliesPayload = (payload) => {
       if (Array.isArray(payload)) return payload;
       if (Array.isArray(payload?.data)) return payload.data;
+      if (Array.isArray(payload?.families)) return payload.families;
       if (payload && typeof payload === 'object') return [payload];
       return [];
     };
+
+    const relationshipStudentId = (relationship) =>
+      relationship?.student ||
+      relationship?.student_id ||
+      relationship?.student_details?.name ||
+      relationship?.student_details?.student_id;
 
     const enrichFamilyDetails = async (family) => {
       if (Array.isArray(family?.relationships) && family.relationships.length > 0) return family;
@@ -518,18 +525,31 @@ class FrappeService {
       }
     }));
 
+    if (familyPayloads.length === 0) {
+      try {
+        const payload = await this.callFrappeGetMethod('erp.api.erp_sis.family.get_all_families', {}, token);
+        const allFamilies = normalizeFamiliesPayload(payload);
+        const matchedFamilies = allFamilies.filter((family) =>
+          (family?.relationships || []).some((relationship) => studentIds.includes(relationshipStudentId(relationship)))
+        );
+        const families = await Promise.all(matchedFamilies.map(enrichFamilyDetails));
+        familyPayloads.push(...families);
+      } catch (error) {
+        console.warn('[FrappeService] Không lấy được get_all_families để dựng guardian directory:', error.message);
+      }
+    }
+
     familyPayloads.forEach((family) => {
       const familyCode = family?.family_code || family?.name;
       const relationships = Array.isArray(family?.relationships) ? family.relationships : [];
-      const guardiansByKey = family?.guardians && typeof family.guardians === 'object'
-        ? family.guardians
-        : {};
+      const guardiansByKey = Array.isArray(family?.guardians)
+        ? Object.fromEntries(family.guardians.map((guardian) => [guardian.name || guardian.guardian_id || guardian.guardian_name, guardian]))
+        : family?.guardians && typeof family.guardians === 'object'
+          ? family.guardians
+          : {};
 
       relationships.forEach((relationship) => {
-        const studentId =
-          relationship.student ||
-          relationship.student_id ||
-          relationship.student_details?.name;
+        const studentId = relationshipStudentId(relationship);
         if (!studentIds.includes(studentId)) return;
 
         const guardian =
