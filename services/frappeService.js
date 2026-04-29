@@ -1,4 +1,5 @@
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 require('dotenv').config({ path: './config.env' });
 
 /**
@@ -54,6 +55,18 @@ class FrappeService {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
     };
+  }
+
+  decodeParentPortalToken(token) {
+    if (!token) return null;
+    try {
+      const decoded = jwt.decode(token);
+      if (!decoded || typeof decoded !== 'object') return null;
+      if (decoded.exp && decoded.exp * 1000 < Date.now()) return null;
+      return decoded;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -365,7 +378,7 @@ class FrappeService {
         fields: JSON.stringify(['name', 'class_id', 'school_year_id', 'class_type']),
         limit_page_length: 1000,
         order_by: 'modified desc',
-      }, token);
+      }, null);
     } catch (error) {
       console.warn('[FrappeService] Không lấy được lịch sử lớp qua Resource API:', error.message);
       return [];
@@ -381,7 +394,8 @@ class FrappeService {
 
       let metadata = null;
       try {
-        metadata = await this.getClassMetadata(row.class_id, token);
+        // Dùng service key cho fallback Resource API, tránh Frappe xử lý Guardian JWT như session.
+        metadata = await this.getClassMetadata(row.class_id, null);
       } catch (error) {
         console.warn('[FrappeService] Không lấy được metadata lớp của học sinh:', error.message);
       }
@@ -408,10 +422,29 @@ class FrappeService {
   }
 
   async verifyGuardianStudentAccess(studentId, token) {
-    const data = await this.getCurrentGuardianData(token);
-    const payload = data?.data || data;
-    const students = Array.isArray(payload?.students) ? payload.students : [];
-    return students.some((student) => student?.name === studentId);
+    try {
+      const data = await this.getCurrentGuardianData(token);
+      const payload = data?.data || data;
+      const students = Array.isArray(payload?.students) ? payload.students : [];
+      if (students.some((student) => student?.name === studentId)) return true;
+    } catch (error) {
+      console.warn('[FrappeService] Guardian comprehensive data failed, fallback relationship:', error.message);
+    }
+
+    const decoded = this.decodeParentPortalToken(token);
+    const guardianName = decoded?.guardian;
+    if (!guardianName) return false;
+
+    const rows = await this.listResources('CRM Family Relationship', {
+      filters: JSON.stringify([
+        ['CRM Family Relationship', 'guardian', '=', guardianName],
+        ['CRM Family Relationship', 'student', '=', studentId],
+      ]),
+      fields: JSON.stringify(['name', 'student', 'guardian', 'access']),
+      limit_page_length: 1,
+    }, null);
+
+    return rows.some((row) => row.student === studentId && row.guardian === guardianName);
   }
 
   async authenticateParentGuardian(token) {
