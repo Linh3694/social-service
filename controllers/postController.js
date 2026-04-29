@@ -423,11 +423,11 @@ exports.getPostById = async (req, res) => {
     const { postId } = req.params;
     if (!mongoose.Types.ObjectId.isValid(postId)) return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
     const post = await Post.findById(postId)
-      .populate('author', 'fullname avatarUrl email department jobTitle')
-      .populate('tags', 'fullname avatarUrl email')
-      .populate('comments.user', 'fullname avatarUrl email')
-      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('reactions.user', 'fullname avatarUrl email jobTitle');
+      .populate('author', POST_AUTHOR_SELECT)
+      .populate('tags', POST_USER_SELECT)
+      .populate('comments.user', POST_USER_SELECT)
+      .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
+      .populate('reactions.user', POST_REACTION_USER_SELECT);
     if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
     const userDepartment = req.user?.department;
     if (post.visibility === 'department' && post.department && post.department !== userDepartment) return res.status(403).json({ success: false, message: 'Bạn không có quyền xem bài viết này' });
@@ -504,11 +504,11 @@ exports.updatePost = async (req, res) => {
     if (isPinned !== undefined && isMobileBOD) updateData.isPinned = isPinned;
     
     const updated = await Post.findByIdAndUpdate(postId, updateData, { new: true, runValidators: true })
-      .populate('author', 'fullname avatarUrl email department jobTitle')
-      .populate('tags', 'fullname avatarUrl email')
-      .populate('comments.user', 'fullname avatarUrl email')
-      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('reactions.user', 'fullname avatarUrl email jobTitle');
+      .populate('author', POST_AUTHOR_SELECT)
+      .populate('tags', POST_USER_SELECT)
+      .populate('comments.user', POST_USER_SELECT)
+      .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
+      .populate('reactions.user', POST_REACTION_USER_SELECT);
       
     res.status(200).json({ success: true, message: 'Cập nhật bài viết thành công', data: updated });
   } catch (error) {
@@ -556,11 +556,11 @@ exports.addReaction = async (req, res) => {
     else { post.reactions.push({ user: userId, type: type.trim(), createdAt: new Date() }); }
     await post.save();
     const updated = await Post.findById(postId)
-      .populate('author', 'fullname avatarUrl email')
-      .populate('reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('comments.user', 'fullname avatarUrl email')
-      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('tags', 'fullname avatarUrl email');
+      .populate('author', POST_AUTHOR_SELECT)
+      .populate('reactions.user', POST_REACTION_USER_SELECT)
+      .populate('comments.user', POST_USER_SELECT)
+      .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
+      .populate('tags', POST_USER_SELECT);
     if (post.author.toString() !== userId.toString()) {
       // Lấy email của post author để gửi notification
       const author = await User.findById(post.author).select('email');
@@ -585,10 +585,10 @@ exports.removeReaction = async (req, res) => {
     post.reactions = post.reactions.filter(r => r.user.toString() !== userId.toString());
     await post.save();
     const updated = await Post.findById(postId)
-      .populate('author', 'fullname avatarUrl email')
-      .populate('reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('comments.user', 'fullname avatarUrl email')
-      .populate('tags', 'fullname avatarUrl email');
+      .populate('author', POST_AUTHOR_SELECT)
+      .populate('reactions.user', POST_REACTION_USER_SELECT)
+      .populate('comments.user', POST_USER_SELECT)
+      .populate('tags', POST_USER_SELECT);
     res.status(200).json({ success: true, message: 'Xóa reaction thành công', data: updated });
   } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi xóa reaction', error: error.message }); }
 };
@@ -621,8 +621,8 @@ exports.addComment = async (req, res) => {
     await post.save();
     
     const updated = await Post.findById(postId)
-      .populate('author', 'fullname avatarUrl email')
-      .populate('comments.user', 'fullname avatarUrl email');
+      .populate('author', POST_AUTHOR_SELECT)
+      .populate('comments.user', POST_USER_SELECT);
     
     const newCommentId = updated.comments[updated.comments.length - 1]._id;
     
@@ -732,9 +732,9 @@ exports.deleteComment = async (req, res) => {
     await post.save();
     
     const updated = await Post.findById(postId)
-      .populate('author', 'fullname avatarUrl email')
-      .populate('comments.user', 'fullname avatarUrl email')
-      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle');
+      .populate('author', POST_AUTHOR_SELECT)
+      .populate('comments.user', POST_USER_SELECT)
+      .populate('comments.reactions.user', POST_REACTION_USER_SELECT);
       
     res.status(200).json({ 
       success: true, 
@@ -777,10 +777,10 @@ exports.replyComment = async (req, res) => {
     await post.save();
 
     const updated = await Post.findById(postId)
-      .populate('author', 'fullname avatarUrl email')
-      .populate('reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('comments.user', 'fullname avatarUrl email')
-      .populate('tags', 'fullname avatarUrl email');
+      .populate('author', POST_AUTHOR_SELECT)
+      .populate('reactions.user', POST_REACTION_USER_SELECT)
+      .populate('comments.user', POST_USER_SELECT)
+      .populate('tags', POST_USER_SELECT);
 
     const newReplyId = updated.comments[updated.comments.length - 1]._id;
 
@@ -873,11 +873,11 @@ exports.addCommentReaction = async (req, res) => {
 
     await post.save();
     const updated = await Post.findById(postId)
-      .populate('author', 'fullname avatarUrl email')
-      .populate('reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('comments.user', 'fullname avatarUrl email')
-      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('tags', 'fullname avatarUrl email');
+      .populate('author', POST_AUTHOR_SELECT)
+      .populate('reactions.user', POST_REACTION_USER_SELECT)
+      .populate('comments.user', POST_USER_SELECT)
+      .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
+      .populate('tags', POST_USER_SELECT);
 
     // Gửi notification cho author của comment
     if (comment.user.toString() !== userId.toString()) {
@@ -922,11 +922,11 @@ exports.removeCommentReaction = async (req, res) => {
 
     await post.save();
     const updated = await Post.findById(postId)
-      .populate('author', 'fullname avatarUrl email')
-      .populate('reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('comments.user', 'fullname avatarUrl email')
-      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('tags', 'fullname avatarUrl email');
+      .populate('author', POST_AUTHOR_SELECT)
+      .populate('reactions.user', POST_REACTION_USER_SELECT)
+      .populate('comments.user', POST_USER_SELECT)
+      .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
+      .populate('tags', POST_USER_SELECT);
 
     return res.status(200).json({ success: true, message: 'Xoá reaction của comment thành công', data: updated });
   } catch (error) {
@@ -959,11 +959,11 @@ exports.pinPost = async (req, res) => {
     await post.save();
 
     const updated = await Post.findById(postId)
-      .populate('author', 'fullname avatarUrl email department jobTitle')
-      .populate('tags', 'fullname avatarUrl email')
-      .populate('comments.user', 'fullname avatarUrl email')
-      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('reactions.user', 'fullname avatarUrl email jobTitle');
+      .populate('author', POST_AUTHOR_SELECT)
+      .populate('tags', POST_USER_SELECT)
+      .populate('comments.user', POST_USER_SELECT)
+      .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
+      .populate('reactions.user', POST_REACTION_USER_SELECT);
 
     res.status(200).json({ 
       success: true, 
@@ -1004,11 +1004,11 @@ exports.unpinPost = async (req, res) => {
     await post.save();
 
     const updated = await Post.findById(postId)
-      .populate('author', 'fullname avatarUrl email department jobTitle')
-      .populate('tags', 'fullname avatarUrl email')
-      .populate('comments.user', 'fullname avatarUrl email')
-      .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-      .populate('reactions.user', 'fullname avatarUrl email jobTitle');
+      .populate('author', POST_AUTHOR_SELECT)
+      .populate('tags', POST_USER_SELECT)
+      .populate('comments.user', POST_USER_SELECT)
+      .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
+      .populate('reactions.user', POST_REACTION_USER_SELECT);
 
     res.status(200).json({ 
       success: true, 
@@ -1028,7 +1028,7 @@ exports.getPinnedPosts = async (req, res) => {
   try {
     const userDepartment = req.user.department;
     const filter = { isPinned: true, $or: [{ visibility: 'public' }, { visibility: 'department', department: userDepartment }] };
-    const pinned = await Post.find(filter).populate('author', 'fullname avatarUrl email department jobTitle').populate('tags', 'fullname avatarUrl email').sort({ updatedAt: -1 });
+    const pinned = await Post.find(filter).populate('author', POST_AUTHOR_SELECT).populate('tags', POST_USER_SELECT).sort({ updatedAt: -1 });
     res.status(200).json({ success: true, data: pinned });
   } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi lấy bài viết đã pin', error: error.message }); }
 };
