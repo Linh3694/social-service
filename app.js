@@ -26,16 +26,38 @@ if (!fs.existsSync(uploadPath)) fs.mkdirSync(uploadPath, { recursive: true });
 
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
+const frappeService = require('./services/frappeService');
+async function resolveSocketUser(token) {
+  let decoded = null;
+  try {
+    decoded = jwt.verify(token, process.env.JWT_SECRET || 'breakpoint');
+  } catch {
+    decoded = jwt.verify(token, process.env.PARENT_PORTAL_JWT_SECRET || process.env.JWT_SECRET || 'breakpoint');
+  }
+  const userEmail = decoded.sub || decoded.email;
+  let user = null;
+  if (userEmail) {
+    user = await User.findOne({ email: userEmail }).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image guardian_id');
+  }
+  if (!user && decoded.id) {
+    user = await User.findById(decoded.id).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image guardian_id');
+  }
+  if (!user && decoded.guardian) {
+    const frappeUser = await frappeService.authenticateParentGuardian(token);
+    user = await User.updateFromFrappe(frappeUser);
+  }
+  return user;
+}
+
 const io = new Server(server, {
   cors: { origin: '*' },
   allowRequest: async (req, callback) => {
     try {
       const token = req._query?.token;
       if (!token) return callback('unauthorized', false);
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.id).select('fullname fullName email role department');
+      const user = await resolveSocketUser(token);
       if (!user) return callback('unauthorized', false);
-      req.user = { _id: user._id, fullname: user.fullname || user.fullName, email: user.email, role: user.role, department: user.department };
+      req.user = user;
       callback(null, true);
     } catch (e) {
       return callback('unauthorized', false);
@@ -44,6 +66,32 @@ const io = new Server(server, {
 });
 
 global.io = io;
+
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+    if (!token) return next(new Error('unauthorized'));
+    const user = await resolveSocketUser(token);
+    if (!user) return next(new Error('unauthorized'));
+    socket.user = {
+      _id: user._id,
+      fullname: user.fullname || user.fullName,
+      fullName: user.fullName,
+      email: user.email,
+      role: user.role,
+      roles: user.roles || [],
+      department: user.department,
+      avatarUrl: user.avatarUrl,
+      user_image: user.user_image,
+      sis_photo: user.sis_photo,
+      guardian_image: user.guardian_image,
+      guardian_id: user.guardian_id,
+    };
+    next();
+  } catch (error) {
+    next(new Error('unauthorized'));
+  }
+});
 
 (async () => {
   try {
@@ -89,17 +137,25 @@ app.get('/health', async (req, res) => {
 
 // Models (ensure registered)
 require('./models/Post');
+require('./models/ChatConversation');
+require('./models/ChatMessage');
 // User model is already required above for socket auth
 
 // Socket for newfeed
 const NewfeedSocket = require('./utils/newfeedSocket');
 const newfeedSocket = new NewfeedSocket(io);
 app.set('newfeedSocket', newfeedSocket);
+const ChatSocket = require('./utils/chatSocket');
+const chatSocket = new ChatSocket(io);
+app.set('chatSocket', chatSocket);
 
 // Routes: mount path mới (/api/social) và giữ path cũ (/api/posts) để tương thích
 const postRoutes = require('./routes/postRoutes');
 const userRoutes = require('./routes/userRoutes');
+const chatRoutes = require('./routes/chatRoutes');
 
+// Chat routes phải mount trước postRoutes để /chat không bị bắt bởi /:postId
+app.use('/api/social/chat', chatRoutes);
 // Post routes
 app.use('/api/social', postRoutes);
 app.use('/api/posts', postRoutes);

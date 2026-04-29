@@ -1,0 +1,412 @@
+const ChatConversation = require('../models/ChatConversation');
+const ChatMessage = require('../models/ChatMessage');
+const User = require('../models/User');
+const frappeService = require('../services/frappeService');
+
+const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
+const CONVERSATION_TYPES = ['class_general', 'homeroom_guardians'];
+
+function getBearerToken(req) {
+  const authHeader = req.headers.authorization || '';
+  return authHeader.split(' ')[1] || '';
+}
+
+function userDisplayName(user) {
+  return user?.fullname || user?.fullName || user?.email || 'Người dùng';
+}
+
+function userAvatar(user) {
+  return user?.avatarUrl || user?.guardian_image || user?.user_image || user?.sis_photo || '';
+}
+
+function userRole(user) {
+  const roles = user?.roles || [];
+  if (roles.includes('Parent Portal User') || user?.guardian_id) return 'guardian';
+  return 'teacher';
+}
+
+function normalizeEmail(value) {
+  return value ? String(value).trim().toLowerCase() : '';
+}
+
+function normalizeId(value) {
+  return value ? String(value).trim() : '';
+}
+
+function participantKey(user) {
+  return String(user?._id || '');
+}
+
+function matchesGuardianUser(user, guardian) {
+  const userEmail = normalizeEmail(user?.email);
+  const userGuardianId = normalizeId(user?.guardian_id);
+  const guardianKeys = [
+    guardian?.guardian_id,
+    guardian?.name,
+    guardian?.email,
+    guardian?.portalEmail,
+    ...(guardian?.matchKeys || []),
+  ].map((value) => normalizeEmail(value));
+
+  return Boolean(
+    (userEmail && guardianKeys.includes(userEmail)) ||
+    (userGuardianId && guardianKeys.includes(normalizeEmail(userGuardianId)))
+  );
+}
+
+function scopeSummary(scope) {
+  return {
+    classId: scope.classId,
+    className: scope.className || scope.classTitle || scope.classId,
+    schoolYearId: scope.schoolYearId,
+    schoolYearName: scope.schoolYearName || scope.schoolYearTitle || scope.schoolYearId,
+  };
+}
+
+async function attachMongoUsers({ teachers, guardians }) {
+  const teacherEmails = teachers.map((teacher) => normalizeEmail(teacher.email)).filter(Boolean);
+  const guardianEmails = guardians
+    .flatMap((guardian) => [guardian.email, guardian.portalEmail])
+    .map(normalizeEmail)
+    .filter(Boolean);
+  const guardianIds = guardians.map((guardian) => normalizeId(guardian.guardian_id)).filter(Boolean);
+
+  const users = await User.find({
+    $or: [
+      ...(teacherEmails.length ? [{ email: { $in: teacherEmails } }] : []),
+      ...(guardianEmails.length ? [{ email: { $in: guardianEmails } }] : []),
+      ...(guardianIds.length ? [{ guardian_id: { $in: guardianIds } }] : []),
+    ],
+  }).select(USER_SELECT);
+
+  const byEmail = new Map(users.map((user) => [normalizeEmail(user.email), user]));
+  const byGuardianId = new Map(users.filter((user) => user.guardian_id).map((user) => [normalizeId(user.guardian_id), user]));
+
+  return { byEmail, byGuardianId };
+}
+
+async function buildConversationPayload(scope, type) {
+  const guardians = scope.guardians || [];
+  const teachers = scope.teachers || [];
+  const { byEmail, byGuardianId } = await attachMongoUsers({ teachers, guardians });
+
+  const teacherSnapshots = teachers.map((teacher) => ({
+    email: normalizeEmail(teacher.email),
+    name: teacher.name || teacher.email || teacher.teacherId,
+    teacherId: teacher.teacherId,
+    avatarUrl: teacher.avatarUrl || '',
+  }));
+
+  const guardianSnapshots = guardians.map((guardian) => ({
+    email: normalizeEmail(guardian.email || guardian.portalEmail),
+    name: guardian.guardian_name || guardian.name || guardian.email || guardian.portalEmail,
+    guardianId: guardian.guardian_id || guardian.name,
+    studentIds: (guardian.students || []).map((student) => student.student_id).filter(Boolean),
+    avatarUrl: guardian.guardian_image || '',
+  }));
+
+  const teacherParticipants = teacherSnapshots.map((teacher) => {
+    const user = byEmail.get(normalizeEmail(teacher.email));
+    return {
+      user: user?._id,
+      email: teacher.email,
+      name: teacher.name,
+      role: 'teacher',
+      teacherId: teacher.teacherId,
+      avatarUrl: teacher.avatarUrl || userAvatar(user),
+    };
+  });
+
+  const guardianParticipants = guardianSnapshots.map((guardian) => {
+    const user = byEmail.get(normalizeEmail(guardian.email)) || byGuardianId.get(normalizeId(guardian.guardianId));
+    return {
+      user: user?._id,
+      email: guardian.email || normalizeEmail(user?.email),
+      name: guardian.name,
+      role: 'guardian',
+      guardianId: guardian.guardianId,
+      studentIds: guardian.studentIds,
+      avatarUrl: guardian.avatarUrl || userAvatar(user),
+    };
+  });
+
+  const className = scope.className || scope.classTitle || scope.classId;
+  const schoolYearName = scope.schoolYearName || scope.schoolYearTitle || scope.schoolYearId;
+  const title = type === 'class_general'
+    ? `${className} - ${schoolYearName}`
+    : `GVCN ${className} - ${schoolYearName}`;
+
+  return {
+    type,
+    title,
+    classId: scope.classId,
+    className,
+    schoolYearId: scope.schoolYearId,
+    schoolYearName,
+    status: scope.isActive === false ? 'locked' : 'active',
+    lockedReason: scope.isActive === false ? 'Lớp/năm học cũ chỉ cho xem lại lịch sử' : undefined,
+    participants: [...teacherParticipants, ...guardianParticipants],
+    studentIds: (scope.students || []).map((student) => student.student_id).filter(Boolean),
+    guardians: guardianSnapshots,
+    teachers: teacherSnapshots,
+  };
+}
+
+async function ensureClassConversations({ classId, schoolYearId, token }) {
+  const scope = await frappeService.getClassChatScope(classId, schoolYearId, token);
+  if (!scope?.classId || !scope?.schoolYearId) {
+    const err = new Error('Không tìm thấy lớp/năm học để tạo nhóm chat');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const conversations = [];
+  for (const type of CONVERSATION_TYPES) {
+    const payload = await buildConversationPayload(scope, type);
+    const conversation = await ChatConversation.findOneAndUpdate(
+      { classId: payload.classId, schoolYearId: payload.schoolYearId, type },
+      {
+        $set: {
+          title: payload.title,
+          className: payload.className,
+          schoolYearName: payload.schoolYearName,
+          status: payload.status,
+          lockedReason: payload.lockedReason,
+          participants: payload.participants,
+          studentIds: payload.studentIds,
+          guardians: payload.guardians,
+          teachers: payload.teachers,
+        },
+        $setOnInsert: {
+          classId: payload.classId,
+          schoolYearId: payload.schoolYearId,
+          type,
+        },
+      },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+    conversations.push(conversation);
+  }
+
+  return conversations;
+}
+
+function canAccessConversation(conversation, user) {
+  const userId = String(user?._id || '');
+  const userEmail = normalizeEmail(user?.email);
+  const userGuardianId = normalizeId(user?.guardian_id);
+
+  return (conversation.participants || []).some((participant) => {
+    if (participant.user && String(participant.user) === userId) return true;
+    if (participant.email && normalizeEmail(participant.email) === userEmail) return true;
+    if (participant.guardianId && normalizeId(participant.guardianId) === userGuardianId) return true;
+    return false;
+  });
+}
+
+async function getConversationForUser(conversationId, user) {
+  const conversation = await ChatConversation.findById(conversationId);
+  if (!conversation || !canAccessConversation(conversation, user)) {
+    const err = new Error('Bạn không có quyền truy cập nhóm chat này');
+    err.statusCode = 403;
+    throw err;
+  }
+  return conversation;
+}
+
+function serializeConversation(conversation, user) {
+  const plain = conversation.toObject ? conversation.toObject() : conversation;
+  const key = participantKey(user);
+  const unreadCounts = plain.unreadCounts || {};
+  const unreadCount = unreadCounts instanceof Map
+    ? unreadCounts.get(key) || 0
+    : unreadCounts[key] || 0;
+  return {
+    ...plain,
+    unreadCount,
+  };
+}
+
+async function emitToConversation(conversationId, event, payload) {
+  if (global.io) {
+    global.io.to(`chat_${conversationId}`).emit(event, payload);
+  }
+}
+
+exports.listConversations = async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    const { classId, schoolYearId } = req.query;
+    let conversations = [];
+
+    if (classId) {
+      conversations = await ensureClassConversations({ classId, schoolYearId, token });
+    } else {
+      const scopes = await frappeService.getGuardianChatScopes(token);
+      const uniqueScopes = new Map();
+      scopes.forEach((scope) => {
+        if (!scope.classId || !scope.schoolYearId) return;
+        uniqueScopes.set(`${scope.classId}:${scope.schoolYearId}`, scopeSummary(scope));
+      });
+
+      for (const scope of uniqueScopes.values()) {
+        const ensured = await ensureClassConversations({
+          classId: scope.classId,
+          schoolYearId: scope.schoolYearId,
+          token,
+        });
+        conversations.push(...ensured);
+      }
+    }
+
+    const visible = conversations
+      .filter((conversation) => canAccessConversation(conversation, req.user) || userRole(req.user) === 'guardian')
+      .sort((a, b) => new Date(b.lastMessage?.createdAt || b.updatedAt) - new Date(a.lastMessage?.createdAt || a.updatedAt));
+
+    res.json({ success: true, data: visible.map((conversation) => serializeConversation(conversation, req.user)) });
+  } catch (error) {
+    console.error('[Chat] listConversations error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải nhóm chat' });
+  }
+};
+
+exports.getMessages = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '30', 10), 1), 100);
+    const skip = (page - 1) * limit;
+
+    const [messages, total] = await Promise.all([
+      ChatMessage.find({ conversation: conversation._id, isDeleted: false })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('sender', USER_SELECT),
+      ChatMessage.countDocuments({ conversation: conversation._id, isDeleted: false }),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        messages: messages.reverse(),
+        pagination: {
+          currentPage: page,
+          totalPages: Math.ceil(total / limit),
+          totalMessages: total,
+          hasNext: page < Math.ceil(total / limit),
+        },
+        conversation: serializeConversation(conversation, req.user),
+      },
+    });
+  } catch (error) {
+    console.error('[Chat] getMessages error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải tin nhắn' });
+  }
+};
+
+exports.sendMessage = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (conversation.status === 'locked') {
+      return res.status(423).json({ success: false, message: 'Nhóm chat năm học cũ chỉ cho xem lại lịch sử' });
+    }
+
+    const content = String(req.body.content || '').trim();
+    if (!content) {
+      return res.status(400).json({ success: false, message: 'Nội dung tin nhắn không được để trống' });
+    }
+
+    let replyTo;
+    if (req.body.replyTo) {
+      const replyMessage = await ChatMessage.findOne({
+        _id: req.body.replyTo,
+        conversation: conversation._id,
+        isDeleted: false,
+      });
+      if (replyMessage) {
+        replyTo = {
+          messageId: replyMessage._id,
+          content: replyMessage.content,
+          senderName: replyMessage.senderSnapshot?.name,
+        };
+      }
+    }
+
+    const message = await ChatMessage.create({
+      conversation: conversation._id,
+      sender: req.user._id,
+      senderSnapshot: {
+        name: userDisplayName(req.user),
+        email: req.user.email,
+        role: userRole(req.user),
+        avatarUrl: userAvatar(req.user),
+      },
+      content,
+      replyTo,
+      readBy: [{ user: req.user._id, readAt: new Date() }],
+    });
+
+    const unreadCounts = conversation.unreadCounts || new Map();
+    (conversation.participants || []).forEach((participant) => {
+      if (!participant.user) return;
+      const key = String(participant.user);
+      if (key === String(req.user._id)) {
+        unreadCounts.set(key, 0);
+      } else {
+        unreadCounts.set(key, (unreadCounts.get(key) || 0) + 1);
+      }
+    });
+
+    conversation.lastMessage = {
+      messageId: message._id,
+      content: message.content,
+      senderName: message.senderSnapshot.name,
+      senderId: req.user._id,
+      createdAt: message.createdAt,
+    };
+    conversation.unreadCounts = unreadCounts;
+    await conversation.save();
+
+    const populated = await ChatMessage.findById(message._id).populate('sender', USER_SELECT);
+    await emitToConversation(conversation._id, 'chat:message', {
+      conversation: serializeConversation(conversation, req.user),
+      message: populated,
+    });
+
+    res.status(201).json({ success: true, data: { message: populated, conversation: serializeConversation(conversation, req.user) } });
+  } catch (error) {
+    console.error('[Chat] sendMessage error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể gửi tin nhắn' });
+  }
+};
+
+exports.markRead = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    const key = participantKey(req.user);
+    conversation.unreadCounts = conversation.unreadCounts || new Map();
+    conversation.unreadCounts.set(key, 0);
+    await conversation.save();
+
+    await ChatMessage.updateMany(
+      {
+        conversation: conversation._id,
+        'readBy.user': { $ne: req.user._id },
+      },
+      { $push: { readBy: { user: req.user._id, readAt: new Date() } } }
+    );
+
+    await emitToConversation(conversation._id, 'chat:read', {
+      conversationId: String(conversation._id),
+      userId: String(req.user._id),
+    });
+
+    res.json({ success: true, data: serializeConversation(conversation, req.user) });
+  } catch (error) {
+    console.error('[Chat] markRead error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể đánh dấu đã đọc' });
+  }
+};
+
+exports.canAccessConversation = canAccessConversation;

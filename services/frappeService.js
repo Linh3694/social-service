@@ -356,6 +356,18 @@ class FrappeService {
     }
   }
 
+  async ensureChatPermissionDoctypes() {
+    if (this.chatPermissionDoctypesReady) return this.chatPermissionDoctypesReady;
+    this.chatPermissionDoctypesReady = Promise.all([
+      this.getDoctypeFieldnames('SIS Class'),
+      this.getDoctypeFieldnames('SIS Class Student'),
+      this.getDoctypeFieldnames('SIS Teacher'),
+      this.getDoctypeFieldnames('CRM Family Relationship'),
+      this.getDoctypeFieldnames('CRM Guardian'),
+    ]).then(() => true);
+    return this.chatPermissionDoctypesReady;
+  }
+
   async callFrappeGetMethod(methodName, params = {}, token) {
     const response = await this.api.get(`/api/method/${methodName}`, {
       params,
@@ -393,6 +405,50 @@ class FrappeService {
       schoolYearTitle: schoolYear?.title_vn || schoolYear?.title_en || cls.school_year_id,
       campusId: cls.campus_id,
       classType: cls.class_type,
+    };
+  }
+
+  async getClassChatScope(classId, schoolYearId, token) {
+    await this.ensureChatPermissionDoctypes();
+
+    const cls = await this.getResource('SIS Class', classId, token);
+    if (!cls) return null;
+
+    const metadata = await this.getClassMetadata(classId, token);
+    const directory = await this.getClassGuardianDirectory(classId, schoolYearId || cls.school_year_id, token);
+    const teacherIds = [cls.homeroom_teacher, cls.vice_homeroom_teacher].filter(Boolean);
+    const teachers = [];
+
+    await Promise.all(teacherIds.map(async (teacherId) => {
+      try {
+        const teacher = await this.getResource('SIS Teacher', teacherId, null);
+        const userId = teacher?.user_id;
+        let user = null;
+        if (userId) {
+          user = await this.getUserDetail(userId, null);
+        }
+        teachers.push({
+          teacherId,
+          email: user?.email || userId || '',
+          name: user?.full_name || user?.name || teacherId,
+          avatarUrl: user?.user_image || '',
+        });
+      } catch (error) {
+        console.warn(`[FrappeService] Không lấy được giáo viên chủ nhiệm ${teacherId}:`, error.message);
+        teachers.push({ teacherId, name: teacherId, email: '' });
+      }
+    }));
+
+    const effectiveSchoolYearId = schoolYearId || metadata?.schoolYearId || cls.school_year_id;
+    return {
+      classId: cls.name,
+      className: metadata?.classTitle || cls.title || cls.short_title || cls.name,
+      schoolYearId: effectiveSchoolYearId,
+      schoolYearName: metadata?.schoolYearTitle || effectiveSchoolYearId,
+      isActive: !cls.school_year_id || String(cls.school_year_id) === String(effectiveSchoolYearId),
+      students: directory.students || [],
+      guardians: directory.guardians || [],
+      teachers,
     };
   }
 
@@ -713,6 +769,35 @@ class FrappeService {
       { headers: this.buildParentPortalAuthHeaders(token) }
     );
     return response.data?.message || response.data;
+  }
+
+  async getGuardianChatScopes(token) {
+    await this.ensureChatPermissionDoctypes();
+
+    const data = await this.getCurrentGuardianData(token);
+    const payload = data?.data || data;
+    const students = Array.isArray(payload?.students) ? payload.students : [];
+    const scopes = [];
+    const seen = new Set();
+
+    for (const student of students) {
+      const studentId = student?.name || student?.student_id;
+      if (!studentId) continue;
+      const studentScopes = await this.getStudentClassScopes(studentId, token);
+      for (const scope of studentScopes) {
+        if (!scope?.classId) continue;
+        const key = `${studentId}:${scope.classId}:${scope.schoolYearId || ''}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        scopes.push({
+          ...scope,
+          studentId,
+          studentName: student.student_name || student.full_name || student.name,
+        });
+      }
+    }
+
+    return scopes;
   }
 
   async verifyGuardianStudentAccess(studentId, token) {
