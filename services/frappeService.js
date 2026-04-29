@@ -469,6 +469,24 @@ class FrappeService {
       guardianMap.set(key, existing);
     };
 
+    const addGuardiansFromStudentMethod = async () => {
+      try {
+        const payload = await this.callFrappePostMethod(
+          'erp.api.erp_sis.family.get_guardians_by_students',
+          { student_ids: studentIds },
+          token
+        );
+        const guardians = Array.isArray(payload) ? payload : payload?.guardians || [];
+        guardians.forEach((guardian) => {
+          (guardian.students || []).forEach((student) => {
+            addGuardian(guardian, { guardian: guardian.name }, student.student_id, student.family_code);
+          });
+        });
+      } catch (error) {
+        console.warn('[FrappeService] Không lấy được get_guardians_by_students:', error.message);
+      }
+    };
+
     const addGuardiansFromRelationships = async () => {
       try {
         const relationships = await this.listResources('CRM Family Relationship', {
@@ -569,6 +587,7 @@ class FrappeService {
       }
     }));
 
+    await addGuardiansFromStudentMethod();
     await addGuardiansFromRelationships();
 
     if (familyPayloads.length === 0) {
