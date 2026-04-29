@@ -239,8 +239,8 @@ exports.getClassFeed = async (req, res) => {
 };
 
 exports.getStudentFeed = async (req, res) => {
+  const { studentId, schoolYearId } = req.query;
   try {
-    const { studentId, schoolYearId } = req.query;
     if (!studentId) {
       return res.status(400).json({ success: false, message: 'Thiếu studentId' });
     }
