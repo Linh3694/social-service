@@ -379,7 +379,11 @@ class FrappeService {
           return payload.scopes;
         }
       } catch (error) {
-        console.warn('[FrappeService] Parent portal journal scope failed:', error.message);
+        console.warn('[FrappeService] Parent portal journal scope failed:', {
+          status: error?.response?.status,
+          message: error.message,
+          data: error?.response?.data,
+        });
         if (token) {
           // Với Parent Portal, không fallback Resource API vì sẽ bỏ qua kiểm tra quan hệ guardian-student.
           // Cần deploy Frappe method get_student_class_scopes để trả đúng scope lớp.
