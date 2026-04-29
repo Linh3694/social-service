@@ -345,10 +345,12 @@ function serializeConversation(conversation, user) {
 async function emitToConversation(conversation, event, payload) {
   if (global.io) {
     const conversationId = String(conversation?._id || conversation);
-    const userRooms = (conversation?.participants || [])
-      .map((participant) => participant.user && `user_${participant.user}`)
-      .filter(Boolean);
-    global.io.to([`chat_${conversationId}`, ...userRooms]).emit(event, payload);
+    const participantRooms = (conversation?.participants || []).flatMap((participant) => ([
+      participant.user && `user_${participant.user}`,
+      participant.email && `email_${normalizeEmail(participant.email)}`,
+      participant.guardianId && `guardian_${normalizeId(participant.guardianId).toLowerCase()}`,
+    ])).filter(Boolean);
+    global.io.to([`chat_${conversationId}`, ...participantRooms]).emit(event, payload);
   }
 }
 

@@ -1,6 +1,10 @@
 const ChatConversation = require('../models/ChatConversation');
 const { canAccessConversation } = require('../controllers/chatController');
 
+function normalizeRoomValue(value) {
+  return value ? String(value).trim().toLowerCase() : '';
+}
+
 class ChatSocket {
   constructor(io) {
     this.io = io;
@@ -17,6 +21,10 @@ class ChatSocket {
       if (socket.user?._id) {
         socket.join(`user_${socket.user._id}`);
       }
+      const emailRoom = normalizeRoomValue(socket.user?.email);
+      if (emailRoom) socket.join(`email_${emailRoom}`);
+      const guardianRoom = normalizeRoomValue(socket.user?.guardian_id);
+      if (guardianRoom) socket.join(`guardian_${guardianRoom}`);
 
       socket.on('chat:join', async ({ conversationId } = {}) => {
         try {
