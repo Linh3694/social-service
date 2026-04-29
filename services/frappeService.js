@@ -469,6 +469,50 @@ class FrappeService {
       guardianMap.set(key, existing);
     };
 
+    const addGuardiansFromRelationships = async () => {
+      try {
+        const relationships = await this.listResources('CRM Family Relationship', {
+          fields: JSON.stringify([
+            'parent',
+            'student',
+            'guardian',
+            'relationship_type',
+            'key_person',
+            'access',
+            'display_order',
+          ]),
+          filters: JSON.stringify([['student', 'in', studentIds]]),
+          limit_page_length: 1000,
+        });
+        const guardianIds = Array.from(new Set(
+          relationships.map((relationship) => relationship.guardian).filter(Boolean)
+        ));
+        if (guardianIds.length === 0) return;
+
+        const guardians = await this.listResources('CRM Guardian', {
+          fields: JSON.stringify([
+            'name',
+            'guardian_id',
+            'guardian_name',
+            'email',
+            'guardian_image',
+            'phone_number',
+          ]),
+          filters: JSON.stringify([['name', 'in', guardianIds]]),
+          limit_page_length: 1000,
+        });
+        const guardiansByName = Object.fromEntries(guardians.map((guardian) => [guardian.name, guardian]));
+
+        relationships.forEach((relationship) => {
+          const studentId = relationshipStudentId(relationship);
+          if (!studentIds.includes(studentId)) return;
+          addGuardian(guardiansByName[relationship.guardian], relationship, studentId, relationship.parent);
+        });
+      } catch (error) {
+        console.warn('[FrappeService] Không lấy được CRM Family Relationship để dựng guardian directory:', error.message);
+      }
+    };
+
     const normalizeFamiliesPayload = (payload) => {
       if (Array.isArray(payload)) return payload;
       if (Array.isArray(payload?.data)) return payload.data;
@@ -524,6 +568,8 @@ class FrappeService {
         console.warn(`[FrappeService] Không lấy được family theo học sinh ${studentId}:`, error.message);
       }
     }));
+
+    await addGuardiansFromRelationships();
 
     if (familyPayloads.length === 0) {
       try {
