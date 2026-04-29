@@ -60,6 +60,7 @@ function scopeSummary(scope) {
     className: scope.className || scope.classTitle || scope.classId,
     schoolYearId: scope.schoolYearId,
     schoolYearName: scope.schoolYearName || scope.schoolYearTitle || scope.schoolYearId,
+    classType: scope.classType,
     studentId: scope.studentId,
     studentName: scope.studentName,
   };
@@ -86,6 +87,7 @@ function buildFallbackGuardianScope(scope, user) {
     className: scope.className || scope.classTitle || scope.classId,
     schoolYearId: scope.schoolYearId,
     schoolYearName: scope.schoolYearName || scope.schoolYearTitle || scope.schoolYearId,
+    classType: scope.classType || 'regular',
     isActive: scope.isActive !== false,
     students: scope.studentId ? [student] : [],
     guardians: user ? [guardian] : [],
@@ -203,6 +205,9 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
     err.statusCode = 404;
     throw err;
   }
+  if (scope.classType && scope.classType !== 'regular') {
+    return [];
+  }
 
   if (trustedScope) {
     scope.className = trustedScope.className || scope.className;
@@ -297,18 +302,20 @@ exports.listConversations = async (req, res) => {
     } else {
       const scopes = await frappeService.getGuardianChatScopes(token);
       const uniqueScopes = new Map();
-      scopes.forEach((scope) => {
-        if (!scope.classId || !scope.schoolYearId) return;
-        uniqueScopes.set(`${scope.classId}:${scope.schoolYearId}`, scopeSummary(scope));
-      });
+      scopes
+        .filter((scope) => !scope.classType || scope.classType === 'regular')
+        .forEach((scope) => {
+          if (!scope.classId || !scope.schoolYearId) return;
+          uniqueScopes.set(`${scope.classId}:${scope.schoolYearId}`, scopeSummary(scope));
+        });
 
       for (const scope of uniqueScopes.values()) {
         const ensured = await ensureClassConversations({
           classId: scope.classId,
           schoolYearId: scope.schoolYearId,
-        token: null,
-        trustedScope: scope,
-        user: req.user,
+          token: null,
+          trustedScope: scope,
+          user: req.user,
         });
         conversations.push(...ensured);
       }

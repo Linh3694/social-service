@@ -445,6 +445,7 @@ class FrappeService {
       className: metadata?.classTitle || cls.title || cls.short_title || cls.name,
       schoolYearId: effectiveSchoolYearId,
       schoolYearName: metadata?.schoolYearTitle || effectiveSchoolYearId,
+      classType: metadata?.classType || cls.class_type,
       isActive: !cls.school_year_id || String(cls.school_year_id) === String(effectiveSchoolYearId),
       students: directory.students || [],
       guardians: directory.guardians || [],
