@@ -69,6 +69,18 @@ class FrappeService {
     }
   }
 
+  verifyParentPortalToken(token) {
+    if (!token) return null;
+    try {
+      const secret = process.env.PARENT_PORTAL_JWT_SECRET || process.env.JWT_SECRET || 'breakpoint';
+      const decoded = jwt.verify(token, secret);
+      if (!decoded || typeof decoded !== 'object') return null;
+      return decoded;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * 🔑 Xác thực user bằng Bearer token từ mobile app
    */
@@ -368,6 +380,10 @@ class FrappeService {
         }
       } catch (error) {
         console.warn('[FrappeService] Parent portal journal scope failed, fallback resource:', error.message);
+        if (token) {
+          // Với Parent Portal, không fallback Resource API vì sẽ bỏ qua kiểm tra quan hệ guardian-student.
+          return [];
+        }
       }
     }
 
