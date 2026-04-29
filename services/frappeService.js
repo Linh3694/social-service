@@ -406,6 +406,37 @@ class FrappeService {
     return students.some((student) => student?.name === studentId);
   }
 
+  async authenticateParentGuardian(token) {
+    const data = await this.getCurrentGuardianData(token);
+    const payload = data?.data || data;
+    const guardian = payload?.guardian;
+    const portalUser = payload?.user;
+
+    if (!guardian && !portalUser) {
+      throw new Error('Parent portal user not found');
+    }
+
+    const email =
+      portalUser?.email ||
+      guardian?.email ||
+      (guardian?.guardian_id ? `${guardian.guardian_id}@parent.wellspring.edu.vn` : undefined) ||
+      guardian?.name;
+
+    if (!email) {
+      throw new Error('Parent portal user email is missing');
+    }
+
+    return {
+      name: email,
+      email,
+      full_name: portalUser?.full_name || guardian?.guardian_name || guardian?.name || email,
+      roles: ['Parent Portal User'],
+      enabled: 1,
+      docstatus: 0,
+      user_type: 'Website User',
+    };
+  }
+
   /**
    * 📨 Gửi Wislife notification đến Frappe
    * Pattern giống ticket-service: local auth với headers X-Service-Name và X-Request-Source

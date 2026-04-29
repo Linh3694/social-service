@@ -34,7 +34,13 @@ const authenticate = async (req, res, next) => {
     if (!user || !user.roles || user.roles.length === 0) {
       try {
         // Bước 1: Xác thực token với Frappe
-        const frappeUser = await frappeService.authenticateUser(token);
+        let frappeUser;
+        try {
+          frappeUser = await frappeService.authenticateUser(token);
+        } catch (authError) {
+          // Token Parent Portal OTP không phải lúc nào cũng đi qua endpoint user chung.
+          frappeUser = await frappeService.authenticateParentGuardian(token);
+        }
         
         // Bước 2: Nếu không có roles đầy đủ, lấy thêm user detail
         if (!frappeUser.roles || frappeUser.roles.length === 0) {
