@@ -60,6 +60,36 @@ function scopeSummary(scope) {
     className: scope.className || scope.classTitle || scope.classId,
     schoolYearId: scope.schoolYearId,
     schoolYearName: scope.schoolYearName || scope.schoolYearTitle || scope.schoolYearId,
+    studentId: scope.studentId,
+    studentName: scope.studentName,
+  };
+}
+
+function buildFallbackGuardianScope(scope, user) {
+  const student = {
+    student_id: scope.studentId,
+    student_name: scope.studentName,
+  };
+  const guardian = {
+    name: user?.guardian_id || user?.email,
+    guardian_id: user?.guardian_id,
+    guardian_name: userDisplayName(user),
+    email: user?.email,
+    portalEmail: user?.email,
+    guardian_image: userAvatar(user),
+    students: scope.studentId ? [student] : [],
+    matchKeys: [user?.email, user?.guardian_id].filter(Boolean).map((value) => String(value).toLowerCase()),
+  };
+
+  return {
+    classId: scope.classId,
+    className: scope.className || scope.classTitle || scope.classId,
+    schoolYearId: scope.schoolYearId,
+    schoolYearName: scope.schoolYearName || scope.schoolYearTitle || scope.schoolYearId,
+    isActive: scope.isActive !== false,
+    students: scope.studentId ? [student] : [],
+    guardians: user ? [guardian] : [],
+    teachers: [],
   };
 }
 
@@ -152,10 +182,22 @@ async function buildConversationPayload(scope, type) {
   };
 }
 
-async function ensureClassConversations({ classId, schoolYearId, token, trustedScope }) {
+async function ensureClassConversations({ classId, schoolYearId, token, trustedScope, user }) {
   // Với guardian, token Parent Portal chỉ dùng để lấy scope hợp lệ trước đó.
   // Sau khi đã verify scope, đọc metadata lớp bằng service key để tránh Frappe Resource API trả 403.
-  const scope = await frappeService.getClassChatScope(classId, schoolYearId, trustedScope ? null : token);
+  let scope;
+  try {
+    scope = await frappeService.getClassChatScope(classId, schoolYearId, trustedScope ? null : token);
+  } catch (error) {
+    if (!trustedScope) throw error;
+    console.warn('[Chat] Không đọc được metadata lớp bằng service key, dùng scope guardian fallback:', {
+      classId,
+      schoolYearId,
+      status: error?.response?.status,
+      message: error.message,
+    });
+    scope = buildFallbackGuardianScope(trustedScope, user);
+  }
   if (!scope?.classId || !scope?.schoolYearId) {
     const err = new Error('Không tìm thấy lớp/năm học để tạo nhóm chat');
     err.statusCode = 404;
@@ -266,6 +308,7 @@ exports.listConversations = async (req, res) => {
           schoolYearId: scope.schoolYearId,
         token: null,
         trustedScope: scope,
+        user: req.user,
         });
         conversations.push(...ensured);
       }
