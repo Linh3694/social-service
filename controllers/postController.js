@@ -50,11 +50,9 @@ function normalizeLookupKey(value) {
 function buildGuardianLookup(guardians = []) {
   const lookup = new Map();
   guardians.forEach((guardian) => {
+    const displayNameKey = normalizeLookupKey(guardian.guardian_name);
     const uniqueMatchKeys = (guardian.matchKeys || []).filter((key) => (
-      key &&
-      key !== guardian.guardian_name &&
-      key !== guardian.fullname &&
-      key !== guardian.fullName
+      key && normalizeLookupKey(key) !== displayNameKey
     ));
     [
       guardian.name,
