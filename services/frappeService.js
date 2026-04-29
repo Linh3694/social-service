@@ -51,6 +51,9 @@ class FrappeService {
 
   buildParentPortalAuthHeaders(token) {
     return {
+      ...(this.apiKey && this.apiSecret
+        ? { 'Authorization': `token ${this.apiKey}:${this.apiSecret}` }
+        : {}),
       ...(token ? { 'X-Parent-Portal-Token': token } : {}),
       'Accept': 'application/json',
       'Content-Type': 'application/json',
