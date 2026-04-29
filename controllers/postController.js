@@ -298,7 +298,12 @@ exports.getClassGuardianDirectory = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Thiếu classId' });
     }
 
-    const data = await frappeService.getClassGuardianDirectory(String(classId), schoolYearId ? String(schoolYearId) : undefined);
+    const token = getBearerToken(req);
+    const data = await frappeService.getClassGuardianDirectory(
+      String(classId),
+      schoolYearId ? String(schoolYearId) : undefined,
+      token
+    );
     return res.status(200).json({ success: true, data });
   } catch (error) {
     console.error('[PostController] getClassGuardianDirectory error:', error);

@@ -396,26 +396,20 @@ class FrappeService {
     };
   }
 
-  async getClassGuardianDirectory(classId, schoolYearId) {
+  async getClassGuardianDirectory(classId, schoolYearId, token) {
     if (!classId) return { guardians: [], students: [] };
 
-    // Đọc metadata doctype trước để tránh hard-code field không tồn tại khi query Resource API.
-    const [classStudentFields, studentFields] = await Promise.all([
-      this.getDoctypeFieldnames('SIS Class Student'),
-      this.getDoctypeFieldnames('SIS Student'),
-    ]);
-
-    const classStudentSelect = ['name', 'class_id', 'student_id', 'school_year_id', 'class_type']
-      .filter((field) => field === 'name' || classStudentFields.size === 0 || classStudentFields.has(field));
-    const filters = [['SIS Class Student', 'class_id', '=', classId]];
-    if (schoolYearId) filters.push(['SIS Class Student', 'school_year_id', '=', schoolYearId]);
-
-    const classRows = await this.listResources('SIS Class Student', {
-      filters: JSON.stringify(filters),
-      fields: JSON.stringify(classStudentSelect),
-      limit_page_length: 1000,
-      order_by: 'student_id asc',
-    }, null);
+    const classRowsPayload = await this.callFrappeGetMethod(
+      'erp.api.erp_sis.class_student.get_all_class_students_no_pagination',
+      {
+        class_id: classId,
+        ...(schoolYearId ? { school_year_id: schoolYearId } : {}),
+      },
+      token
+    );
+    const classRows = Array.isArray(classRowsPayload)
+      ? classRowsPayload
+      : classRowsPayload?.data || [];
 
     const studentIds = Array.from(new Set(classRows.map((row) => row.student_id).filter(Boolean)));
     if (studentIds.length === 0) return { guardians: [], students: [] };
@@ -424,20 +418,10 @@ class FrappeService {
     try {
       const payload = await this.callFrappePostMethod('erp.api.erp_sis.student.batch_get_students', {
         student_ids: studentIds,
-      }, null);
+      }, token);
       students = Array.isArray(payload) ? payload : payload?.data || [];
     } catch (error) {
-      console.warn('[FrappeService] batch_get_students failed, fallback Resource API:', error.message);
-    }
-
-    if (!Array.isArray(students) || students.length === 0) {
-      const studentSelect = ['name', 'student_name', 'student_code', 'family_code']
-        .filter((field) => field === 'name' || studentFields.size === 0 || studentFields.has(field));
-      students = await this.listResources('SIS Student', {
-        filters: JSON.stringify([['SIS Student', 'name', 'in', studentIds]]),
-        fields: JSON.stringify(studentSelect),
-        limit_page_length: 1000,
-      }, null);
+      console.warn('[FrappeService] batch_get_students failed:', error.message);
     }
 
     const studentMap = new Map(students.map((student) => [student.name, student]));
@@ -493,7 +477,7 @@ class FrappeService {
       try {
         const family = await this.callFrappeGetMethod('erp.api.erp_sis.family.get_family_details', {
           family_code: familyCode,
-        }, null);
+        }, token);
         const relationships = Array.isArray(family?.relationships) ? family.relationships : [];
         const guardiansByKey = family?.guardians && typeof family.guardians === 'object'
           ? family.guardians
