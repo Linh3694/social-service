@@ -8,6 +8,10 @@ const redisClient = require('../config/redis');
 const frappeService = require('../services/frappeService');
 const { resolveMentions, getMentionedUserEmails } = require('../utils/mentionUtils');
 
+const POST_AUTHOR_SELECT = 'fullname fullName avatarUrl user_image sis_photo guardian_image email department jobTitle';
+const POST_USER_SELECT = 'fullname fullName avatarUrl user_image sis_photo guardian_image email';
+const POST_REACTION_USER_SELECT = 'fullname fullName avatarUrl user_image sis_photo guardian_image email jobTitle';
+
 /**
  * Gửi notification đến Frappe (fire-and-forget, không block response)
  * Timeout ngắn để không chờ quá lâu
@@ -32,11 +36,11 @@ function parsePagination(query) {
 
 function populatePostQuery(query) {
   return query
-    .populate('author', 'fullname fullName avatarUrl user_image sis_photo email department jobTitle')
-    .populate('tags', 'fullname fullName avatarUrl user_image sis_photo email')
-    .populate('comments.user', 'fullname fullName avatarUrl user_image sis_photo email')
-    .populate('comments.reactions.user', 'fullname fullName avatarUrl user_image sis_photo email jobTitle')
-    .populate('reactions.user', 'fullname fullName avatarUrl user_image sis_photo email jobTitle');
+    .populate('author', POST_AUTHOR_SELECT)
+    .populate('tags', POST_USER_SELECT)
+    .populate('comments.user', POST_USER_SELECT)
+    .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
+    .populate('reactions.user', POST_REACTION_USER_SELECT);
 }
 
 function paginationResponse(posts, totalPosts, page, limit) {

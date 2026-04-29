@@ -72,7 +72,10 @@ function formatFrappeUser(frappeUser) {
     fullname: fullName,
     fullName: fullName,
     username: frappeUser.username || frappeUser.name,
-    avatarUrl: frappeUser.user_image || frappeUser.userImage || frappeUser.avatar || frappeUser.avatar_url || '',
+    avatarUrl: frappeUser.guardian_image || frappeUser.user_image || frappeUser.userImage || frappeUser.avatar || frappeUser.avatar_url || '',
+    user_image: frappeUser.user_image || frappeUser.userImage || '',
+    sis_photo: frappeUser.sis_photo || frappeUser.photo || '',
+    guardian_image: frappeUser.guardian_image || '',
     department: frappeUser.department || frappeUser.location || '',
     jobTitle: frappeUser.job_title || frappeUser.designation || 'User',
     provider: 'frappe',
@@ -339,6 +342,10 @@ const webhookUserChanged = async (req, res) => {
       // Conditional updates
       if (doc.user_image) {
         userData.avatarUrl = doc.user_image;
+        userData.user_image = doc.user_image;
+      } else if (doc.guardian_image) {
+        userData.avatarUrl = doc.guardian_image;
+        userData.guardian_image = doc.guardian_image;
       } else if (!existingUser) {
         userData.avatarUrl = '';
       }
