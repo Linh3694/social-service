@@ -472,12 +472,32 @@ class FrappeService {
       throw new Error('Parent portal user email is missing');
     }
 
+    const guardianKeys = new Set(
+      [guardian?.name, guardian?.guardian_id, guardian?.guardian_name]
+        .map((value) => (value || '').toString().trim())
+        .filter(Boolean)
+    );
+    const guardianImageFromRelationships = (payload?.families || [])
+      .flatMap((family) => family?.relationships || [])
+      .find((relationship) => {
+        const details = relationship?.guardian_details;
+        return [
+          details?.name,
+          details?.guardian_id,
+          details?.guardian_name,
+          relationship?.guardian_name,
+        ]
+          .map((value) => (value || '').toString().trim())
+          .some((value) => value && guardianKeys.has(value));
+      })?.guardian_details?.guardian_image;
+    const guardianImage = guardianImageFromRelationships || guardian?.guardian_image || portalUser?.guardian_image || '';
+
     return {
       name: email,
       email,
       full_name: portalUser?.full_name || guardian?.guardian_name || guardian?.name || email,
-      guardian_image: guardian?.guardian_image || portalUser?.guardian_image || '',
-      avatar: guardian?.guardian_image || portalUser?.guardian_image || '',
+      guardian_image: guardianImage,
+      avatar: guardianImage,
       roles: ['Parent Portal User'],
       enabled: 1,
       docstatus: 0,
