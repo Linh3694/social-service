@@ -280,7 +280,25 @@ exports.getStudentFeed = async (req, res) => {
       classScopes: scopes,
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: 'Lỗi server khi lấy Nhật ký học sinh', error: error.message });
+    const upstreamStatus = error?.response?.status;
+    const upstreamData = error?.response?.data;
+    const upstreamMessage =
+      upstreamData?.message?.message ||
+      upstreamData?.message ||
+      upstreamData?._server_messages ||
+      upstreamData?.exception ||
+      error.message;
+    console.error('[StudentFeed] Lỗi lấy Nhật ký học sinh:', {
+      status: upstreamStatus,
+      message: upstreamMessage,
+      studentId,
+    });
+    return res.status(500).json({
+      success: false,
+      message: 'Lỗi server khi lấy Nhật ký học sinh',
+      error: upstreamMessage,
+      upstreamStatus,
+    });
   }
 };
 
