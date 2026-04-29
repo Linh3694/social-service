@@ -125,7 +125,18 @@ async function attachMongoUsers({ teachers, guardians }) {
   return { byEmail, byGuardianId };
 }
 
-async function buildConversationPayload(scope, type) {
+function buildCurrentTeacherParticipant(user) {
+  if (!user || userRole(user) !== 'teacher') return null;
+  return {
+    user: user._id,
+    email: normalizeEmail(user.email),
+    name: userDisplayName(user),
+    role: 'teacher',
+    avatarUrl: userAvatar(user),
+  };
+}
+
+async function buildConversationPayload(scope, type, requestUser) {
   const guardians = scope.guardians || [];
   const teachers = scope.teachers || [];
   const { byEmail, byGuardianId } = await attachMongoUsers({ teachers, guardians });
@@ -156,6 +167,21 @@ async function buildConversationPayload(scope, type) {
       avatarUrl: teacher.avatarUrl || userAvatar(user),
     };
   });
+  const currentTeacherParticipant = buildCurrentTeacherParticipant(requestUser);
+  if (currentTeacherParticipant) {
+    const hasCurrentTeacher = teacherParticipants.some((participant) => (
+      (participant.user && String(participant.user) === String(currentTeacherParticipant.user)) ||
+      (participant.email && participant.email === currentTeacherParticipant.email)
+    ));
+    if (!hasCurrentTeacher) {
+      teacherParticipants.push(currentTeacherParticipant);
+      teacherSnapshots.push({
+        email: currentTeacherParticipant.email,
+        name: currentTeacherParticipant.name,
+        avatarUrl: currentTeacherParticipant.avatarUrl,
+      });
+    }
+  }
 
   const guardianParticipants = guardianSnapshots.map((guardian) => {
     const user = byEmail.get(normalizeEmail(guardian.email)) || byGuardianId.get(normalizeId(guardian.guardianId));
@@ -224,7 +250,7 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
 
   const conversations = [];
   for (const type of CONVERSATION_TYPES) {
-    const payload = await buildConversationPayload(scope, type);
+    const payload = await buildConversationPayload(scope, type, user);
     const conversation = await ChatConversation.findOneAndUpdate(
       { classId: payload.classId, schoolYearId: payload.schoolYearId, type },
       {
@@ -306,7 +332,7 @@ exports.listConversations = async (req, res) => {
     let conversations = [];
 
     if (classId) {
-      conversations = await ensureClassConversations({ classId, schoolYearId, token });
+      conversations = await ensureClassConversations({ classId, schoolYearId, token, user: req.user });
     } else {
       const scopes = await frappeService.getGuardianChatScopes(token);
       const uniqueScopes = new Map();
