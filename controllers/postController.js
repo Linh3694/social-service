@@ -369,7 +369,20 @@ exports.getClassFeed = async (req, res) => {
       Post.countDocuments(filter),
     ]);
 
-    return res.status(200).json({ success: true, data: paginationResponse(posts, totalPosts, page, limit) });
+    let enrichedPosts = posts;
+    try {
+      const token = getBearerToken(req);
+      const directory = await frappeService.getClassGuardianDirectory(
+        String(classId),
+        schoolYearId ? String(schoolYearId) : undefined,
+        token
+      );
+      enrichedPosts = enrichPostsWithGuardianDirectory(posts, directory.guardians || []);
+    } catch (directoryError) {
+      console.warn('[PostController] Không enrich được guardian directory cho class feed:', directoryError.message);
+    }
+
+    return res.status(200).json({ success: true, data: paginationResponse(enrichedPosts, totalPosts, page, limit) });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Lỗi server khi lấy Nhật ký lớp', error: error.message });
   }
