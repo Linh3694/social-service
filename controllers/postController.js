@@ -19,9 +19,89 @@ function notify(event, data) {
     .catch(e => console.error(`[Social Service] ⚠️ Notification error (${event}):`, e.message));
 }
 
+function getBearerToken(req) {
+  const authHeader = req.headers.authorization || '';
+  return authHeader.split(' ')[1] || '';
+}
+
+function parsePagination(query) {
+  const page = Math.max(parseInt(query.page || '1', 10), 1);
+  const limit = Math.min(Math.max(parseInt(query.limit || '10', 10), 1), 50);
+  return { page, limit, skip: (page - 1) * limit };
+}
+
+function populatePostQuery(query) {
+  return query
+    .populate('author', 'fullname avatarUrl email department jobTitle')
+    .populate('tags', 'fullname avatarUrl email')
+    .populate('comments.user', 'fullname avatarUrl email')
+    .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
+    .populate('reactions.user', 'fullname avatarUrl email jobTitle');
+}
+
+function paginationResponse(posts, totalPosts, page, limit) {
+  const totalPages = Math.ceil(totalPosts / limit);
+  return {
+    posts,
+    pagination: {
+      currentPage: page,
+      totalPages,
+      totalPosts,
+      hasNext: page < totalPages,
+      hasPrev: page > 1,
+    },
+  };
+}
+
+function normalizeAudience(value, classId) {
+  if (value === 'class' || classId) return 'class';
+  if (value === 'department') return 'department';
+  return 'public';
+}
+
+async function buildClassPostMetadata({ audienceType, classId, schoolYearId }) {
+  if (audienceType !== 'class') return {};
+  if (!classId || !schoolYearId) {
+    const err = new Error('Vui lòng chọn lớp và năm học cho bài viết Nhật ký');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const metadata = await frappeService.getClassMetadata(classId);
+  if (!metadata) {
+    const err = new Error('Không tìm thấy lớp để đăng bài');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (metadata.schoolYearId && metadata.schoolYearId !== schoolYearId) {
+    const err = new Error('Năm học không khớp với lớp đã chọn');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return {
+    audienceType: 'class',
+    classId: metadata.classId,
+    classTitle: metadata.classTitle,
+    schoolYearId: metadata.schoolYearId || schoolYearId,
+    schoolYearTitle: metadata.schoolYearTitle || schoolYearId,
+    campusId: metadata.campusId,
+  };
+}
+
 exports.createPost = async (req, res) => {
   try {
-    const { content, type = 'Chia sẻ', visibility = 'public', department, tags = [], badgeInfo } = req.body;
+    const {
+      content,
+      type = 'Chia sẻ',
+      visibility = 'public',
+      department,
+      tags = [],
+      badgeInfo,
+      classId,
+      schoolYearId,
+      audienceType: rawAudienceType,
+    } = req.body;
     // Bảo vệ khi req.user chưa đầy đủ (trường hợp GET pass-through không áp dụng cho POST)
     if (!req.user || !req.user._id) {
       return res.status(401).json({ success: false, message: 'Unauthorized - Missing user context' });
@@ -53,14 +133,24 @@ exports.createPost = async (req, res) => {
       });
     }
 
-    const postData = { author: authorId, content: content.trim(), type, visibility, tags: parsedTags, images, videos };
+    const audienceType = normalizeAudience(rawAudienceType, classId);
+    const classMetadata = await buildClassPostMetadata({ audienceType, classId, schoolYearId });
+    const postData = {
+      author: authorId,
+      content: content.trim(),
+      type,
+      visibility,
+      audienceType,
+      tags: parsedTags,
+      images,
+      videos,
+      ...classMetadata,
+    };
     if (visibility === 'department' && department) postData.department = department;
     if (type === 'Badge' && badgeInfo) { postData.badgeInfo = typeof badgeInfo === 'string' ? JSON.parse(badgeInfo) : badgeInfo; }
 
     const post = await Post.create(postData);
-    const populatedPost = await Post.findById(post._id)
-      .populate('author', 'fullname avatarUrl email department jobTitle')
-      .populate('tags', 'fullname avatarUrl email');
+    const populatedPost = await populatePostQuery(Post.findById(post._id));
 
     const newfeedSocket = req.app.get('newfeedSocket');
     if (newfeedSocket) await newfeedSocket.broadcastNewPost(populatedPost);
@@ -69,19 +159,14 @@ exports.createPost = async (req, res) => {
       notify('post_tagged', { postId: post._id.toString(), recipients: parsedTags, authorId, authorName: req.user.fullname });
     }
 
-    // Gửi notification đến tất cả users nếu author là BOD/Admin
+    // Bài Nhật ký theo lớp không broadcast toàn trường; feed Wislife cũ vẫn theo quyền BOD/IT.
     const authorRoles = req.user.roles || [];
-    console.log(`[CreatePost] 📋 Author: ${req.user.email}, Roles: [${authorRoles.join(', ')}]`);
-    
-    const isBODorAdmin = authorRoles.some(role => 
+    const isBODorAdmin = authorRoles.some(role =>
       role === 'Mobile BOD' || role === 'Mobile IT'
     );
-    
-    console.log(`[CreatePost] 🔍 isBODorAdmin: ${isBODorAdmin}`);
-    
-    if (isBODorAdmin) {
-      console.log(`[CreatePost] 📣 Sending new_post_broadcast notification...`);
-      notify('new_post_broadcast', {
+
+    if (audienceType !== 'class' && isBODorAdmin) {
+      await notify('new_post_broadcast', {
         postId: post._id.toString(),
         authorEmail: req.user.email,
         authorName: req.user.fullname,
@@ -99,33 +184,99 @@ exports.createPost = async (req, res) => {
         req.files.forEach(file => { const p = path.join(__dirname, '../uploads/posts/', file.filename); if (fs.existsSync(p)) fs.unlinkSync(p); });
       }
     } catch {}
-    res.status(500).json({ success: false, message: 'Lỗi server khi tạo bài viết', error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, message: error.statusCode ? error.message : 'Lỗi server khi tạo bài viết', error: error.message });
   }
 };
 
 exports.getNewsfeed = async (req, res) => {
   try {
-    const { page = 1, limit = 10, type, author, department, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
-    const userDepartment = req.user.department;
-    const filter = { $or: [{ visibility: 'public' }] };
+    const { type, author, department, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
+    const { page, limit, skip } = parsePagination(req.query);
+    const userDepartment = req.user?.department;
+    const filter = { audienceType: { $ne: 'class' }, $or: [{ visibility: 'public' }] };
     if (userDepartment) filter.$or.push({ visibility: 'department', department: userDepartment });
     if (type) filter.type = type; if (author) filter.author = author; if (department) filter.department = department;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
     const sortOptions = { [sortBy]: sortOrder === 'desc' ? -1 : 1 };
     const [posts, totalPosts] = await Promise.all([
-      Post.find(filter)
-        .populate('author', 'fullname avatarUrl email department jobTitle')
-        .populate('tags', 'fullname avatarUrl email')
-        .populate('comments.user', 'fullname avatarUrl email')
-        .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
-        .populate('reactions.user', 'fullname avatarUrl email jobTitle')
+      populatePostQuery(Post.find(filter))
         .sort(sortOptions)
         .skip(skip)
-        .limit(parseInt(limit)),
+        .limit(limit),
       Post.countDocuments(filter),
     ]);
-    res.status(200).json({ success: true, data: { posts, pagination: { currentPage: parseInt(page), totalPages: Math.ceil(totalPosts / parseInt(limit)), totalPosts, hasNext: parseInt(page) < Math.ceil(totalPosts / parseInt(limit)), hasPrev: parseInt(page) > 1 } } });
+    res.status(200).json({ success: true, data: paginationResponse(posts, totalPosts, page, limit) });
   } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi lấy bảng tin', error: error.message }); }
+};
+
+exports.getClassFeed = async (req, res) => {
+  try {
+    const { classId, schoolYearId } = req.query;
+    if (!classId) {
+      return res.status(400).json({ success: false, message: 'Thiếu classId' });
+    }
+
+    const { page, limit, skip } = parsePagination(req.query);
+    const filter = { audienceType: 'class', classId: String(classId) };
+    if (schoolYearId) filter.schoolYearId = String(schoolYearId);
+
+    const [posts, totalPosts] = await Promise.all([
+      populatePostQuery(Post.find(filter))
+        .sort({ isPinned: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Post.countDocuments(filter),
+    ]);
+
+    return res.status(200).json({ success: true, data: paginationResponse(posts, totalPosts, page, limit) });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Lỗi server khi lấy Nhật ký lớp', error: error.message });
+  }
+};
+
+exports.getStudentFeed = async (req, res) => {
+  try {
+    const { studentId, schoolYearId } = req.query;
+    if (!studentId) {
+      return res.status(400).json({ success: false, message: 'Thiếu studentId' });
+    }
+
+    const token = getBearerToken(req);
+    const hasAccess = await frappeService.verifyGuardianStudentAccess(String(studentId), token);
+    if (!hasAccess) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xem Nhật ký của học sinh này' });
+    }
+
+    const scopes = await frappeService.getStudentClassScopes(String(studentId));
+    const classFilters = scopes
+      .filter((scope) => scope.classId && (!schoolYearId || scope.schoolYearId === schoolYearId))
+      .map((scope) => ({
+        classId: scope.classId,
+        ...(scope.schoolYearId ? { schoolYearId: scope.schoolYearId } : {}),
+      }));
+
+    if (classFilters.length === 0) {
+      const { page, limit } = parsePagination(req.query);
+      return res.status(200).json({ success: true, data: paginationResponse([], 0, page, limit), classScopes: scopes });
+    }
+
+    const { page, limit, skip } = parsePagination(req.query);
+    const filter = { audienceType: 'class', $or: classFilters };
+    const [posts, totalPosts] = await Promise.all([
+      populatePostQuery(Post.find(filter))
+        .sort({ isPinned: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Post.countDocuments(filter),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      data: paginationResponse(posts, totalPosts, page, limit),
+      classScopes: scopes,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Lỗi server khi lấy Nhật ký học sinh', error: error.message });
+  }
 };
 
 exports.getPostById = async (req, res) => {
@@ -139,7 +290,7 @@ exports.getPostById = async (req, res) => {
       .populate('comments.reactions.user', 'fullname avatarUrl email jobTitle')
       .populate('reactions.user', 'fullname avatarUrl email jobTitle');
     if (!post) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
-    const userDepartment = req.user.department;
+    const userDepartment = req.user?.department;
     if (post.visibility === 'department' && post.department && post.department !== userDepartment) return res.status(403).json({ success: false, message: 'Bạn không có quyền xem bài viết này' });
     res.status(200).json({ success: true, data: post });
   } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi lấy bài viết', error: error.message }); }

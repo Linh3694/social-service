@@ -21,6 +21,8 @@ const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 }, fileFil
 router.get('/trending', optionalAuth, postController.getTrendingPosts);
 router.get('/search', optionalAuth, postController.searchPosts);
 router.get('/newsfeed', optionalAuth, postController.getNewsfeed);
+router.get('/class-feed', authenticate, postController.getClassFeed);
+router.get('/student-feed', authenticate, postController.getStudentFeed);
 router.get('/:postId', optionalAuth, postController.getPostById);
 router.get('/:postId/stats', optionalAuth, postController.getPostEngagementStats);
 router.get('/:postId/related', optionalAuth, postController.getRelatedPosts);

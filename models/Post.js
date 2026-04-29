@@ -25,6 +25,12 @@ const postSchema = new mongoose.Schema(
     type: { type: String, enum: ['Thông báo', 'Chia sẻ', 'Câu hỏi', 'Badge', 'Khác'], default: 'Chia sẻ' },
     visibility: { type: String, enum: ['public', 'department'], default: 'public' },
     department: { type: String },
+    audienceType: { type: String, enum: ['public', 'department', 'class'], default: 'public', index: true },
+    classId: { type: String, index: true },
+    classTitle: { type: String },
+    schoolYearId: { type: String, index: true },
+    schoolYearTitle: { type: String },
+    campusId: { type: String, index: true },
     tags: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     badgeInfo: { badgeName: String, badgeIcon: String, message: String },
     isPinned: { type: Boolean, default: false },
@@ -33,6 +39,9 @@ const postSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+postSchema.index({ audienceType: 1, classId: 1, schoolYearId: 1, createdAt: -1 });
+postSchema.index({ classId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Post', postSchema);
 

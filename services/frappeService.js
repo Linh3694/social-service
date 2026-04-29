@@ -294,6 +294,96 @@ class FrappeService {
     }
   }
 
+  async getResource(doctype, name, token) {
+    const endpoint = `/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}`;
+    const response = await this.api.get(endpoint, {
+      headers: token ? this.buildAuthHeaders(token) : undefined,
+    });
+    return response.data?.data || null;
+  }
+
+  async listResources(doctype, params = {}, token) {
+    const response = await this.api.get(`/api/resource/${encodeURIComponent(doctype)}`, {
+      params,
+      headers: token ? this.buildAuthHeaders(token) : undefined,
+    });
+    return response.data?.data || [];
+  }
+
+  async getClassMetadata(classId) {
+    const cls = await this.getResource('SIS Class', classId);
+    if (!cls) return null;
+
+    let schoolYear = null;
+    if (cls.school_year_id) {
+      try {
+        schoolYear = await this.getResource('SIS School Year', cls.school_year_id);
+      } catch (error) {
+        console.warn('[FrappeService] Không lấy được năm học của lớp:', error.message);
+      }
+    }
+
+    return {
+      classId: cls.name,
+      classTitle: cls.title || cls.short_title || cls.name,
+      schoolYearId: cls.school_year_id,
+      schoolYearTitle: schoolYear?.title_vn || schoolYear?.title_en || cls.school_year_id,
+      campusId: cls.campus_id,
+      classType: cls.class_type,
+    };
+  }
+
+  async getStudentClassScopes(studentId) {
+    const rows = await this.listResources('SIS Class Student', {
+      filters: JSON.stringify([['SIS Class Student', 'student_id', '=', studentId]]),
+      fields: JSON.stringify(['name', 'class_id', 'school_year_id', 'class_type']),
+      limit_page_length: 1000,
+      order_by: 'modified desc',
+    });
+
+    const scopes = [];
+    const seen = new Set();
+    for (const row of rows) {
+      if (!row.class_id) continue;
+      const key = `${row.class_id}:${row.school_year_id || ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      let metadata = null;
+      try {
+        metadata = await this.getClassMetadata(row.class_id);
+      } catch (error) {
+        console.warn('[FrappeService] Không lấy được metadata lớp của học sinh:', error.message);
+      }
+
+      scopes.push({
+        classId: row.class_id,
+        schoolYearId: row.school_year_id || metadata?.schoolYearId,
+        classType: row.class_type || metadata?.classType,
+        classTitle: metadata?.classTitle || row.class_id,
+        schoolYearTitle: metadata?.schoolYearTitle || row.school_year_id,
+        campusId: metadata?.campusId,
+      });
+    }
+
+    return scopes;
+  }
+
+  async getCurrentGuardianData(token) {
+    const response = await this.api.get(
+      '/api/method/erp.api.parent_portal.otp_auth.get_current_guardian_comprehensive_data',
+      { headers: this.buildAuthHeaders(token) }
+    );
+    return response.data?.message || response.data;
+  }
+
+  async verifyGuardianStudentAccess(studentId, token) {
+    const data = await this.getCurrentGuardianData(token);
+    const payload = data?.data || data;
+    const students = Array.isArray(payload?.students) ? payload.students : [];
+    return students.some((student) => student?.name === studentId);
+  }
+
   /**
    * 📨 Gửi Wislife notification đến Frappe
    * Pattern giống ticket-service: local auth với headers X-Service-Name và X-Request-Source
