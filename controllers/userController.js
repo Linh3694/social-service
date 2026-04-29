@@ -72,6 +72,7 @@ function formatFrappeUser(frappeUser) {
     fullname: fullName,
     fullName: fullName,
     username: frappeUser.username || frappeUser.name,
+    guardian_id: frappeUser.guardian_id,
     avatarUrl: frappeUser.guardian_image || frappeUser.user_image || frappeUser.userImage || frappeUser.avatar || frappeUser.avatar_url || '',
     user_image: frappeUser.user_image || frappeUser.userImage || '',
     sis_photo: frappeUser.sis_photo || frappeUser.photo || '',

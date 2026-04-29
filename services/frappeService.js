@@ -659,6 +659,7 @@ class FrappeService {
       name: email,
       email,
       full_name: portalUser?.full_name || guardian?.guardian_name || guardian?.name || email,
+      guardian_id: guardian?.guardian_id,
       guardian_image: guardianImage,
       avatar: guardianImage,
       roles: ['Parent Portal User'],

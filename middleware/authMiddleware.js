@@ -22,11 +22,11 @@ const authenticate = async (req, res, next) => {
         // - Local JWT: decoded.email hoặc decoded.id
         const userEmail = decoded.sub || decoded.email;
         if (userEmail) {
-          user = await User.findOne({ email: userEmail }).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image');
+          user = await User.findOne({ email: userEmail }).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image guardian_id');
         }
         // Backward: nếu có id
         if (!user && decoded.id) {
-          user = await User.findById(decoded.id).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image');
+          user = await User.findById(decoded.id).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image guardian_id');
         }
       } catch {}
     }
@@ -83,6 +83,7 @@ const authenticate = async (req, res, next) => {
       user_image: user.user_image,
       sis_photo: user.sis_photo,
       guardian_image: user.guardian_image,
+      guardian_id: user.guardian_id,
     };
     // Debug: quick trace
     try { console.log('[Auth] OK user=', req.user.email, 'role=', req.user.role, 'roles=', req.user.roles); } catch {}

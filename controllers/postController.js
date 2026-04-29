@@ -8,9 +8,9 @@ const redisClient = require('../config/redis');
 const frappeService = require('../services/frappeService');
 const { resolveMentions, getMentionedUserEmails } = require('../utils/mentionUtils');
 
-const POST_AUTHOR_SELECT = 'fullname fullName avatarUrl user_image sis_photo guardian_image email department jobTitle';
-const POST_USER_SELECT = 'fullname fullName avatarUrl user_image sis_photo guardian_image email';
-const POST_REACTION_USER_SELECT = 'fullname fullName avatarUrl user_image sis_photo guardian_image email jobTitle';
+const POST_AUTHOR_SELECT = 'name username guardian_id fullname fullName avatarUrl user_image sis_photo guardian_image email department jobTitle';
+const POST_USER_SELECT = 'name username guardian_id fullname fullName avatarUrl user_image sis_photo guardian_image email';
+const POST_REACTION_USER_SELECT = 'name username guardian_id fullname fullName avatarUrl user_image sis_photo guardian_image email jobTitle';
 
 /**
  * Gửi notification đến Frappe (fire-and-forget, không block response)

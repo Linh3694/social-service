@@ -13,6 +13,7 @@ const userSchema = new mongoose.Schema({
   fullname: { type: String, trim: true },
   fullName: { type: String, trim: true }, // Alias cho compatibility
   username: { type: String, trim: true, sparse: true },
+  guardian_id: { type: String, trim: true, sparse: true, index: true },
   
   // Employee info
   employeeCode: { type: String, index: true, sparse: true },
@@ -102,6 +103,7 @@ userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser
     fullname: fullName,
     fullName: fullName, // Alias
     username: frappeUser.username || frappeUser.name,
+    guardian_id: frappeUser.guardian_id,
     employeeCode: frappeUser.employee_code || frappeUser.employeeCode || frappeUser.employee,
     department: frappeUser.department || frappeUser.location || '',
     jobTitle: frappeUser.job_title || frappeUser.designation || 'User',
