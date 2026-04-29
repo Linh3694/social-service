@@ -43,6 +43,90 @@ function populatePostQuery(query) {
     .populate('reactions.user', POST_REACTION_USER_SELECT);
 }
 
+function normalizeLookupKey(value) {
+  return value ? String(value).trim().toLowerCase() : '';
+}
+
+function buildGuardianLookup(guardians = []) {
+  const lookup = new Map();
+  guardians.forEach((guardian) => {
+    [
+      guardian.name,
+      guardian.guardian_id,
+      guardian.guardian_name,
+      guardian.email,
+      guardian.portalEmail,
+      ...(guardian.matchKeys || []),
+    ].forEach((key) => {
+      const normalized = normalizeLookupKey(key);
+      if (normalized) lookup.set(normalized, guardian);
+    });
+  });
+  return lookup;
+}
+
+function findGuardianForUser(user, guardianLookup) {
+  if (!user) return null;
+  const candidates = [
+    user.guardian_id,
+    user.name,
+    user.username,
+    user.email,
+    user.fullname,
+    user.fullName,
+    user.email?.split('@')[0],
+  ];
+  for (const candidate of candidates) {
+    const match = guardianLookup.get(normalizeLookupKey(candidate));
+    if (match) return match;
+  }
+  return null;
+}
+
+function enrichSocialUserWithGuardian(user, guardianLookup) {
+  if (!user) return user;
+  const plain = typeof user.toObject === 'function' ? user.toObject() : user;
+  const guardian = findGuardianForUser(plain, guardianLookup);
+  if (!guardian) return plain;
+
+  const guardianName = guardian.guardian_name || plain.fullname || plain.fullName;
+  const guardianImage = guardian.guardian_image || plain.guardian_image || plain.avatarUrl;
+  return {
+    ...plain,
+    name: plain.name || guardian.name,
+    guardian_id: plain.guardian_id || guardian.guardian_id,
+    fullname: guardianName,
+    fullName: guardianName,
+    guardian_image: guardian.guardian_image || plain.guardian_image || '',
+    avatarUrl: guardianImage || '',
+  };
+}
+
+function enrichPostsWithGuardianDirectory(posts, guardians = []) {
+  const guardianLookup = buildGuardianLookup(guardians);
+  if (guardianLookup.size === 0) return posts;
+
+  return posts.map((post) => {
+    const plainPost = typeof post.toObject === 'function' ? post.toObject() : post;
+    return {
+      ...plainPost,
+      author: enrichSocialUserWithGuardian(plainPost.author, guardianLookup),
+      reactions: (plainPost.reactions || []).map((reaction) => ({
+        ...reaction,
+        user: enrichSocialUserWithGuardian(reaction.user, guardianLookup),
+      })),
+      comments: (plainPost.comments || []).map((comment) => ({
+        ...comment,
+        user: enrichSocialUserWithGuardian(comment.user, guardianLookup),
+        reactions: (comment.reactions || []).map((reaction) => ({
+          ...reaction,
+          user: enrichSocialUserWithGuardian(reaction.user, guardianLookup),
+        })),
+      })),
+    };
+  });
+}
+
 function paginationResponse(posts, totalPosts, page, limit) {
   const totalPages = Math.ceil(totalPosts / limit);
   return {

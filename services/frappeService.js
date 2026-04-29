@@ -425,10 +425,6 @@ class FrappeService {
     }
 
     const studentMap = new Map(students.map((student) => [student.name, student]));
-    const familyCodes = Array.from(
-      new Set(students.map((student) => student.family_code).filter(Boolean))
-    );
-
     const guardianMap = new Map();
     const addGuardian = (guardian, relationship, studentId, familyCode) => {
       if (!guardian) return;
@@ -473,34 +469,77 @@ class FrappeService {
       guardianMap.set(key, existing);
     };
 
+    const normalizeFamiliesPayload = (payload) => {
+      if (Array.isArray(payload)) return payload;
+      if (Array.isArray(payload?.data)) return payload.data;
+      if (payload && typeof payload === 'object') return [payload];
+      return [];
+    };
+
+    const enrichFamilyDetails = async (family) => {
+      if (Array.isArray(family?.relationships) && family.relationships.length > 0) return family;
+      const familyCode = family?.family_code || family?.name;
+      if (!familyCode) return family;
+      try {
+        return await this.callFrappeGetMethod('erp.api.erp_sis.family.get_family_details', {
+          family_code: familyCode,
+        }, token);
+      } catch {
+        return family;
+      }
+    };
+
+    const familyCodes = Array.from(
+      new Set(students.map((student) => student.family_code).filter(Boolean))
+    );
+    const familyPayloads = [];
+
     await Promise.all(familyCodes.map(async (familyCode) => {
       try {
         const family = await this.callFrappeGetMethod('erp.api.erp_sis.family.get_family_details', {
           family_code: familyCode,
         }, token);
-        const relationships = Array.isArray(family?.relationships) ? family.relationships : [];
-        const guardiansByKey = family?.guardians && typeof family.guardians === 'object'
-          ? family.guardians
-          : {};
-
-        relationships.forEach((relationship) => {
-          const studentId =
-            relationship.student ||
-            relationship.student_id ||
-            relationship.student_details?.name;
-          if (!studentIds.includes(studentId)) return;
-
-          const guardian =
-            relationship.guardian_details ||
-            guardiansByKey[relationship.guardian] ||
-            guardiansByKey[relationship.guardian_name] ||
-            { name: relationship.guardian, guardian_name: relationship.guardian_name };
-          addGuardian(guardian, relationship, studentId, familyCode);
-        });
+        familyPayloads.push(family);
       } catch (error) {
         console.warn(`[FrappeService] Không lấy được family details ${familyCode}:`, error.message);
       }
     }));
+
+    // Một số student API không trả family_code. Fallback theo student_id để vẫn có guardian directory.
+    await Promise.all(studentIds.map(async (studentId) => {
+      try {
+        const payload = await this.callFrappeGetMethod('erp.api.erp_sis.family.get_family_data', {
+          student_id: studentId,
+        }, token);
+        const families = await Promise.all(normalizeFamiliesPayload(payload).map(enrichFamilyDetails));
+        familyPayloads.push(...families);
+      } catch (error) {
+        console.warn(`[FrappeService] Không lấy được family theo học sinh ${studentId}:`, error.message);
+      }
+    }));
+
+    familyPayloads.forEach((family) => {
+      const familyCode = family?.family_code || family?.name;
+      const relationships = Array.isArray(family?.relationships) ? family.relationships : [];
+      const guardiansByKey = family?.guardians && typeof family.guardians === 'object'
+        ? family.guardians
+        : {};
+
+      relationships.forEach((relationship) => {
+        const studentId =
+          relationship.student ||
+          relationship.student_id ||
+          relationship.student_details?.name;
+        if (!studentIds.includes(studentId)) return;
+
+        const guardian =
+          relationship.guardian_details ||
+          guardiansByKey[relationship.guardian] ||
+          guardiansByKey[relationship.guardian_name] ||
+          { name: relationship.guardian, guardian_name: relationship.guardian_name };
+        addGuardian(guardian, relationship, studentId, familyCode);
+      });
+    });
 
     return {
       students: studentIds.map((studentId) => {
