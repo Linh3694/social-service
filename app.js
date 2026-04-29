@@ -50,6 +50,7 @@ async function resolveSocketUser(token) {
 }
 
 const io = new Server(server, {
+  path: '/api/social/socket.io',
   cors: { origin: '*' },
   allowRequest: async (req, callback) => {
     try {

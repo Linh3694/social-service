@@ -168,7 +168,9 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
     email: normalizeEmail(guardian.email || guardian.portalEmail),
     name: guardian.guardian_name || guardian.name || guardian.email || guardian.portalEmail,
     guardianId: guardian.guardian_id || guardian.name,
-    studentIds: (guardian.students || []).map((student) => student.student_id).filter(Boolean),
+    studentIds: targetStudentId
+      ? [targetStudentId]
+      : (guardian.students || []).map((student) => getStudentId(student)).filter(Boolean),
     avatarUrl: guardian.guardian_image || '',
   }));
 

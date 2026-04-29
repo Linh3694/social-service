@@ -9,14 +9,37 @@ class ChatSocket {
 
   setupEventHandlers() {
     this.io.on('connection', (socket) => {
+      console.log('[ChatSocket] connected', {
+        socketId: socket.id,
+        userId: socket.user?._id,
+        email: socket.user?.email,
+      });
+      if (socket.user?._id) {
+        socket.join(`user_${socket.user._id}`);
+      }
+
       socket.on('chat:join', async ({ conversationId } = {}) => {
         try {
           if (!conversationId || !socket.user) return;
           const conversation = await ChatConversation.findById(conversationId);
-          if (!conversation || !canAccessConversation(conversation, socket.user)) return;
+          if (!conversation || !canAccessConversation(conversation, socket.user)) {
+            console.warn('[ChatSocket] join denied', {
+              socketId: socket.id,
+              conversationId,
+              userId: socket.user?._id,
+              email: socket.user?.email,
+            });
+            return;
+          }
           socket.join(`chat_${conversationId}`);
+          console.log('[ChatSocket] joined', {
+            socketId: socket.id,
+            conversationId,
+            email: socket.user?.email,
+          });
           socket.emit('chat:joined', { conversationId });
         } catch (error) {
+          console.error('[ChatSocket] join error:', error.message);
           socket.emit('chat:error', { message: 'Không thể vào nhóm chat' });
         }
       });
