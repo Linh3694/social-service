@@ -37,6 +37,14 @@ function participantKey(user) {
   return String(user?._id || '');
 }
 
+function normalizeClassType(scope) {
+  return String(scope?.classType || scope?.class_type || '').trim().toLowerCase();
+}
+
+function isRegularScope(scope) {
+  return normalizeClassType(scope) === 'regular';
+}
+
 function matchesGuardianUser(user, guardian) {
   const userEmail = normalizeEmail(user?.email);
   const userGuardianId = normalizeId(user?.guardian_id);
@@ -60,7 +68,7 @@ function scopeSummary(scope) {
     className: scope.className || scope.classTitle || scope.classId,
     schoolYearId: scope.schoolYearId,
     schoolYearName: scope.schoolYearName || scope.schoolYearTitle || scope.schoolYearId,
-    classType: scope.classType,
+    classType: normalizeClassType(scope),
     studentId: scope.studentId,
     studentName: scope.studentName,
   };
@@ -87,7 +95,7 @@ function buildFallbackGuardianScope(scope, user) {
     className: scope.className || scope.classTitle || scope.classId,
     schoolYearId: scope.schoolYearId,
     schoolYearName: scope.schoolYearName || scope.schoolYearTitle || scope.schoolYearId,
-    classType: scope.classType || 'regular',
+    classType: normalizeClassType(scope),
     isActive: scope.isActive !== false,
     students: scope.studentId ? [student] : [],
     guardians: user ? [guardian] : [],
@@ -205,7 +213,7 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
     err.statusCode = 404;
     throw err;
   }
-  if (scope.classType && scope.classType !== 'regular') {
+  if (!isRegularScope(scope)) {
     return [];
   }
 
@@ -303,7 +311,7 @@ exports.listConversations = async (req, res) => {
       const scopes = await frappeService.getGuardianChatScopes(token);
       const uniqueScopes = new Map();
       scopes
-        .filter((scope) => !scope.classType || scope.classType === 'regular')
+        .filter(isRegularScope)
         .forEach((scope) => {
           if (!scope.classId || !scope.schoolYearId) return;
           uniqueScopes.set(`${scope.classId}:${scope.schoolYearId}`, scopeSummary(scope));

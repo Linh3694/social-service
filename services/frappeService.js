@@ -787,11 +787,13 @@ class FrappeService {
       const studentScopes = await this.getStudentClassScopes(studentId, token);
       for (const scope of studentScopes) {
         if (!scope?.classId) continue;
+        const classType = scope.classType || scope.class_type || scope.class_type_id || scope.type;
         const key = `${studentId}:${scope.classId}:${scope.schoolYearId || ''}`;
         if (seen.has(key)) continue;
         seen.add(key);
         scopes.push({
           ...scope,
+          classType,
           studentId,
           studentName: student.student_name || student.full_name || student.name,
         });
