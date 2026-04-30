@@ -36,6 +36,11 @@ function normalizeId(value) {
   return value ? String(value).trim() : '';
 }
 
+function parentPortalEmailFromGuardianId(guardianId) {
+  const normalized = normalizeId(guardianId).toLowerCase();
+  return normalized ? `${normalized}@parent.wellspring.edu.vn` : '';
+}
+
 function participantKey(user) {
   return String(user?._id || '');
 }
@@ -228,13 +233,21 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
   }
 
   const guardianParticipants = guardianSnapshots.map((guardian) => {
-    const user = byEmail.get(normalizeEmail(guardian.email)) || byGuardianId.get(normalizeId(guardian.guardianId));
+    const matchedRequestGuardian = userRole(requestUser) === 'guardian' && matchesGuardianUser(requestUser, {
+      guardian_id: guardian.guardianId,
+      name: guardian.guardianId || guardian.name,
+      email: guardian.email,
+      portalEmail: parentPortalEmailFromGuardianId(guardian.guardianId),
+    });
+    const user = matchedRequestGuardian
+      ? requestUser
+      : byEmail.get(normalizeEmail(guardian.email)) || byGuardianId.get(normalizeId(guardian.guardianId));
     return {
       user: user?._id,
-      email: guardian.email || normalizeEmail(user?.email),
+      email: normalizeEmail(user?.email) || guardian.email,
       name: guardian.name,
       role: 'guardian',
-      guardianId: guardian.guardianId,
+      guardianId: guardian.guardianId || user?.guardian_id,
       studentIds: guardian.studentIds,
       avatarUrl: guardian.avatarUrl || userAvatar(user),
     };

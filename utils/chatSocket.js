@@ -9,6 +9,12 @@ function normalizeRoomValue(value) {
   return value ? String(value).trim().toLowerCase() : '';
 }
 
+function portalGuardianIdFromEmail(email) {
+  const normalized = normalizeRoomValue(email);
+  const suffix = '@parent.wellspring.edu.vn';
+  return normalized.endsWith(suffix) ? normalized.slice(0, -suffix.length) : '';
+}
+
 class ChatSocket {
   constructor(io) {
     this.io = io;
@@ -29,6 +35,8 @@ class ChatSocket {
       if (emailRoom) socket.join(`email_${emailRoom}`);
       const guardianRoom = normalizeRoomValue(socket.user?.guardian_id);
       if (guardianRoom) socket.join(`guardian_${guardianRoom}`);
+      const portalGuardianRoom = portalGuardianIdFromEmail(socket.user?.email);
+      if (portalGuardianRoom) socket.join(`guardian_${portalGuardianRoom}`);
 
       socket.on('chat:join', async ({ conversationId } = {}) => {
         try {

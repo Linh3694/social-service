@@ -11,18 +11,48 @@ function normalizeId(value) {
   return value ? String(value).trim() : '';
 }
 
+function portalGuardianIdFromEmail(email) {
+  const normalized = normalizeEmail(email);
+  const suffix = '@parent.wellspring.edu.vn';
+  return normalized.endsWith(suffix) ? normalized.slice(0, -suffix.length) : '';
+}
+
+function parentPortalEmailFromGuardianId(guardianId) {
+  const normalized = normalizeId(guardianId).toLowerCase();
+  return normalized ? `${normalized}@parent.wellspring.edu.vn` : '';
+}
+
+function participantRooms(participant) {
+  const rooms = [];
+  if (participant.user) rooms.push(`user_${participant.user}`);
+
+  const email = normalizeEmail(participant.email);
+  if (email) {
+    rooms.push(`email_${email}`);
+    const portalGuardianId = portalGuardianIdFromEmail(email);
+    if (portalGuardianId) rooms.push(`guardian_${portalGuardianId}`);
+  }
+
+  const guardianId = normalizeId(participant.guardianId).toLowerCase();
+  if (guardianId) {
+    rooms.push(`guardian_${guardianId}`);
+    rooms.push(`email_${parentPortalEmailFromGuardianId(guardianId)}`);
+  }
+
+  return rooms;
+}
+
 /**
  * @param {import('mongoose').Document | object} conversation
  * @returns {string[]}
  */
 function getChatBroadcastRooms(conversation) {
   const conversationId = String(conversation?._id || conversation || '');
-  const participantRooms = (conversation?.participants || []).flatMap((participant) => ([
-    participant.user && `user_${participant.user}`,
-    participant.email && `email_${normalizeEmail(participant.email)}`,
-    participant.guardianId && `guardian_${normalizeId(participant.guardianId).toLowerCase()}`,
-  ])).filter(Boolean);
-  return [`chat_${conversationId}`, ...participantRooms];
+  const rooms = [
+    `chat_${conversationId}`,
+    ...(conversation?.participants || []).flatMap(participantRooms),
+  ].filter(Boolean);
+  return Array.from(new Set(rooms));
 }
 
 /**
