@@ -135,6 +135,28 @@ function buildCurrentTeacherParticipant(user) {
   };
 }
 
+function buildCurrentGuardianSnapshot(user, trustedScope) {
+  if (!user || userRole(user) !== 'guardian') return null;
+  const studentId = trustedScope?.studentId;
+  return {
+    name: user.guardian_id || user.email,
+    guardian_id: user.guardian_id,
+    guardian_name: userDisplayName(user),
+    email: normalizeEmail(user.email),
+    portalEmail: normalizeEmail(user.email),
+    guardian_image: userAvatar(user),
+    students: studentId
+      ? [{
+        student_id: studentId,
+        student_name: trustedScope?.studentName,
+      }]
+      : [],
+    matchKeys: [user.email, user.guardian_id]
+      .filter(Boolean)
+      .map((value) => normalizeEmail(value)),
+  };
+}
+
 function getStudentId(student) {
   return student?.student_id || student?.studentId || student?.name;
 }
@@ -268,9 +290,33 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
     scope.schoolYearName = trustedScope.schoolYearName || scope.schoolYearName;
   }
 
+  if (trustedScope?.studentId && userRole(user) === 'guardian') {
+    const hasTrustedStudent = (scope.students || []).some((student) => getStudentId(student) === trustedScope.studentId);
+    if (!hasTrustedStudent) {
+      scope.students = [
+        ...(scope.students || []),
+        {
+          student_id: trustedScope.studentId,
+          student_name: trustedScope.studentName,
+        },
+      ];
+    }
+
+    const hasCurrentGuardian = (scope.guardians || []).some((guardian) => matchesGuardianUser(user, guardian));
+    if (!hasCurrentGuardian) {
+      const currentGuardian = buildCurrentGuardianSnapshot(user, trustedScope);
+      if (currentGuardian) {
+        scope.guardians = [...(scope.guardians || []), currentGuardian];
+      }
+    }
+  }
+
+  const scopedStudents = trustedScope?.studentId && userRole(user) === 'guardian'
+    ? (scope.students || []).filter((student) => getStudentId(student) === trustedScope.studentId)
+    : (scope.students || []);
   const conversationSpecs = [
     { type: 'class_general' },
-    ...(scope.students || [])
+    ...scopedStudents
       .map((student) => ({ type: studentConversationType(getStudentId(student)), student }))
       .filter((spec) => spec.type !== 'student_guardians:undefined'),
   ];
@@ -385,7 +431,7 @@ exports.listConversations = async (req, res) => {
     }
 
     const visible = conversations
-      .filter((conversation) => canAccessConversation(conversation, req.user) || userRole(req.user) === 'guardian')
+      .filter((conversation) => canAccessConversation(conversation, req.user))
       .sort((a, b) => new Date(b.lastMessage?.createdAt || b.updatedAt) - new Date(a.lastMessage?.createdAt || a.updatedAt));
 
     res.json({ success: true, data: visible.map((conversation) => serializeConversation(conversation, req.user)) });
