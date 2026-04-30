@@ -5,6 +5,16 @@ function normalizeRoomValue(value) {
   return value ? String(value).trim().toLowerCase() : '';
 }
 
+function conversationRooms(conversation) {
+  const conversationId = String(conversation?._id || conversation || '');
+  const participantRooms = (conversation?.participants || []).flatMap((participant) => ([
+    participant.user && `user_${participant.user}`,
+    participant.email && `email_${normalizeRoomValue(participant.email)}`,
+    participant.guardianId && `guardian_${normalizeRoomValue(participant.guardianId)}`,
+  ])).filter(Boolean);
+  return [`chat_${conversationId}`, ...participantRooms];
+}
+
 class ChatSocket {
   constructor(io) {
     this.io = io;
@@ -61,7 +71,8 @@ class ChatSocket {
           if (!conversationId || !socket.user) return;
           const conversation = await ChatConversation.findById(conversationId);
           if (!conversation || conversation.status === 'locked' || !canAccessConversation(conversation, socket.user)) return;
-          socket.to(`chat_${conversationId}`).emit('chat:typing', {
+          // Typing cũng phát qua participant rooms như message để không phụ thuộc hoàn toàn vào chat:join.
+          socket.to(conversationRooms(conversation)).emit('chat:typing', {
             conversationId,
             userId: String(socket.user._id),
             name: socket.user.fullname || socket.user.fullName || socket.user.email,
