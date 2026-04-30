@@ -415,7 +415,7 @@ exports.listConversations = async (req, res) => {
         .filter(isRegularScope)
         .forEach((scope) => {
           if (!scope.classId || !scope.schoolYearId) return;
-          uniqueScopes.set(`${scope.classId}:${scope.schoolYearId}`, scopeSummary(scope));
+          uniqueScopes.set(`${scope.studentId || 'all'}:${scope.classId}:${scope.schoolYearId}`, scopeSummary(scope));
         });
 
       for (const scope of uniqueScopes.values()) {
@@ -430,7 +430,11 @@ exports.listConversations = async (req, res) => {
       }
     }
 
-    const visible = conversations
+    const uniqueConversations = Array.from(new Map(
+      conversations.map((conversation) => [String(conversation._id), conversation])
+    ).values());
+
+    const visible = uniqueConversations
       .filter((conversation) => canAccessConversation(conversation, req.user))
       .sort((a, b) => new Date(b.lastMessage?.createdAt || b.updatedAt) - new Date(a.lastMessage?.createdAt || a.updatedAt));
 
