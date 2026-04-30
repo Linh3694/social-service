@@ -41,6 +41,12 @@ function parentPortalEmailFromGuardianId(guardianId) {
   return normalized ? `${normalized}@parent.wellspring.edu.vn` : '';
 }
 
+function portalGuardianIdFromEmail(email) {
+  const normalized = normalizeEmail(email);
+  const suffix = '@parent.wellspring.edu.vn';
+  return normalized.endsWith(suffix) ? normalized.slice(0, -suffix.length) : '';
+}
+
 function participantKey(user) {
   return String(user?._id || '');
 }
@@ -147,9 +153,10 @@ function buildCurrentTeacherParticipant(user) {
 function buildCurrentGuardianSnapshot(user, trustedScope) {
   if (!user || userRole(user) !== 'guardian') return null;
   const studentId = trustedScope?.studentId;
+  const guardianId = user.guardian_id || portalGuardianIdFromEmail(user.email);
   return {
-    name: user.guardian_id || user.email,
-    guardian_id: user.guardian_id,
+    name: guardianId || user.email,
+    guardian_id: guardianId,
     guardian_name: userDisplayName(user),
     email: normalizeEmail(user.email),
     portalEmail: normalizeEmail(user.email),
@@ -247,7 +254,7 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
       email: normalizeEmail(user?.email) || guardian.email,
       name: guardian.name,
       role: 'guardian',
-      guardianId: guardian.guardianId || user?.guardian_id,
+      guardianId: guardian.guardianId || user?.guardian_id || portalGuardianIdFromEmail(user?.email),
       studentIds: guardian.studentIds,
       avatarUrl: guardian.avatarUrl || userAvatar(user),
     };
