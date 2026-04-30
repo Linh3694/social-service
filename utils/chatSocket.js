@@ -71,9 +71,16 @@ class ChatSocket {
           if (!conversationId || !socket.user) return;
           const conversation = await ChatConversation.findById(conversationId);
           if (!conversation || conversation.status === 'locked' || !canAccessConversation(conversation, socket.user)) return;
-          // Typing cũng phát qua participant rooms như message để không phụ thuộc hoàn toàn vào chat:join.
-          socket.to(conversationRooms(conversation)).emit('chat:typing', {
-            conversationId,
+          /*
+           * Broadcast giống chat:message (chatController.emitToConversation dùng global.io.to(room[])).
+           * Socket.to(...) với một mảng room đôi khi không khớp cùng semantic → client (web/mobile) lệch hành vi:
+           * tin nhận được ngay, typing không tới nhất quán.
+           * except(socket.id): không echo lại chính tab đang gõ (giữ giống trước khi không gửi lại emitter).
+           */
+          const rooms = conversationRooms(conversation);
+          if (!global.io) return;
+          global.io.to(rooms).except(socket.id).emit('chat:typing', {
+            conversationId: String(conversationId),
             userId: String(socket.user._id),
             name: socket.user.fullname || socket.user.fullName || socket.user.email,
             isTyping,
