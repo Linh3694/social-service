@@ -2,6 +2,10 @@ const ChatConversation = require('../models/ChatConversation');
 const ChatMessage = require('../models/ChatMessage');
 const User = require('../models/User');
 const frappeService = require('../services/frappeService');
+const {
+  getChatBroadcastRooms,
+  ioEmitToRoomsUnion,
+} = require('../utils/chatBroadcastRooms');
 
 const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
 
@@ -389,15 +393,10 @@ function serializeConversation(conversation, user) {
 }
 
 async function emitToConversation(conversation, event, payload) {
-  if (global.io) {
-    const conversationId = String(conversation?._id || conversation);
-    const participantRooms = (conversation?.participants || []).flatMap((participant) => ([
-      participant.user && `user_${participant.user}`,
-      participant.email && `email_${normalizeEmail(participant.email)}`,
-      participant.guardianId && `guardian_${normalizeId(participant.guardianId).toLowerCase()}`,
-    ])).filter(Boolean);
-    global.io.to([`chat_${conversationId}`, ...participantRooms]).emit(event, payload);
-  }
+  if (!global.io) return;
+  const rooms = getChatBroadcastRooms(conversation);
+  // Union nhiều room: dùng chuỗi .to() — ổn định với @socket.io/redis-adapter hơn io.to([...]).
+  ioEmitToRoomsUnion(global.io, rooms, event, payload);
 }
 
 exports.listConversations = async (req, res) => {

@@ -1,18 +1,12 @@
 const ChatConversation = require('../models/ChatConversation');
 const { canAccessConversation } = require('../controllers/chatController');
+const {
+  getChatBroadcastRooms,
+  socketEmitToRoomsUnionExceptSender,
+} = require('./chatBroadcastRooms');
 
 function normalizeRoomValue(value) {
   return value ? String(value).trim().toLowerCase() : '';
-}
-
-function conversationRooms(conversation) {
-  const conversationId = String(conversation?._id || conversation || '');
-  const participantRooms = (conversation?.participants || []).flatMap((participant) => ([
-    participant.user && `user_${participant.user}`,
-    participant.email && `email_${normalizeRoomValue(participant.email)}`,
-    participant.guardianId && `guardian_${normalizeRoomValue(participant.guardianId)}`,
-  ])).filter(Boolean);
-  return [`chat_${conversationId}`, ...participantRooms];
 }
 
 class ChatSocket {
@@ -71,8 +65,8 @@ class ChatSocket {
           if (!conversationId || !socket.user) return;
           const conversation = await ChatConversation.findById(conversationId);
           if (!conversation || conversation.status === 'locked' || !canAccessConversation(conversation, socket.user)) return;
-          // Giữ socket.to(...) — không gửi lại emitter; một tham số là mảng room (socket.io 4: union).
-          socket.to(conversationRooms(conversation)).emit('chat:typing', {
+          // Dùng cùng danh sách phòng với chat:message + union qua .to() (redis-adapter).
+          socketEmitToRoomsUnionExceptSender(socket, getChatBroadcastRooms(conversation), 'chat:typing', {
             conversationId: String(conversationId),
             userId: String(socket.user._id),
             name: socket.user.fullname || socket.user.fullName || socket.user.email,
