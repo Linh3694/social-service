@@ -2,7 +2,7 @@ const ChatConversation = require('../models/ChatConversation');
 const { canAccessConversation } = require('../controllers/chatController');
 const {
   getChatBroadcastRooms,
-  socketEmitToEachRoomExceptSender,
+  ioEmitToEachRoom,
 } = require('./chatBroadcastRooms');
 
 function normalizeRoomValue(value) {
@@ -73,10 +73,11 @@ class ChatSocket {
           if (!conversationId || !socket.user) return;
           const conversation = await ChatConversation.findById(conversationId);
           if (!conversation || conversation.status === 'locked' || !canAccessConversation(conversation, socket.user)) return;
-          // Cùng danh sách phòng với emitToConversation — phát lần lượt từng room (union, ổn với redis-adapter).
-          socketEmitToEachRoomExceptSender(socket, getChatBroadcastRooms(conversation), 'chat:typing', {
+          // Cùng đường broadcast với message; client sẽ bỏ qua typing của chính mình bằng senderEmail.
+          ioEmitToEachRoom(this.io, getChatBroadcastRooms(conversation), 'chat:typing', {
             conversationId: String(conversationId),
             userId: String(socket.user._id),
+            senderEmail: socket.user.email,
             name: socket.user.fullname || socket.user.fullName || socket.user.email,
             isTyping,
           });
