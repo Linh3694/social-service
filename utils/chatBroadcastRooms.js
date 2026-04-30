@@ -1,6 +1,6 @@
 /**
  * Phòng Socket.IO dùng cho chat (một nguồn sự thật cho emitToConversation + chat:typing).
- * Phải khớp với phép join khi connection (email_*, guardian_*, user_*, chat_*).
+ * Phải khớp phép join khi connection (email_*, guardian_*, user_*, chat_*).
  */
 
 function normalizeEmail(value) {
@@ -26,39 +26,38 @@ function getChatBroadcastRooms(conversation) {
 }
 
 /**
- * Socket.IO v4 + redis-adapter: io.to([a,b]) đôi khi lệch; chuỗi .to(a).to(b)… phát union ổn định hơn.
+ * Phát từng room — union rõ ràng (redis-adapter + io.to([a,b]) có thể sót client).
+ * Client chat đã upsert theo _id nên trùng event cùng tin nhắn là an toàn.
+ *
  * @param {import('socket.io').Server} io
  * @param {string[]} rooms
  * @param {string} event
  * @param {unknown} payload
  */
-function ioEmitToRoomsUnion(io, rooms, event, payload) {
+function ioEmitToEachRoom(io, rooms, event, payload) {
   if (!io || !rooms.length) return;
-  let op = io;
   rooms.forEach((room) => {
-    op = op.to(room);
+    io.to(room).emit(event, payload);
   });
-  op.emit(event, payload);
 }
 
 /**
- * Emitter socket: broadcast tới union room nhưng không gửi lại chính socket (giống socket.to).
+ * Tin typing: emitter không nhận lại; phát từng room (giống socket.to(room).emit lặp).
+ *
  * @param {import('socket.io').Socket} socket
  * @param {string[]} rooms
  * @param {string} event
  * @param {unknown} payload
  */
-function socketEmitToRoomsUnionExceptSender(socket, rooms, event, payload) {
+function socketEmitToEachRoomExceptSender(socket, rooms, event, payload) {
   if (!socket || !rooms.length) return;
-  let op = socket;
   rooms.forEach((room) => {
-    op = op.to(room);
+    socket.to(room).emit(event, payload);
   });
-  op.emit(event, payload);
 }
 
 module.exports = {
   getChatBroadcastRooms,
-  ioEmitToRoomsUnion,
-  socketEmitToRoomsUnionExceptSender,
+  ioEmitToEachRoom,
+  socketEmitToEachRoomExceptSender,
 };

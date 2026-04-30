@@ -4,7 +4,7 @@ const User = require('../models/User');
 const frappeService = require('../services/frappeService');
 const {
   getChatBroadcastRooms,
-  ioEmitToRoomsUnion,
+  ioEmitToEachRoom,
 } = require('../utils/chatBroadcastRooms');
 
 const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
@@ -395,8 +395,8 @@ function serializeConversation(conversation, user) {
 async function emitToConversation(conversation, event, payload) {
   if (!global.io) return;
   const rooms = getChatBroadcastRooms(conversation);
-  // Union nhiều room: dùng chuỗi .to() — ổn định với @socket.io/redis-adapter hơn io.to([...]).
-  ioEmitToRoomsUnion(global.io, rooms, event, payload);
+  // Union: phát lần lượt mỗi room (ổn định với redis-adapter hơn một lần io.to([...])).
+  ioEmitToEachRoom(global.io, rooms, event, payload);
 }
 
 exports.listConversations = async (req, res) => {
