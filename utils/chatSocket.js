@@ -41,7 +41,8 @@ class ChatSocket {
       socket.on('chat:join', async ({ conversationId } = {}) => {
         try {
           if (!conversationId || !socket.user) return;
-          const conversation = await ChatConversation.findById(conversationId);
+          // Luôn join phòng theo _id chuẩn trong DB — khớp getChatBroadcastRooms (tránh lệch chat_<raw client>).
+          const conversation = await ChatConversation.findById(String(conversationId).trim());
           if (!conversation || !canAccessConversation(conversation, socket.user)) {
             console.warn('[ChatSocket] join denied', {
               socketId: socket.id,
@@ -51,34 +52,48 @@ class ChatSocket {
             });
             return;
           }
-          socket.join(`chat_${conversationId}`);
+          const cid = String(conversation._id);
+          socket.join(`chat_${cid}`);
           console.log('[ChatSocket] joined', {
             socketId: socket.id,
-            conversationId,
+            conversationId: cid,
             email: socket.user?.email,
           });
-          socket.emit('chat:joined', { conversationId });
+          socket.emit('chat:joined', { conversationId: cid });
         } catch (error) {
           console.error('[ChatSocket] join error:', error.message);
           socket.emit('chat:error', { message: 'Không thể vào nhóm chat' });
         }
       });
 
-      socket.on('chat:leave', ({ conversationId } = {}) => {
-        if (conversationId) socket.leave(`chat_${conversationId}`);
+      socket.on('chat:leave', async ({ conversationId } = {}) => {
+        try {
+          if (!conversationId) return;
+          const normalized = String(conversationId).trim();
+          const conversation = await ChatConversation.findById(normalized).select('_id');
+          const cid = conversation ? String(conversation._id) : normalized;
+          socket.leave(`chat_${cid}`);
+        } catch (error) {
+          console.error('[ChatSocket] leave error:', error.message);
+        }
       });
 
       socket.on('chat:typing', async ({ conversationId, isTyping = true } = {}) => {
         try {
           if (!conversationId || !socket.user) return;
-          const conversation = await ChatConversation.findById(conversationId);
+          const conversation = await ChatConversation.findById(String(conversationId).trim());
           if (!conversation || conversation.status === 'locked' || !canAccessConversation(conversation, socket.user)) return;
-          // Cùng đường broadcast với message; client sẽ bỏ qua typing của chính mình bằng senderEmail.
+          const cid = String(conversation._id);
+          const isGuardianTyping =
+            Boolean(normalizeRoomValue(socket.user?.guardian_id)) ||
+            Boolean(portalGuardianIdFromEmail(socket.user?.email));
+          // Payload conversationId thống nhất với REST/socket broadcast để client so khớp selectedId.
           ioEmitToEachRoom(this.io, getChatBroadcastRooms(conversation), 'chat:typing', {
-            conversationId: String(conversationId),
+            conversationId: cid,
             userId: String(socket.user._id),
             senderEmail: socket.user.email,
             name: socket.user.fullname || socket.user.fullName || socket.user.email,
+            isGuardianTyping,
             isTyping,
           });
         } catch (error) {
