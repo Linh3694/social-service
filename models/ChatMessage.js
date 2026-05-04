@@ -18,6 +18,15 @@ const readReceiptSchema = new mongoose.Schema({
   readAt: { type: Date, default: Date.now },
 }, { _id: false });
 
+/** Một reaction trên tin nhắn — mỗi user tối đa một bản ghi trong mảng. */
+const reactionSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  email: { type: String, trim: true, lowercase: true, default: '' },
+  name: { type: String, trim: true, default: '' },
+  emoji: { type: String, required: true, trim: true },
+  createdAt: { type: Date, default: Date.now },
+}, { _id: false });
+
 const chatMessageSchema = new mongoose.Schema({
   conversation: {
     type: mongoose.Schema.Types.ObjectId,
@@ -30,9 +39,15 @@ const chatMessageSchema = new mongoose.Schema({
   content: { type: String, required: true, trim: true, maxlength: 5000 },
   replyTo: replySnapshotSchema,
   readBy: [readReceiptSchema],
+  reactions: [reactionSchema],
+  /** Tin đã thu hồi — FE hiển thị placeholder; `content` giữ nguyên để audit. */
+  recalledAt: { type: Date, default: null },
+  recalledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   isDeleted: { type: Boolean, default: false },
 }, { timestamps: true });
 
 chatMessageSchema.index({ conversation: 1, createdAt: -1 });
+/** Tìm reaction theo user trong một tin (toggle nhanh). */
+chatMessageSchema.index({ 'reactions.user': 1 });
 
 module.exports = mongoose.model('ChatMessage', chatMessageSchema);

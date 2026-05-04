@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const ChatConversation = require('../models/ChatConversation');
 const ChatMessage = require('../models/ChatMessage');
 const User = require('../models/User');
@@ -694,6 +695,40 @@ async function emitToConversation(conversation, event, payload) {
   ioEmitToEachRoom(global.io, rooms, event, payload);
 }
 
+/** Emoji reaction cố định (đồng bộ với mobile / web). */
+const CHAT_REACTION_EMOJIS = new Set(['clap', 'joy', 'cry', 'surprised', 'party', 'sleepy']);
+
+/** Cửa sổ thu hồi tin (ms) — chỉ người gửi, sau khi gửi. */
+const RECALL_WINDOW_MS = 15 * 60 * 1000;
+
+function serializeReactionsForApi(reactions) {
+  if (!reactions?.length) return [];
+  return reactions.map((r) => ({
+    user: r.user ? String(r.user) : undefined,
+    email: r.email || '',
+    name: r.name || '',
+    emoji: r.emoji,
+    createdAt: (r.createdAt ? new Date(r.createdAt) : new Date()).toISOString(),
+  }));
+}
+
+async function loadMessageWithAccess(messageId, user) {
+  const id = String(messageId || '').trim();
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    const err = new Error('Tin nhắn không hợp lệ');
+    err.statusCode = 400;
+    throw err;
+  }
+  const message = await ChatMessage.findOne({ _id: id, isDeleted: false });
+  if (!message) {
+    const err = new Error('Không tìm thấy tin nhắn');
+    err.statusCode = 404;
+    throw err;
+  }
+  const conversation = await getConversationForUser(message.conversation, user);
+  return { message, conversation };
+}
+
 exports.listConversations = async (req, res) => {
   try {
     const token = getBearerToken(req);
@@ -892,6 +927,128 @@ exports.markRead = async (req, res) => {
   } catch (error) {
     console.error('[Chat] markRead error:', error);
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể đánh dấu đã đọc' });
+  }
+};
+
+/** Bật/tắt reaction emoji trên tin (1 user / 1 emoji; emoji lặp ⇒ gỡ). */
+exports.toggleReaction = async (req, res) => {
+  try {
+    const emoji = String(req.body.emoji || '').trim();
+    if (!CHAT_REACTION_EMOJIS.has(emoji)) {
+      return res.status(400).json({ success: false, message: 'Emoji không hợp lệ' });
+    }
+    const { message, conversation } = await loadMessageWithAccess(req.params.messageId, req.user);
+    if (message.recalledAt) {
+      return res.status(400).json({ success: false, message: 'Tin nhắn đã thu hồi' });
+    }
+    if (conversation.status === 'locked') {
+      return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
+    }
+
+    const uid = String(req.user._id);
+    const others = (message.reactions || []).filter((r) => String(r.user) !== uid);
+    const prev = (message.reactions || []).find((r) => String(r.user) === uid);
+
+    let nextReactions;
+    if (prev) {
+      if (prev.emoji === emoji) {
+        nextReactions = others;
+      } else {
+        nextReactions = [
+          ...others,
+          {
+            user: req.user._id,
+            email: normalizeEmail(req.user.email),
+            name: userDisplayName(req.user),
+            emoji,
+            createdAt: new Date(),
+          },
+        ];
+      }
+    } else {
+      nextReactions = [
+        ...others,
+        {
+          user: req.user._id,
+          email: normalizeEmail(req.user.email),
+          name: userDisplayName(req.user),
+          emoji,
+          createdAt: new Date(),
+        },
+      ];
+    }
+
+    message.reactions = nextReactions;
+    message.markModified('reactions');
+    await message.save();
+
+    const serialized = serializeReactionsForApi(message.reactions);
+    await emitToConversation(conversation, 'chat:message:reaction', {
+      conversationId: String(conversation._id),
+      messageId: String(message._id),
+      reactions: serialized,
+    });
+
+    res.json({ success: true, data: { messageId: String(message._id), reactions: serialized } });
+  } catch (error) {
+    console.error('[Chat] toggleReaction error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể cập nhật reaction' });
+  }
+};
+
+/** Thu hồi tin: chỉ người gửi, trong RECALL_WINDOW_MS. */
+exports.recallMessage = async (req, res) => {
+  try {
+    const { message, conversation } = await loadMessageWithAccess(req.params.messageId, req.user);
+    if (message.recalledAt) {
+      return res.status(400).json({ success: false, message: 'Tin nhắn đã được thu hồi trước đó' });
+    }
+    if (conversation.status === 'locked') {
+      return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
+    }
+    if (String(message.sender) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'Chỉ người gửi mới thu hồi được tin nhắn' });
+    }
+    const age = Date.now() - new Date(message.createdAt).getTime();
+    if (age > RECALL_WINDOW_MS) {
+      return res.status(403).json({
+        success: false,
+        message: 'Tin nhắn đã quá thời gian thu hồi (15 phút)',
+      });
+    }
+
+    message.recalledAt = new Date();
+    message.recalledBy = req.user._id;
+    await message.save();
+
+    if (
+      conversation.lastMessage
+      && conversation.lastMessage.messageId
+      && String(conversation.lastMessage.messageId) === String(message._id)
+    ) {
+      conversation.lastMessage.content = '';
+      conversation.markModified('lastMessage');
+      await conversation.save();
+    }
+
+    await emitToConversation(conversation, 'chat:message:recalled', {
+      conversationId: String(conversation._id),
+      messageId: String(message._id),
+      recalledAt: message.recalledAt.toISOString(),
+      recalledBy: String(req.user._id),
+    });
+
+    res.json({
+      success: true,
+      data: {
+        messageId: String(message._id),
+        recalledAt: message.recalledAt.toISOString(),
+        recalledBy: String(req.user._id),
+      },
+    });
+  } catch (error) {
+    console.error('[Chat] recallMessage error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể thu hồi tin nhắn' });
   }
 };
 
