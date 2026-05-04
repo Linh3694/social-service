@@ -419,14 +419,31 @@ function countParticipantsByRole(participants, role) {
 }
 
 async function ensureClassConversations({ classId, schoolYearId, token, trustedScope, user }) {
-  // Với guardian, token Parent Portal chỉ dùng để lấy scope hợp lệ trước đó.
-  // Sau khi đã verify scope, đọc metadata lớp bằng service key để tránh Frappe Resource API trả 403.
+  const isGuardian = userRole(user) === 'guardian';
   let scope;
+
   try {
-    scope = await frappeService.getClassChatScope(classId, schoolYearId, trustedScope ? null : token);
+    if (isGuardian && token) {
+      // Parent Portal JWT không phải Bearer Frappe: gửi qua X-Parent-Portal-Token + API key để đọc roster lớp.
+      try {
+        scope = await frappeService.getClassChatScope(classId, schoolYearId, { parentPortalToken: token });
+      } catch (portalErr) {
+        console.debug('[Chat] getClassChatScope với Parent Portal token thất bại — thử service key', {
+          classId,
+          schoolYearId,
+          status: portalErr?.response?.status,
+          message: portalErr.message,
+        });
+        scope = await frappeService.getClassChatScope(classId, schoolYearId, null);
+      }
+    } else {
+      // Giáo viên: Bearer Frappe. PH không token (hiếm): chỉ service key.
+      const auth = trustedScope && isGuardian ? null : token;
+      scope = await frappeService.getClassChatScope(classId, schoolYearId, auth);
+    }
   } catch (error) {
-    if (!trustedScope) throw error;
-    console.debug('[Chat] Không đọc metadata lớp bằng service key — fallback scope PH (403 Frappe thường gặp nếu service key không quyền Resource):', {
+    if (!trustedScope || !isGuardian) throw error;
+    console.debug('[Chat] Không đọc được scope lớp từ Frappe — fallback PH tối thiểu', {
       classId,
       schoolYearId,
       status: error?.response?.status,
@@ -571,7 +588,9 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
           type: payload.type,
         },
       },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
+      // Chỉ bản ghi mới (upsert) mới auto timestamps; update membership không bump updatedAt
+      // (nếu bump thì mọi nhóm "Chưa có tin" lên đầu vì updatedAt=now, thua lastMessage.createdAt cũ).
+      { new: true, upsert: true, setDefaultsOnInsert: true, timestamps: !existing },
     );
     conversations.push(conversation);
   }
@@ -642,6 +661,17 @@ function serializeConversation(conversation, user) {
   };
 }
 
+/** Số tin chưa đọc của user (sort API trước khi serialize). */
+function conversationUnreadCountForUser(conversation, user) {
+  const plain = conversation.toObject ? conversation.toObject() : conversation;
+  const key = participantKey(user);
+  const unreadCounts = plain.unreadCounts || {};
+  const raw = unreadCounts instanceof Map
+    ? unreadCounts.get(key)
+    : unreadCounts[key];
+  return Math.max(0, Number(raw || 0));
+}
+
 /** Thời gian hoạt động để sort list: tin cuối rồi updatedAt; tránh NaN; bằng nhau sort _id ở caller. */
 function conversationActivityMillisForSort(doc) {
   const lm = doc.lastMessage?.createdAt;
@@ -694,7 +724,7 @@ exports.listConversations = async (req, res) => {
         const ensured = await ensureClassConversations({
           classId: mergedTrusted.classId,
           schoolYearId: mergedTrusted.schoolYearId,
-          token: null,
+          token,
           trustedScope: mergedTrusted,
           user: req.user,
         });
@@ -709,6 +739,9 @@ exports.listConversations = async (req, res) => {
     const visible = uniqueConversations
       .filter((conversation) => canAccessConversation(conversation, req.user))
       .sort((a, b) => {
+        const rb = conversationUnreadCountForUser(b, req.user) > 0 ? 1 : 0;
+        const ra = conversationUnreadCountForUser(a, req.user) > 0 ? 1 : 0;
+        if (rb !== ra) return rb - ra;
         const db = conversationActivityMillisForSort(b);
         const da = conversationActivityMillisForSort(a);
         if (db !== da) return db - da;

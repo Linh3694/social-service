@@ -60,6 +60,16 @@ class FrappeService {
     };
   }
 
+  /**
+   * Chuẩn hoá headers cho Resource /api/method: string → Bearer Frappe, object → giữ nguyên (vd. Parent Portal).
+   * null/undefined/'' → không gửi headers (chỉ API key từ interceptor).
+   */
+  normalizeFrappeRequestHeaders(hdr) {
+    if (hdr == null || hdr === '') return undefined;
+    if (typeof hdr === 'string') return this.buildAuthHeaders(hdr);
+    return hdr;
+  }
+
   decodeParentPortalToken(token) {
     if (!token) return null;
     try {
@@ -141,12 +151,13 @@ class FrappeService {
    * @param {string} userEmail - User email hoặc username
    * @param {string} token - Bearer token
    */
-  async getUserDetail(userEmail, token) {
+  async getUserDetail(userEmail, hdr) {
     try {
       console.log(`[FrappeService] Fetching user detail: ${userEmail}`);
-      
+
+      const headers = this.normalizeFrappeRequestHeaders(hdr);
       const response = await this.api.get(`/api/resource/User/${userEmail}`, {
-        headers: this.buildAuthHeaders(token)
+        ...(headers ? { headers } : {}),
       });
 
       if (!response.data?.data) {
@@ -330,18 +341,20 @@ class FrappeService {
     }
   }
 
-  async getResource(doctype, name, token) {
+  async getResource(doctype, name, hdr) {
     const endpoint = `/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}`;
+    const headers = this.normalizeFrappeRequestHeaders(hdr);
     const response = await this.api.get(endpoint, {
-      headers: token ? this.buildAuthHeaders(token) : undefined,
+      ...(headers ? { headers } : {}),
     });
     return response.data?.data || null;
   }
 
-  async listResources(doctype, params = {}, token) {
+  async listResources(doctype, params = {}, hdr) {
+    const headers = this.normalizeFrappeRequestHeaders(hdr);
     const response = await this.api.get(`/api/resource/${encodeURIComponent(doctype)}`, {
       params,
-      headers: token ? this.buildAuthHeaders(token) : undefined,
+      ...(headers ? { headers } : {}),
     });
     return response.data?.data || [];
   }
@@ -368,31 +381,33 @@ class FrappeService {
     return this.chatPermissionDoctypesReady;
   }
 
-  async callFrappeGetMethod(methodName, params = {}, token) {
+  async callFrappeGetMethod(methodName, params = {}, hdr) {
+    const headers = this.normalizeFrappeRequestHeaders(hdr);
     const response = await this.api.get(`/api/method/${methodName}`, {
       params,
-      headers: token ? this.buildAuthHeaders(token) : undefined,
+      ...(headers ? { headers } : {}),
     });
     const message = response.data?.message ?? response.data;
     return message?.data ?? message;
   }
 
-  async callFrappePostMethod(methodName, params = {}, token) {
+  async callFrappePostMethod(methodName, params = {}, hdr) {
+    const headers = this.normalizeFrappeRequestHeaders(hdr);
     const response = await this.api.post(`/api/method/${methodName}`, params, {
-      headers: token ? this.buildAuthHeaders(token) : undefined,
+      ...(headers ? { headers } : {}),
     });
     const message = response.data?.message ?? response.data;
     return message?.data ?? message;
   }
 
-  async getClassMetadata(classId, token) {
-    const cls = await this.getResource('SIS Class', classId, token);
+  async getClassMetadata(classId, hdr) {
+    const cls = await this.getResource('SIS Class', classId, hdr);
     if (!cls) return null;
 
     let schoolYear = null;
     if (cls.school_year_id) {
       try {
-        schoolYear = await this.getResource('SIS School Year', cls.school_year_id, token);
+        schoolYear = await this.getResource('SIS School Year', cls.school_year_id, hdr);
       } catch (error) {
         console.warn('[FrappeService] Không lấy được năm học của lớp:', error.message);
       }
@@ -408,24 +423,36 @@ class FrappeService {
     };
   }
 
-  async getClassChatScope(classId, schoolYearId, token) {
+  /**
+   * auth: Bearer Frappe (string) | chỉ service key (null/undefined) | Parent Portal { parentPortalToken }.
+   */
+  async getClassChatScope(classId, schoolYearId, auth) {
     await this.ensureChatPermissionDoctypes();
 
-    const cls = await this.getResource('SIS Class', classId, token);
+    let hdr;
+    if (auth && typeof auth === 'object' && auth.parentPortalToken) {
+      hdr = this.buildParentPortalAuthHeaders(auth.parentPortalToken);
+    } else if (typeof auth === 'string' && auth) {
+      hdr = this.buildAuthHeaders(auth);
+    } else {
+      hdr = undefined;
+    }
+
+    const cls = await this.getResource('SIS Class', classId, hdr);
     if (!cls) return null;
 
-    const metadata = await this.getClassMetadata(classId, token);
-    const directory = await this.getClassGuardianDirectory(classId, schoolYearId || cls.school_year_id, token);
+    const metadata = await this.getClassMetadata(classId, hdr);
+    const directory = await this.getClassGuardianDirectory(classId, schoolYearId || cls.school_year_id, hdr);
     const teacherIds = [cls.homeroom_teacher, cls.vice_homeroom_teacher].filter(Boolean);
     const teachers = [];
 
     await Promise.all(teacherIds.map(async (teacherId) => {
       try {
-        const teacher = await this.getResource('SIS Teacher', teacherId, null);
+        const teacher = await this.getResource('SIS Teacher', teacherId, hdr);
         const userId = teacher?.user_id;
         let user = null;
         if (userId) {
-          user = await this.getUserDetail(userId, null);
+          user = await this.getUserDetail(userId, hdr);
         }
         teachers.push({
           teacherId,
@@ -453,7 +480,7 @@ class FrappeService {
     };
   }
 
-  async getClassGuardianDirectory(classId, schoolYearId, token) {
+  async getClassGuardianDirectory(classId, schoolYearId, hdr) {
     if (!classId) return { guardians: [], students: [] };
 
     const classRowsPayload = await this.callFrappeGetMethod(
@@ -462,7 +489,7 @@ class FrappeService {
         class_id: classId,
         ...(schoolYearId ? { school_year_id: schoolYearId } : {}),
       },
-      token
+      hdr
     );
     const classRows = Array.isArray(classRowsPayload)
       ? classRowsPayload
@@ -475,7 +502,7 @@ class FrappeService {
     try {
       const payload = await this.callFrappePostMethod('erp.api.erp_sis.student.batch_get_students', {
         student_ids: studentIds,
-      }, token);
+      }, hdr);
       students = Array.isArray(payload) ? payload : payload?.data || [];
     } catch (error) {
       console.warn('[FrappeService] batch_get_students failed:', error.message);
@@ -530,7 +557,7 @@ class FrappeService {
         const payload = await this.callFrappePostMethod(
           'erp.api.erp_sis.family.get_guardians_by_students',
           { student_ids: studentIds },
-          token
+          hdr
         );
         const guardians = Array.isArray(payload) ? payload : payload?.guardians || [];
         guardians.forEach((guardian) => {
@@ -557,7 +584,7 @@ class FrappeService {
           ]),
           filters: JSON.stringify([['student', 'in', studentIds]]),
           limit_page_length: 1000,
-        });
+        }, hdr);
         const guardianIds = Array.from(new Set(
           relationships.map((relationship) => relationship.guardian).filter(Boolean)
         ));
@@ -574,7 +601,7 @@ class FrappeService {
           ]),
           filters: JSON.stringify([['name', 'in', guardianIds]]),
           limit_page_length: 1000,
-        });
+        }, hdr);
         const guardiansByName = Object.fromEntries(guardians.map((guardian) => [guardian.name, guardian]));
 
         relationships.forEach((relationship) => {
@@ -608,7 +635,7 @@ class FrappeService {
       try {
         return await this.callFrappeGetMethod('erp.api.erp_sis.family.get_family_details', {
           family_code: familyCode,
-        }, token);
+        }, hdr);
       } catch {
         return family;
       }
@@ -623,7 +650,7 @@ class FrappeService {
       try {
         const family = await this.callFrappeGetMethod('erp.api.erp_sis.family.get_family_details', {
           family_code: familyCode,
-        }, token);
+        }, hdr);
         familyPayloads.push(family);
       } catch (error) {
         console.warn(`[FrappeService] Không lấy được family details ${familyCode}:`, error.message);
@@ -635,7 +662,7 @@ class FrappeService {
       try {
         const payload = await this.callFrappeGetMethod('erp.api.erp_sis.family.get_family_data', {
           student_id: studentId,
-        }, token);
+        }, hdr);
         const families = await Promise.all(normalizeFamiliesPayload(payload).map(enrichFamilyDetails));
         familyPayloads.push(...families);
       } catch (error) {
@@ -648,7 +675,7 @@ class FrappeService {
 
     if (familyPayloads.length === 0) {
       try {
-        const payload = await this.callFrappeGetMethod('erp.api.erp_sis.family.get_all_families', {}, token);
+        const payload = await this.callFrappeGetMethod('erp.api.erp_sis.family.get_all_families', {}, hdr);
         const allFamilies = normalizeFamiliesPayload(payload);
         const matchedFamilies = allFamilies.filter((family) =>
           (family?.relationships || []).some((relationship) => studentIds.includes(relationshipStudentId(relationship)))
