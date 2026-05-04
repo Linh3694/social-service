@@ -284,6 +284,106 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
   };
 }
 
+// ===== Helpers cho merge membership (tránh ghi đè participants/teachers/guardians khi scope thiếu) =====
+//
+// Lý do: ensureClassConversations đang gọi findOneAndUpdate với $set: { participants, teachers, guardians }
+// trên scope của REQUESTER. Khi requester là parent (mobile/web portal) và scope.teachers rỗng
+// (do fallback hoặc Frappe Resource API trả 403), participants bị ghi đè làm teacher đang chat
+// MẤT QUYỀN truy cập conversation -> 403 "Bạn không có quyền truy cập nhóm chat này".
+//
+// Fix: chuyển từ REPLACE sang UNION cho membership (participants/teachers/guardians/studentIds).
+// Việc revoke khỏi roster phải làm ở flow đồng bộ riêng (cron / webhook), không phải ở read-path.
+
+/** Khóa định danh participant để dedup khi merge. Phân biệt theo role. */
+function participantIdentityKey(p) {
+  if (!p) return '';
+  const role = p.role || '';
+  if (p.user) return `${role}|user:${String(p.user).toLowerCase()}`;
+  const email = normalizeEmail(p.email);
+  if (email) return `${role}|email:${email}`;
+  if (role === 'teacher' && p.teacherId) return `teacher|tid:${normalizeId(p.teacherId).toLowerCase()}`;
+  if (role === 'guardian' && p.guardianId) return `guardian|gid:${normalizeId(p.guardianId).toLowerCase()}`;
+  return `${role}|name:${normalizeId(p.name).toLowerCase()}`;
+}
+
+/** Khóa định danh snapshot teacher. */
+function teacherSnapshotKey(t) {
+  if (!t) return '';
+  const email = normalizeEmail(t.email);
+  if (email) return `email:${email}`;
+  if (t.teacherId) return `tid:${normalizeId(t.teacherId).toLowerCase()}`;
+  return `name:${normalizeId(t.name).toLowerCase()}`;
+}
+
+/** Khóa định danh snapshot guardian. */
+function guardianSnapshotKey(g) {
+  if (!g) return '';
+  if (g.guardianId) return `gid:${normalizeId(g.guardianId).toLowerCase()}`;
+  const email = normalizeEmail(g.email);
+  if (email) return `email:${email}`;
+  return `name:${normalizeId(g.name).toLowerCase()}`;
+}
+
+/**
+ * Union 2 array theo key. Entry trùng key được merge bằng `mergeFn(oldEntry, newEntry)` —
+ * mặc định: incoming ghi đè field truthy, fallback giữ field cũ; KHÔNG xoá entry cũ.
+ */
+function unionByKey(existing, incoming, getKey, mergeFn) {
+  const map = new Map();
+  for (const item of existing || []) {
+    const key = getKey(item);
+    if (key) map.set(key, item);
+  }
+  for (const item of incoming || []) {
+    const key = getKey(item);
+    if (!key) continue;
+    const prev = map.get(key);
+    map.set(key, prev ? mergeFn(prev, item) : item);
+  }
+  return Array.from(map.values());
+}
+
+/** Merge field-by-field cho participant (giữ user._id cũ nếu incoming thiếu). */
+function mergeParticipantFields(oldP, newP) {
+  return {
+    ...oldP,
+    ...newP,
+    user: newP.user || oldP.user,
+    email: normalizeEmail(newP.email) || normalizeEmail(oldP.email),
+    name: newP.name || oldP.name,
+    role: newP.role || oldP.role,
+    teacherId: newP.teacherId || oldP.teacherId,
+    guardianId: newP.guardianId || oldP.guardianId,
+    avatarUrl: newP.avatarUrl || oldP.avatarUrl,
+    studentIds: Array.from(new Set([
+      ...((oldP.studentIds || []).map(String)),
+      ...((newP.studentIds || []).map(String)),
+    ])).filter(Boolean),
+  };
+}
+
+/** Merge field-by-field cho snapshot teacher/guardian. */
+function mergeSnapshotFields(oldS, newS) {
+  return {
+    ...oldS,
+    ...newS,
+    email: normalizeEmail(newS.email) || normalizeEmail(oldS.email),
+    name: newS.name || oldS.name,
+    teacherId: newS.teacherId || oldS.teacherId,
+    guardianId: newS.guardianId || oldS.guardianId,
+    avatarUrl: newS.avatarUrl || oldS.avatarUrl,
+    studentIds: Array.from(new Set([
+      ...((oldS.studentIds || []).map(String)),
+      ...((newS.studentIds || []).map(String)),
+    ])).filter(Boolean),
+  };
+}
+
+/** Đếm participants theo role (để log cảnh báo khi scope mới rớt teacher). */
+function countParticipantsByRole(participants, role) {
+  return (participants || []).filter((p) => p?.role === role).length;
+}
+
 async function ensureClassConversations({ classId, schoolYearId, token, trustedScope, user }) {
   // Với guardian, token Parent Portal chỉ dùng để lấy scope hợp lệ trước đó.
   // Sau khi đã verify scope, đọc metadata lớp bằng service key để tránh Frappe Resource API trả 403.
@@ -348,19 +448,72 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
   const conversations = [];
   for (const spec of conversationSpecs) {
     const payload = await buildConversationPayload(scope, spec.type, user, spec.student);
+
+    // Đọc existing TRƯỚC để merge membership (UNION) thay vì REPLACE.
+    // .lean() để không trả Mongoose Document — chỉ cần dữ liệu thuần.
+    const existing = await ChatConversation.findOne({
+      classId: payload.classId,
+      schoolYearId: payload.schoolYearId,
+      type: payload.type,
+    }).lean();
+
+    // Cảnh báo khi scope hiện tại rớt teacher mà existing đang có — đây là dấu hiệu
+    // bug gốc ở getClassChatScope/fallback. Sau fix vẫn LOG để monitor tần suất.
+    if (existing) {
+      const existingTeacherCount = countParticipantsByRole(existing.participants, 'teacher');
+      const newTeacherCount = countParticipantsByRole(payload.participants, 'teacher');
+      if (existingTeacherCount > 0 && newTeacherCount === 0) {
+        console.warn('[Chat] Scope mới không có teacher — preserve teachers từ existing', {
+          conversationId: String(existing._id),
+          classId: payload.classId,
+          schoolYearId: payload.schoolYearId,
+          type: payload.type,
+          existingTeacherCount,
+          requesterEmail: user?.email,
+          requesterRole: userRole(user),
+          usingFallback: !!trustedScope,
+        });
+      }
+    }
+
+    const mergedParticipants = unionByKey(
+      existing?.participants,
+      payload.participants,
+      participantIdentityKey,
+      mergeParticipantFields,
+    );
+    const mergedTeachers = unionByKey(
+      existing?.teachers,
+      payload.teachers,
+      teacherSnapshotKey,
+      mergeSnapshotFields,
+    );
+    const mergedGuardians = unionByKey(
+      existing?.guardians,
+      payload.guardians,
+      guardianSnapshotKey,
+      mergeSnapshotFields,
+    );
+    const mergedStudentIds = Array.from(new Set([
+      ...((existing?.studentIds || []).map(String)),
+      ...((payload.studentIds || []).map(String)),
+    ])).filter(Boolean);
+
     const conversation = await ChatConversation.findOneAndUpdate(
       { classId: payload.classId, schoolYearId: payload.schoolYearId, type: payload.type },
       {
         $set: {
+          // Metadata vẫn REPLACE (không phải membership)
           title: payload.title,
           className: payload.className,
           schoolYearName: payload.schoolYearName,
           status: payload.status,
           lockedReason: payload.lockedReason,
-          participants: payload.participants,
-          studentIds: payload.studentIds,
-          guardians: payload.guardians,
-          teachers: payload.teachers,
+          // Membership: dùng kết quả đã UNION với existing (nếu có)
+          participants: mergedParticipants,
+          studentIds: mergedStudentIds,
+          guardians: mergedGuardians,
+          teachers: mergedTeachers,
         },
         $setOnInsert: {
           classId: payload.classId,
