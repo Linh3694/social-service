@@ -80,15 +80,53 @@ class ChatSocket {
 
       socket.on('chat:typing', async ({ conversationId, isTyping = true } = {}) => {
         try {
-          if (!conversationId || !socket.user) return;
+          // Log mọi event nhận được để debug đường truyền typing từ mobile -> server -> web.
+          console.log('[ChatSocket][typing] recv', {
+            socketId: socket.id,
+            email: socket.user?.email,
+            userId: socket.user?._id,
+            guardianId: socket.user?.guardian_id,
+            conversationId,
+            isTyping,
+          });
+          if (!conversationId || !socket.user) {
+            console.warn('[ChatSocket][typing] skip — missing conversationId/user');
+            return;
+          }
           const conversation = await ChatConversation.findById(String(conversationId).trim());
-          if (!conversation || conversation.status === 'locked' || !canAccessConversation(conversation, socket.user)) return;
+          if (!conversation) {
+            console.warn('[ChatSocket][typing] skip — conversation not found', { conversationId });
+            return;
+          }
+          if (conversation.status === 'locked') {
+            console.warn('[ChatSocket][typing] skip — conversation locked', {
+              conversationId: String(conversation._id),
+            });
+            return;
+          }
+          if (!canAccessConversation(conversation, socket.user)) {
+            console.warn('[ChatSocket][typing] skip — access denied', {
+              conversationId: String(conversation._id),
+              email: socket.user?.email,
+              userId: socket.user?._id,
+              guardianId: socket.user?.guardian_id,
+            });
+            return;
+          }
           const cid = String(conversation._id);
           const isGuardianTyping =
             Boolean(normalizeRoomValue(socket.user?.guardian_id)) ||
             Boolean(portalGuardianIdFromEmail(socket.user?.email));
+          const rooms = getChatBroadcastRooms(conversation);
+          console.log('[ChatSocket][typing] broadcast', {
+            conversationId: cid,
+            email: socket.user?.email,
+            isGuardianTyping,
+            isTyping,
+            rooms,
+          });
           // Payload conversationId thống nhất với REST/socket broadcast để client so khớp selectedId.
-          ioEmitToEachRoom(this.io, getChatBroadcastRooms(conversation), 'chat:typing', {
+          ioEmitToEachRoom(this.io, rooms, 'chat:typing', {
             conversationId: cid,
             userId: String(socket.user._id),
             senderEmail: socket.user.email,
@@ -97,6 +135,7 @@ class ChatSocket {
             isTyping,
           });
         } catch (error) {
+          console.error('[ChatSocket][typing] error:', error?.message);
           socket.emit('chat:error', { message: 'Không thể gửi trạng thái đang nhập' });
         }
       });
