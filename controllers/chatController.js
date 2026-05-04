@@ -732,7 +732,11 @@ function sanitizeIncomingAttachments(raw) {
 /** Nội dung hiển thị trong lastMessage / reply quote khi tin không có text. */
 function lastMessageContentPreview(content, attachments) {
   const c = String(content || '').trim();
-  if (c) return c;
+  if (c) {
+    // Sticker Wislife — ẩn chuỗi wire {:wislife:…:}
+    if (/^\{:wislife:[a-z0-9_]+:\}$/i.test(c)) return '[Emoji]';
+    return c;
+  }
   const atts = attachments || [];
   if (!atts.length) return '';
   const hasImage = atts.some((x) => x.kind === 'image');
@@ -745,7 +749,10 @@ function lastMessageContentPreview(content, attachments) {
 function messageSnippetForReply(msg) {
   const plain = msg?.toObject ? msg.toObject() : msg;
   const c = String(plain.content || '').trim();
-  if (c) return c.slice(0, 500);
+  if (c) {
+    if (/^\{:wislife:[a-z0-9_]+:\}$/i.test(c)) return '[Emoji]';
+    return c.slice(0, 500);
+  }
   if (plain.attachments?.length) return lastMessageContentPreview('', plain.attachments);
   return '';
 }
