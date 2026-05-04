@@ -56,8 +56,10 @@ function getChatBroadcastRooms(conversation) {
 }
 
 /**
- * Phát từng room — union rõ ràng (redis-adapter + io.to([a,b]) có thể sót client).
- * Client chat đã upsert theo _id nên trùng event cùng tin nhắn là an toàn.
+ * Phát một event tới tập room — mỗi socket chỉ nhận một lần dù nằm trong nhiều room.
+ *
+ * Trước đây lặp `io.to(room).emit` từng room khiến client join `user_*` + `email_*` + `guardian_*`
+ * nhận trùng `chat:message` (unread +2 mỗi tin).
  *
  * @param {import('socket.io').Server} io
  * @param {string[]} rooms
@@ -66,13 +68,12 @@ function getChatBroadcastRooms(conversation) {
  */
 function ioEmitToEachRoom(io, rooms, event, payload) {
   if (!io || !rooms.length) return;
-  rooms.forEach((room) => {
-    io.to(room).emit(event, payload);
-  });
+  const uniqueRooms = Array.from(new Set(rooms));
+  io.to(uniqueRooms).emit(event, payload);
 }
 
 /**
- * Tin typing: emitter không nhận lại; phát từng room (giống socket.to(room).emit lặp).
+ * Typing: broadcast tới các room, mỗi subscriber chỉ nhận một lần (trừ emitter xử lý riêng).
  *
  * @param {import('socket.io').Socket} socket
  * @param {string[]} rooms
@@ -81,9 +82,8 @@ function ioEmitToEachRoom(io, rooms, event, payload) {
  */
 function socketEmitToEachRoomExceptSender(socket, rooms, event, payload) {
   if (!socket || !rooms.length) return;
-  rooms.forEach((room) => {
-    socket.to(room).emit(event, payload);
-  });
+  const uniqueRooms = Array.from(new Set(rooms));
+  socket.to(uniqueRooms).emit(event, payload);
 }
 
 module.exports = {
