@@ -379,12 +379,39 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
 function canAccessConversation(conversation, user) {
   const userId = String(user?._id || '');
   const userEmail = normalizeEmail(user?.email);
-  const userGuardianId = normalizeId(user?.guardian_id);
+  // PHHS đăng nhập portal có email <guardianId>@parent.wellspring.edu.vn nhưng socket.user.guardian_id thường undefined.
+  // Suy ra guardianId từ email để khớp với participants được lưu theo guardianId.
+  const userGuardianId =
+    normalizeId(user?.guardian_id).toLowerCase() || portalGuardianIdFromEmail(userEmail);
+  // Email portal suy ra từ guardian_id (chiều ngược) cho user có guardian_id thật.
+  const userPortalEmailFromGuardian = userGuardianId
+    ? parentPortalEmailFromGuardianId(userGuardianId)
+    : '';
 
   return (conversation.participants || []).some((participant) => {
     if (participant.user && String(participant.user) === userId) return true;
-    if (participant.email && normalizeEmail(participant.email) === userEmail) return true;
-    if (participant.guardianId && normalizeId(participant.guardianId) === userGuardianId) return true;
+
+    const partEmail = normalizeEmail(participant.email);
+    if (partEmail && partEmail === userEmail) return true;
+
+    const partGuardianId = normalizeId(participant.guardianId).toLowerCase();
+    if (partGuardianId && userGuardianId && partGuardianId === userGuardianId) return true;
+
+    // Cross-match: participant lưu email portal, user có guardianId — và ngược lại.
+    if (
+      partEmail &&
+      userGuardianId &&
+      portalGuardianIdFromEmail(partEmail) === userGuardianId
+    ) {
+      return true;
+    }
+    if (
+      partGuardianId &&
+      userPortalEmailFromGuardian &&
+      parentPortalEmailFromGuardianId(partGuardianId) === userPortalEmailFromGuardian
+    ) {
+      return true;
+    }
     return false;
   });
 }
