@@ -424,9 +424,47 @@ class FrappeService {
   }
 
   /**
+   * Đọc scope chat lớp qua method ERP whitelist + JWT Parent Portal (tránh /api/resource 403).
+   */
+  async getClassChatScopeViaParentPortalMethod(classId, schoolYearId, parentPortalToken) {
+    const headers = this.buildParentPortalAuthHeaders(parentPortalToken);
+    const response = await this.api.post(
+      '/api/method/erp.api.parent_portal.journal.get_class_chat_scope',
+      {
+        class_id: classId,
+        school_year_id: schoolYearId || '',
+      },
+      { headers },
+    );
+    const message = response.data?.message ?? response.data;
+    if (message && message.success === false) {
+      const err = new Error(message.message || 'get_class_chat_scope failed');
+      err.response = response;
+      throw err;
+    }
+    const payload = message?.data ?? message;
+    if (!payload?.classId) return null;
+    return payload;
+  }
+
+  /**
    * auth: Bearer Frappe (string) | chỉ service key (null/undefined) | Parent Portal { parentPortalToken }.
    */
   async getClassChatScope(classId, schoolYearId, auth) {
+    // PHHS: ưu tiên journal.get_class_chat_scope (db/sql nội bộ) — Resource + header portal vẫn 403 trên nhiều site.
+    if (auth && typeof auth === 'object' && auth.parentPortalToken) {
+      try {
+        const scoped = await this.getClassChatScopeViaParentPortalMethod(
+          classId,
+          schoolYearId,
+          auth.parentPortalToken,
+        );
+        if (scoped) return scoped;
+      } catch (e) {
+        console.debug('[FrappeService] get_class_chat_scope journal:', e?.response?.status || e.message);
+      }
+    }
+
     await this.ensureChatPermissionDoctypes();
 
     let hdr;
