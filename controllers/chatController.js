@@ -847,6 +847,7 @@ exports.sendMessage = async (req, res) => {
       messageId: message._id,
       content: message.content,
       senderName: message.senderSnapshot.name,
+      senderEmail: normalizeEmail(message.senderSnapshot.email),
       senderId: req.user._id,
       createdAt: message.createdAt,
     };

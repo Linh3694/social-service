@@ -42,6 +42,7 @@ const chatConversationSchema = new mongoose.Schema({
     messageId: { type: mongoose.Schema.Types.ObjectId, ref: 'ChatMessage' },
     content: String,
     senderName: String,
+    senderEmail: { type: String, trim: true, lowercase: true },
     senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     createdAt: Date,
   },
