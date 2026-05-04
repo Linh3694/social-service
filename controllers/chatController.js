@@ -695,8 +695,8 @@ async function emitToConversation(conversation, event, payload) {
   ioEmitToEachRoom(global.io, rooms, event, payload);
 }
 
-/** Emoji reaction cố định (đồng bộ với mobile / web). */
-const CHAT_REACTION_EMOJIS = new Set(['clap', 'joy', 'cry', 'surprised', 'party', 'sleepy']);
+/** Emoji reaction cố định — đồng bộ journal Wislife (parent-portal) / class feed. */
+const CHAT_REACTION_EMOJIS = new Set(['like', 'love', 'haha', 'wow', 'sad', 'angry']);
 
 /** Cửa sổ thu hồi tin (ms) — chỉ người gửi, sau khi gửi. */
 const RECALL_WINDOW_MS = 15 * 60 * 1000;
