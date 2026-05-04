@@ -88,11 +88,40 @@ function scopeSummary(scope) {
   };
 }
 
-function buildFallbackGuardianScope(scope, user) {
-  const student = {
-    student_id: scope.studentId,
-    student_name: scope.studentName,
+/**
+ * Gom scope guardian cùng lớp + năm: một lần `ensureClassConversations` → một lần gọi Frappe + ít log PM2.
+ */
+function mergeTrustedScopesForSameClass(summaries) {
+  if (!summaries?.length) return null;
+  const mergedStudents = [];
+  const seen = new Set();
+  for (const s of summaries) {
+    if (s.studentId && !seen.has(s.studentId)) {
+      seen.add(s.studentId);
+      mergedStudents.push({
+        student_id: s.studentId,
+        student_name: s.studentName || s.studentId,
+      });
+    }
+  }
+  return {
+    ...summaries[0],
+    _mergedStudents: mergedStudents,
   };
+}
+
+function buildFallbackGuardianScope(scope, user) {
+  const students = scope._mergedStudents?.length
+    ? scope._mergedStudents.map((x) => ({
+      student_id: x.student_id,
+      student_name: x.student_name,
+    }))
+    : (scope.studentId
+      ? [{
+        student_id: scope.studentId,
+        student_name: scope.studentName,
+      }]
+      : []);
   const guardian = {
     name: user?.guardian_id || user?.email,
     guardian_id: user?.guardian_id,
@@ -100,7 +129,7 @@ function buildFallbackGuardianScope(scope, user) {
     email: user?.email,
     portalEmail: user?.email,
     guardian_image: userAvatar(user),
-    students: scope.studentId ? [student] : [],
+    students,
     matchKeys: [user?.email, user?.guardian_id].filter(Boolean).map((value) => String(value).toLowerCase()),
   };
 
@@ -111,7 +140,7 @@ function buildFallbackGuardianScope(scope, user) {
     schoolYearName: scope.schoolYearName || scope.schoolYearTitle || scope.schoolYearId,
     classType: normalizeClassType(scope),
     isActive: scope.isActive !== false,
-    students: scope.studentId ? [student] : [],
+    students,
     guardians: user ? [guardian] : [],
     teachers: [],
   };
@@ -152,8 +181,18 @@ function buildCurrentTeacherParticipant(user) {
 
 function buildCurrentGuardianSnapshot(user, trustedScope) {
   if (!user || userRole(user) !== 'guardian') return null;
-  const studentId = trustedScope?.studentId;
   const guardianId = user.guardian_id || portalGuardianIdFromEmail(user.email);
+  const students = trustedScope?._mergedStudents?.length
+    ? trustedScope._mergedStudents.map((s) => ({
+      student_id: s.student_id,
+      student_name: s.student_name,
+    }))
+    : (trustedScope?.studentId
+      ? [{
+        student_id: trustedScope.studentId,
+        student_name: trustedScope?.studentName,
+      }]
+      : []);
   return {
     name: guardianId || user.email,
     guardian_id: guardianId,
@@ -161,12 +200,7 @@ function buildCurrentGuardianSnapshot(user, trustedScope) {
     email: normalizeEmail(user.email),
     portalEmail: normalizeEmail(user.email),
     guardian_image: userAvatar(user),
-    students: studentId
-      ? [{
-        student_id: studentId,
-        student_name: trustedScope?.studentName,
-      }]
-      : [],
+    students,
     matchKeys: [user.email, user.guardian_id]
       .filter(Boolean)
       .map((value) => normalizeEmail(value)),
@@ -392,7 +426,7 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
     scope = await frappeService.getClassChatScope(classId, schoolYearId, trustedScope ? null : token);
   } catch (error) {
     if (!trustedScope) throw error;
-    console.warn('[Chat] Không đọc được metadata lớp bằng service key, dùng scope guardian fallback:', {
+    console.debug('[Chat] Không đọc metadata lớp bằng service key — fallback scope PH (403 Frappe thường gặp nếu service key không quyền Resource):', {
       classId,
       schoolYearId,
       status: error?.response?.status,
@@ -414,30 +448,46 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
     scope.schoolYearName = trustedScope.schoolYearName || scope.schoolYearName;
   }
 
-  if (trustedScope?.studentId && userRole(user) === 'guardian') {
-    const hasTrustedStudent = (scope.students || []).some((student) => getStudentId(student) === trustedScope.studentId);
-    if (!hasTrustedStudent) {
-      scope.students = [
-        ...(scope.students || []),
-        {
-          student_id: trustedScope.studentId,
-          student_name: trustedScope.studentName,
-        },
-      ];
+  if (trustedScope && userRole(user) === 'guardian') {
+    const mergedIds = trustedScope._mergedStudents?.length
+      ? trustedScope._mergedStudents.map((s) => s.student_id).filter(Boolean)
+      : (trustedScope.studentId ? [trustedScope.studentId] : []);
+
+    for (const studentId of mergedIds) {
+      const hasTrustedStudent = (scope.students || []).some((student) => getStudentId(student) === studentId);
+      if (!hasTrustedStudent) {
+        const stMeta = trustedScope._mergedStudents?.find((x) => x.student_id === studentId);
+        scope.students = [
+          ...(scope.students || []),
+          {
+            student_id: studentId,
+            student_name: stMeta?.student_name || trustedScope.studentName,
+          },
+        ];
+      }
     }
 
-    const hasCurrentGuardian = (scope.guardians || []).some((guardian) => matchesGuardianUser(user, guardian));
-    if (!hasCurrentGuardian) {
-      const currentGuardian = buildCurrentGuardianSnapshot(user, trustedScope);
-      if (currentGuardian) {
-        scope.guardians = [...(scope.guardians || []), currentGuardian];
+    if (mergedIds.length > 0) {
+      const hasCurrentGuardian = (scope.guardians || []).some((guardian) => matchesGuardianUser(user, guardian));
+      if (!hasCurrentGuardian) {
+        const currentGuardian = buildCurrentGuardianSnapshot(user, trustedScope);
+        if (currentGuardian) {
+          scope.guardians = [...(scope.guardians || []), currentGuardian];
+        }
       }
     }
   }
 
-  const scopedStudents = trustedScope?.studentId && userRole(user) === 'guardian'
-    ? (scope.students || []).filter((student) => getStudentId(student) === trustedScope.studentId)
-    : (scope.students || []);
+  const scopedStudents = (() => {
+    if (trustedScope?._mergedStudents?.length && userRole(user) === 'guardian') {
+      const idSet = new Set(trustedScope._mergedStudents.map((s) => s.student_id));
+      return (scope.students || []).filter((student) => idSet.has(getStudentId(student)));
+    }
+    if (trustedScope?.studentId && userRole(user) === 'guardian') {
+      return (scope.students || []).filter((student) => getStudentId(student) === trustedScope.studentId);
+    }
+    return scope.students || [];
+  })();
   const conversationSpecs = [
     { type: 'class_general' },
     ...scopedStudents
@@ -463,7 +513,7 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
       const existingTeacherCount = countParticipantsByRole(existing.participants, 'teacher');
       const newTeacherCount = countParticipantsByRole(payload.participants, 'teacher');
       if (existingTeacherCount > 0 && newTeacherCount === 0) {
-        console.warn('[Chat] Scope mới không có teacher — preserve teachers từ existing', {
+        console.debug('[Chat] Scope mới không có teacher — preserve teachers từ existing', {
           conversationId: String(existing._id),
           classId: payload.classId,
           schoolYearId: payload.schoolYearId,
@@ -632,12 +682,20 @@ exports.listConversations = async (req, res) => {
           uniqueScopes.set(`${scope.studentId || 'all'}:${scope.classId}:${scope.schoolYearId}`, scopeSummary(scope));
         });
 
-      for (const scope of uniqueScopes.values()) {
+      const byClassYear = new Map();
+      for (const s of uniqueScopes.values()) {
+        const k = `${s.classId}\0${s.schoolYearId}`;
+        if (!byClassYear.has(k)) byClassYear.set(k, []);
+        byClassYear.get(k).push(s);
+      }
+
+      for (const group of byClassYear.values()) {
+        const mergedTrusted = mergeTrustedScopesForSameClass(group);
         const ensured = await ensureClassConversations({
-          classId: scope.classId,
-          schoolYearId: scope.schoolYearId,
+          classId: mergedTrusted.classId,
+          schoolYearId: mergedTrusted.schoolYearId,
           token: null,
-          trustedScope: scope,
+          trustedScope: mergedTrusted,
           user: req.user,
         });
         conversations.push(...ensured);
