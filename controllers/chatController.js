@@ -592,6 +592,21 @@ function serializeConversation(conversation, user) {
   };
 }
 
+/** Thời gian hoạt động để sort list: tin cuối rồi updatedAt; tránh NaN; bằng nhau sort _id ở caller. */
+function conversationActivityMillisForSort(doc) {
+  const lm = doc.lastMessage?.createdAt;
+  if (lm) {
+    const t = new Date(lm).getTime();
+    if (Number.isFinite(t)) return t;
+  }
+  const u = doc.updatedAt;
+  if (u) {
+    const t = new Date(u).getTime();
+    if (Number.isFinite(t)) return t;
+  }
+  return 0;
+}
+
 async function emitToConversation(conversation, event, payload) {
   if (!global.io) return;
   const rooms = getChatBroadcastRooms(conversation);
@@ -635,7 +650,12 @@ exports.listConversations = async (req, res) => {
 
     const visible = uniqueConversations
       .filter((conversation) => canAccessConversation(conversation, req.user))
-      .sort((a, b) => new Date(b.lastMessage?.createdAt || b.updatedAt) - new Date(a.lastMessage?.createdAt || a.updatedAt));
+      .sort((a, b) => {
+        const db = conversationActivityMillisForSort(b);
+        const da = conversationActivityMillisForSort(a);
+        if (db !== da) return db - da;
+        return String(a._id).localeCompare(String(b._id));
+      });
 
     res.json({ success: true, data: visible.map((conversation) => serializeConversation(conversation, req.user)) });
   } catch (error) {
