@@ -698,6 +698,58 @@ async function emitToConversation(conversation, event, payload) {
 /** Emoji reaction cố định — đồng bộ journal Wislife (parent-portal) / class feed. */
 const CHAT_REACTION_EMOJIS = new Set(['like', 'love', 'haha', 'wow', 'sad', 'angry']);
 
+function attachmentKindFromMime(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m.startsWith('image/')) return 'image';
+  if (m.startsWith('video/')) return 'video';
+  return 'file';
+}
+
+/** Chỉ chấp nhận URL đã upload qua /uploads/chat/ (chống URL tùy ý). */
+function sanitizeIncomingAttachments(raw) {
+  if (!Array.isArray(raw) || !raw.length) return [];
+  const out = [];
+  for (const a of raw.slice(0, 10)) {
+    const url = String(a.url || '').trim();
+    if (!url.startsWith('/uploads/chat/')) continue;
+    let kind = a.kind;
+    if (kind !== 'image' && kind !== 'file' && kind !== 'video') {
+      kind = attachmentKindFromMime(a.mimeType);
+    }
+    out.push({
+      kind,
+      url,
+      name: String(a.name || 'file').trim().slice(0, 220),
+      mimeType: String(a.mimeType || '').trim().slice(0, 120),
+      size: Math.max(0, Math.min(Number(a.size) || 0, 200 * 1024 * 1024)),
+      width: Number.isFinite(Number(a.width)) ? Number(a.width) : undefined,
+      height: Number.isFinite(Number(a.height)) ? Number(a.height) : undefined,
+    });
+  }
+  return out;
+}
+
+/** Nội dung hiển thị trong lastMessage / reply quote khi tin không có text. */
+function lastMessageContentPreview(content, attachments) {
+  const c = String(content || '').trim();
+  if (c) return c;
+  const atts = attachments || [];
+  if (!atts.length) return '';
+  const hasImage = atts.some((x) => x.kind === 'image');
+  const hasVideo = atts.some((x) => x.kind === 'video');
+  if (hasImage) return '[Hình ảnh]';
+  if (hasVideo) return '[Video]';
+  return '[Tệp đính kèm]';
+}
+
+function messageSnippetForReply(msg) {
+  const plain = msg?.toObject ? msg.toObject() : msg;
+  const c = String(plain.content || '').trim();
+  if (c) return c.slice(0, 500);
+  if (plain.attachments?.length) return lastMessageContentPreview('', plain.attachments);
+  return '';
+}
+
 /** Cửa sổ thu hồi tin (ms) — chỉ người gửi, sau khi gửi. */
 const RECALL_WINDOW_MS = 15 * 60 * 1000;
 
@@ -825,6 +877,30 @@ exports.getMessages = async (req, res) => {
   }
 };
 
+exports.uploadAttachments = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (conversation.status === 'locked') {
+      return res.status(423).json({ success: false, message: 'Nhóm chat năm học cũ chỉ cho xem lại lịch sử' });
+    }
+    const files = req.files || [];
+    if (!files.length) {
+      return res.status(400).json({ success: false, message: 'Không có tệp tải lên' });
+    }
+    const attachments = files.map((file) => ({
+      kind: attachmentKindFromMime(file.mimetype),
+      url: `/uploads/chat/${file.filename}`,
+      name: String(file.originalname || file.filename || 'file').slice(0, 220),
+      mimeType: file.mimetype || '',
+      size: file.size || 0,
+    }));
+    res.json({ success: true, data: { attachments } });
+  } catch (error) {
+    console.error('[Chat] uploadAttachments error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải tệp' });
+  }
+};
+
 exports.sendMessage = async (req, res) => {
   try {
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
@@ -833,8 +909,20 @@ exports.sendMessage = async (req, res) => {
     }
 
     const content = String(req.body.content || '').trim();
-    if (!content) {
-      return res.status(400).json({ success: false, message: 'Nội dung tin nhắn không được để trống' });
+    let attachments = [];
+    if (req.body.attachments != null) {
+      if (typeof req.body.attachments === 'string') {
+        try {
+          attachments = sanitizeIncomingAttachments(JSON.parse(req.body.attachments));
+        } catch (_) {
+          attachments = [];
+        }
+      } else {
+        attachments = sanitizeIncomingAttachments(req.body.attachments);
+      }
+    }
+    if (!content && !attachments.length) {
+      return res.status(400).json({ success: false, message: 'Nội dung hoặc tệp đính kèm là bắt buộc' });
     }
 
     let replyTo;
@@ -847,7 +935,7 @@ exports.sendMessage = async (req, res) => {
       if (replyMessage) {
         replyTo = {
           messageId: replyMessage._id,
-          content: replyMessage.content,
+          content: messageSnippetForReply(replyMessage),
           senderName: replyMessage.senderSnapshot?.name,
         };
       }
@@ -862,7 +950,8 @@ exports.sendMessage = async (req, res) => {
         role: userRole(req.user),
         avatarUrl: userAvatar(req.user),
       },
-      content,
+      content: content || '',
+      attachments,
       replyTo,
       readBy: [{ user: req.user._id, readAt: new Date() }],
     });
@@ -878,9 +967,10 @@ exports.sendMessage = async (req, res) => {
       }
     });
 
+    const lastPreview = lastMessageContentPreview(message.content, message.attachments);
     conversation.lastMessage = {
       messageId: message._id,
-      content: message.content,
+      content: lastPreview,
       senderName: message.senderSnapshot.name,
       senderEmail: normalizeEmail(message.senderSnapshot.email),
       senderId: req.user._id,

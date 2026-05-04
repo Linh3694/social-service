@@ -27,6 +27,17 @@ const reactionSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 }, { _id: false });
 
+/** File/ảnh/video đính kèm (URL phục vụ từ /uploads/chat/). */
+const attachmentSchema = new mongoose.Schema({
+  kind: { type: String, enum: ['image', 'file', 'video'], required: true },
+  url: { type: String, required: true, trim: true },
+  name: { type: String, default: '', trim: true },
+  mimeType: { type: String, default: '', trim: true },
+  size: { type: Number, default: 0 },
+  width: { type: Number },
+  height: { type: Number },
+}, { _id: false });
+
 const chatMessageSchema = new mongoose.Schema({
   conversation: {
     type: mongoose.Schema.Types.ObjectId,
@@ -36,7 +47,12 @@ const chatMessageSchema = new mongoose.Schema({
   },
   sender: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   senderSnapshot: senderSnapshotSchema,
-  content: { type: String, required: true, trim: true, maxlength: 5000 },
+  /** Tin chỉ đính kèm cho phép để trống — kiểm tra ở controller. */
+  content: { type: String, default: '', trim: true, maxlength: 5000 },
+  attachments: {
+    type: [attachmentSchema],
+    default: [],
+  },
   replyTo: replySnapshotSchema,
   readBy: [readReceiptSchema],
   reactions: [reactionSchema],
