@@ -23,6 +23,19 @@ function notify(event, data) {
     .catch(e => console.error(`[Social Service] ⚠️ Notification error (${event}):`, e.message));
 }
 
+/** Wave 3: classId + studentIds trên post → payload Wislife (deep link mobile / Frappe). */
+function wislifePayloadExtra(post) {
+  if (!post) return {};
+  const out = {};
+  const cid = post.classId != null ? String(post.classId).trim() : '';
+  if (cid) out.classId = cid;
+  const sids = Array.isArray(post.studentIds)
+    ? post.studentIds.map((s) => String(s).trim()).filter(Boolean)
+    : [];
+  if (sids.length) out.participantStudentIds = sids;
+  return out;
+}
+
 function getBearerToken(req) {
   const authHeader = req.headers.authorization || '';
   return authHeader.split(' ')[1] || '';
@@ -298,8 +311,17 @@ exports.createPost = async (req, res) => {
     const newfeedSocket = req.app.get('newfeedSocket');
     if (newfeedSocket) await newfeedSocket.broadcastNewPost(populatedPost);
 
-    if (parsedTags.length > 0) {
-      notify('post_tagged', { postId: post._id.toString(), recipients: parsedTags, authorId, authorName: req.user.fullname });
+    if (Array.isArray(parsedTags) && parsedTags.length > 0) {
+      const taggedUsers = await User.find({ _id: { $in: parsedTags } }).select('email');
+      const recipientEmails = taggedUsers.map((u) => u.email).filter(Boolean);
+      notify('post_tagged', {
+        postId: post._id.toString(),
+        recipients: parsedTags,
+        recipientEmails,
+        authorId,
+        authorName: req.user.fullname,
+        ...wislifePayloadExtra(post),
+      });
     }
 
     // Bài Nhật ký theo lớp không broadcast toàn trường; feed Wislife cũ vẫn theo quyền BOD/IT.
@@ -309,12 +331,13 @@ exports.createPost = async (req, res) => {
     );
 
     if (audienceType !== 'class' && isBODorAdmin) {
-      await notify('new_post_broadcast', {
+      notify('new_post_broadcast', {
         postId: post._id.toString(),
         authorEmail: req.user.email,
         authorName: req.user.fullname,
         content: content.trim().substring(0, 100),
-        type: type
+        type: type,
+        ...wislifePayloadExtra(post),
       });
     } else {
       console.log(`[CreatePost] ⏭️ User không có role BOD/IT, skip broadcast notification`);
@@ -692,7 +715,8 @@ exports.addReaction = async (req, res) => {
           recipientEmail: author.email, 
           userEmail: req.user.email,
           userName: req.user.fullname, 
-          reactionType: type.trim() 
+          reactionType: type.trim(),
+          ...wislifePayloadExtra(post),
         });
       }
     }
@@ -757,7 +781,8 @@ exports.addComment = async (req, res) => {
           recipientEmail: author.email, 
           userEmail: req.user.email,
           userName: req.user.fullname, 
-          content: content.trim() 
+          content: content.trim(),
+          ...wislifePayloadExtra(post),
         });
       }
     }
@@ -790,7 +815,8 @@ exports.addComment = async (req, res) => {
             commentId: newCommentId.toString(),
             mentionedEmails: mentionedEmails, // Gửi emails trực tiếp
             userId: userId.toString(),
-            userName: req.user.fullname
+            userName: req.user.fullname,
+            ...wislifePayloadExtra(post),
           });
           
           console.log(`📢 [Mention] Sent notifications to ${mentionedEmails.length} users`);
@@ -917,7 +943,8 @@ exports.replyComment = async (req, res) => {
           recipientEmail: commentAuthor.email,
           userEmail: req.user.email,
           userName: req.user.fullname,
-          content: content.trim().substring(0, 100)
+          content: content.trim().substring(0, 100),
+          ...wislifePayloadExtra(post),
         });
       }
     }
@@ -947,7 +974,8 @@ exports.replyComment = async (req, res) => {
             commentId: newReplyId.toString(),
             mentionedEmails: mentionedEmails,
             userId: userId.toString(),
-            userName: req.user.fullname
+            userName: req.user.fullname,
+            ...wislifePayloadExtra(post),
           });
         }
       }
@@ -1011,7 +1039,8 @@ exports.addCommentReaction = async (req, res) => {
           recipientEmail: commentAuthor.email,
           userEmail: req.user.email,
           userName: req.user.fullname,
-          reactionType: type.trim()
+          reactionType: type.trim(),
+          ...wislifePayloadExtra(post),
         });
       }
     }

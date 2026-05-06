@@ -33,6 +33,28 @@ function normalizeEmail(value) {
   return value ? String(value).trim().toLowerCase() : '';
 }
 
+/** Email người nhận từ participants, loại người gửi (Wave 3 — Frappe push). */
+function chatRecipientEmails(conversation, senderEmail) {
+  const senderNorm = normalizeEmail(senderEmail);
+  const seen = new Set();
+  const emails = [];
+  for (const p of conversation.participants || []) {
+    const raw = p.email;
+    if (!raw) continue;
+    const n = normalizeEmail(raw);
+    if (!n || n === senderNorm) continue;
+    if (seen.has(n)) continue;
+    seen.add(n);
+    emails.push(String(raw).trim());
+  }
+  return emails;
+}
+
+/** Gửi webhook chat sang Frappe — fire-and-forget. */
+function fireChatToFrappe(eventType, payload) {
+  frappeService.sendChatNotification(eventType, payload).catch(() => {});
+}
+
 function normalizeId(value) {
   return value ? String(value).trim() : '';
 }
@@ -992,6 +1014,19 @@ exports.sendMessage = async (req, res) => {
       message: populated,
     });
 
+    fireChatToFrappe('new_message', {
+      conversationId: String(conversation._id),
+      conversationType: conversation.type,
+      messageId: String(message._id),
+      senderEmail: req.user.email,
+      senderName: message.senderSnapshot.name,
+      senderRole: message.senderSnapshot.role,
+      recipientEmails: chatRecipientEmails(conversation, req.user.email),
+      messagePreview: (lastPreview || content || '').slice(0, 100),
+      hasAttachment: attachments.length > 0,
+      timestamp: new Date().toISOString(),
+    });
+
     res.status(201).json({ success: true, data: { message: populated, conversation: serializeConversation(conversation, req.user) } });
   } catch (error) {
     console.error('[Chat] sendMessage error:', error);
@@ -1086,6 +1121,22 @@ exports.toggleReaction = async (req, res) => {
       reactions: serialized,
     });
 
+    const isRemoval = prev && prev.emoji === emoji;
+    if (!isRemoval) {
+      fireChatToFrappe('message_reaction', {
+        conversationId: String(conversation._id),
+        conversationType: conversation.type,
+        messageId: String(message._id),
+        senderEmail: req.user.email,
+        senderName: userDisplayName(req.user),
+        senderRole: userRole(req.user),
+        recipientEmails: chatRecipientEmails(conversation, req.user.email),
+        messagePreview: '',
+        hasAttachment: false,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     res.json({ success: true, data: { messageId: String(message._id), reactions: serialized } });
   } catch (error) {
     console.error('[Chat] toggleReaction error:', error);
@@ -1133,6 +1184,19 @@ exports.recallMessage = async (req, res) => {
       messageId: String(message._id),
       recalledAt: message.recalledAt.toISOString(),
       recalledBy: String(req.user._id),
+    });
+
+    fireChatToFrappe('message_recalled', {
+      conversationId: String(conversation._id),
+      conversationType: conversation.type,
+      messageId: String(message._id),
+      senderEmail: req.user.email,
+      senderName: userDisplayName(req.user),
+      senderRole: userRole(req.user),
+      recipientEmails: chatRecipientEmails(conversation, req.user.email),
+      messagePreview: '',
+      hasAttachment: false,
+      timestamp: new Date().toISOString(),
     });
 
     res.json({

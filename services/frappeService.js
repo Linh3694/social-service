@@ -985,6 +985,57 @@ class FrappeService {
     }
     return { success: false, message: 'Max retries exceeded' };
   }
+
+  /**
+   * 💬 Wave 3: Chat / Trao đổi — webhook Frappe handle_chat_event (enqueue RQ).
+   */
+  async sendChatNotification(eventType, eventData) {
+    const MAX_RETRIES = 2;
+    const TIMEOUT_MS = 5000;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        console.log(`[FrappeService] 💬 Sending chat notification: ${eventType} (attempt ${attempt}/${MAX_RETRIES})`);
+
+        const response = await axios.post(
+          `${this.baseURL}/api/method/erp.api.notification.exchange.handle_chat_event`,
+          {
+            event_type: eventType,
+            event_data: eventData,
+          },
+          {
+            timeout: TIMEOUT_MS,
+            headers: {
+              'X-Service-Name': 'social-service',
+              'X-Request-Source': 'service-to-service',
+              'Content-Type': 'application/json',
+            },
+          },
+        );
+
+        if (response.data?.message?.success !== false) {
+          console.log(`[FrappeService] ✅ Chat notification sent: ${eventType}`);
+          return { success: true };
+        }
+        console.warn('[FrappeService] ⚠️ Chat notification response:', response.data);
+        return { success: false, message: response.data?.message };
+      } catch (error) {
+        const isTimeout = error.code === 'ECONNABORTED' || (error.message && error.message.includes('timeout'));
+        console.error(`[FrappeService] ❌ Chat notification failed (${eventType}), attempt ${attempt}: ${error.message}`);
+
+        if (isTimeout && attempt < MAX_RETRIES) {
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+
+        if (error.response) {
+          console.error(`[FrappeService] Response status: ${error.response.status}`);
+        }
+        return { success: false, message: error.message };
+      }
+    }
+    return { success: false, message: 'Max retries exceeded' };
+  }
 }
 
 module.exports = new FrappeService();
