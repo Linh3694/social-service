@@ -265,6 +265,9 @@ function normalizeTeacherSnapshot(t) {
     email: normalizeEmail(t.email),
     name: t.name || t.teacherId || '',
     avatarUrl: t.avatarUrl || '',
+    userId: t.userId || '',
+    userName: t.userName || '',
+    subjects: Array.isArray(t.subjects) ? t.subjects : [],
   };
 }
 
@@ -273,11 +276,27 @@ function findTeacherSnapshotInScope(scope, teacherId) {
   return normalizeTeacherSnapshot(t);
 }
 
-/** Map email user đăng nhập → teacherId trong scope lớp. */
+/** Map user đăng nhập → teacherId trong scope lớp.
+ *
+ * Ưu tiên dùng `callerTeacherId` mà Frappe đã resolve sẵn (nếu có).
+ * Nếu không có, lần lượt thử match theo email → userId → userName để chống lệch
+ * khi `User.email` ≠ giá trị `SIS Teacher.user_id`.
+ */
 function resolveCallerTeacherIdFromScope(user, scope) {
+  const callerTid = normalizeId(scope?.callerTeacherId);
+  if (callerTid) return callerTid;
+
   const userEmail = normalizeEmail(user?.email);
+  const userIdLower = String(user?.email || '').trim().toLowerCase();
   for (const t of collectScopeTeachers(scope)) {
     if (userEmail && normalizeEmail(t.email) === userEmail) return normalizeId(t.teacherId);
+  }
+  for (const t of collectScopeTeachers(scope)) {
+    const tUserId = String(t.userId || '').trim().toLowerCase();
+    const tUserName = String(t.userName || '').trim().toLowerCase();
+    if (userIdLower && (tUserId === userIdLower || tUserName === userIdLower)) {
+      return normalizeId(t.teacherId);
+    }
   }
   return '';
 }
