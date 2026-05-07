@@ -70,6 +70,39 @@ function portalGuardianIdFromEmail(email) {
   return normalized.endsWith(suffix) ? normalized.slice(0, -suffix.length) : '';
 }
 
+/**
+ * Tạo mảng điều kiện $or Mongo để tìm hội thoại mà user là participant
+ * (khớp hướng canAccessConversation: user._id, email, guardianId, portal email).
+ */
+function buildParticipantMatchOr(user) {
+  const or = [];
+  const rawId = user?._id;
+  if (rawId && mongoose.Types.ObjectId.isValid(String(rawId))) {
+    const oid = new mongoose.Types.ObjectId(String(rawId));
+    or.push({ 'participants.user': oid });
+  }
+  const userEmail = normalizeEmail(user?.email);
+  const userGuardianId =
+    normalizeId(user?.guardian_id).toLowerCase() || portalGuardianIdFromEmail(userEmail);
+  const emails = new Set();
+  if (userEmail) emails.add(userEmail);
+  const portalEmailNorm = userGuardianId
+    ? normalizeEmail(parentPortalEmailFromGuardianId(userGuardianId))
+    : '';
+  if (portalEmailNorm) emails.add(portalEmailNorm);
+  if (emails.size) {
+    or.push({ 'participants.email': { $in: [...emails] } });
+  }
+  const guardianIds = new Set();
+  if (userGuardianId) guardianIds.add(userGuardianId);
+  const rawGid = normalizeId(user?.guardian_id);
+  if (rawGid) guardianIds.add(rawGid.toLowerCase());
+  if (guardianIds.size) {
+    or.push({ 'participants.guardianId': { $in: [...guardianIds] } });
+  }
+  return or.length ? or : [{ _id: null }];
+}
+
 function participantKey(user) {
   return String(user?._id || '');
 }
@@ -991,6 +1024,16 @@ exports.listConversations = async (req, res) => {
         conversations.push(...ensured);
       }
     }
+
+    // Bổ sung các hội thoại user đã tham gia (vd. teacher_guardian:*) — ensureClassConversations chỉ tạo class_general.
+    const participantOr = buildParticipantMatchOr(req.user);
+    const userJoinedFilter = { $or: participantOr };
+    if (classId) userJoinedFilter.classId = classId;
+    if (schoolYearId) userJoinedFilter.schoolYearId = schoolYearId;
+    const userJoinedConvs = await ChatConversation.find(userJoinedFilter)
+      .sort({ updatedAt: -1 })
+      .limit(200);
+    conversations.push(...userJoinedConvs);
 
     const uniqueConversations = Array.from(new Map(
       conversations.map((conversation) => [String(conversation._id), conversation])
