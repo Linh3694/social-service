@@ -50,6 +50,16 @@ const chatUpload = multer({
 
 const router = express.Router();
 
+router.post(
+  '/conversations/teacher-guardian',
+  authenticate,
+  chatController.ensureTeacherGuardianConversation,
+);
+router.post(
+  '/conversations/teacher-student',
+  authenticate,
+  chatController.ensureTeacherStudentGuardiansConversation,
+);
 router.get('/conversations', authenticate, chatController.listConversations);
 router.post('/messages/:messageId/reactions', authenticate, chatController.toggleReaction);
 router.post('/messages/:messageId/recall', authenticate, chatController.recallMessage);

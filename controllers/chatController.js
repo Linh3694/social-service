@@ -242,6 +242,139 @@ function studentConversationType(studentId) {
   return `student_guardians:${studentId}`;
 }
 
+/** Gộp GVCN + phó + GVBM từ scope Frappe (journal trả `subject_teachers`). */
+function collectScopeTeachers(scope) {
+  const raw = [...(scope.teachers || []), ...(scope.subject_teachers || [])];
+  const byId = new Map();
+  for (const t of raw) {
+    const id = normalizeId(t.teacherId || t.name);
+    if (!id) continue;
+    if (!byId.has(id)) byId.set(id, t);
+  }
+  return Array.from(byId.values());
+}
+
+function teacherIdAllowedInScope(scope, teacherId) {
+  return collectScopeTeachers(scope).some((t) => normalizeId(t.teacherId) === normalizeId(teacherId));
+}
+
+function normalizeTeacherSnapshot(t) {
+  if (!t) return null;
+  return {
+    teacherId: normalizeId(t.teacherId || t.name),
+    email: normalizeEmail(t.email),
+    name: t.name || t.teacherId || '',
+    avatarUrl: t.avatarUrl || '',
+  };
+}
+
+function findTeacherSnapshotInScope(scope, teacherId) {
+  const t = collectScopeTeachers(scope).find((x) => normalizeId(x.teacherId) === normalizeId(teacherId));
+  return normalizeTeacherSnapshot(t);
+}
+
+/** Map email user đăng nhập → teacherId trong scope lớp. */
+function resolveCallerTeacherIdFromScope(user, scope) {
+  const userEmail = normalizeEmail(user?.email);
+  for (const t of collectScopeTeachers(scope)) {
+    if (userEmail && normalizeEmail(t.email) === userEmail) return normalizeId(t.teacherId);
+  }
+  return '';
+}
+
+/** Payload nhóm chat 1 GV + tập guardian chọn trước (1-1 hoặc cha mẹ + nhiều PH). */
+async function buildSubsetConversationPayload(scope, type, requestUser, {
+  teachers,
+  guardians,
+  title,
+  studentIds = [],
+}) {
+  const { byEmail, byGuardianId } = await attachMongoUsers({ teachers, guardians });
+
+  const teacherSnapshots = teachers.map((teacher) => ({
+    email: normalizeEmail(teacher.email),
+    name: teacher.name || teacher.email || teacher.teacherId,
+    teacherId: teacher.teacherId,
+    avatarUrl: teacher.avatarUrl || '',
+  }));
+
+  const guardianSnapshots = guardians.map((guardian) => ({
+    email: normalizeEmail(guardian.email || guardian.portalEmail),
+    name: guardian.guardian_name || guardian.name || guardian.email || guardian.portalEmail,
+    guardianId: guardian.guardian_id || guardian.name,
+    studentIds: (guardian.students || []).map((student) => getStudentId(student)).filter(Boolean),
+    avatarUrl: guardian.guardian_image || '',
+  }));
+
+  const teacherParticipants = teacherSnapshots.map((teacher) => {
+    const user = byEmail.get(normalizeEmail(teacher.email));
+    return {
+      user: user?._id,
+      email: teacher.email,
+      name: teacher.name,
+      role: 'teacher',
+      teacherId: teacher.teacherId,
+      avatarUrl: teacher.avatarUrl || userAvatar(user),
+    };
+  });
+  const currentTeacherParticipant = buildCurrentTeacherParticipant(requestUser);
+  if (currentTeacherParticipant) {
+    const hasCurrentTeacher = teacherParticipants.some((participant) => (
+      (participant.user && String(participant.user) === String(currentTeacherParticipant.user)) ||
+      (participant.email && participant.email === currentTeacherParticipant.email)
+    ));
+    if (!hasCurrentTeacher) {
+      teacherParticipants.push(currentTeacherParticipant);
+      const tid = resolveCallerTeacherIdFromScope(requestUser, scope);
+      teacherSnapshots.push({
+        email: currentTeacherParticipant.email,
+        name: currentTeacherParticipant.name,
+        teacherId: tid || normalizeId(teachers[0]?.teacherId),
+        avatarUrl: currentTeacherParticipant.avatarUrl,
+      });
+    }
+  }
+
+  const guardianParticipants = guardianSnapshots.map((guardian) => {
+    const matchedRequestGuardian = userRole(requestUser) === 'guardian' && matchesGuardianUser(requestUser, {
+      guardian_id: guardian.guardianId,
+      name: guardian.guardianId || guardian.name,
+      email: guardian.email,
+      portalEmail: parentPortalEmailFromGuardianId(guardian.guardianId),
+    });
+    const mongoUser = matchedRequestGuardian
+      ? requestUser
+      : byEmail.get(normalizeEmail(guardian.email)) || byGuardianId.get(normalizeId(guardian.guardianId));
+    return {
+      user: mongoUser?._id,
+      email: normalizeEmail(mongoUser?.email) || guardian.email,
+      name: guardian.name,
+      role: 'guardian',
+      guardianId: guardian.guardianId || mongoUser?.guardian_id || portalGuardianIdFromEmail(mongoUser?.email),
+      studentIds: guardian.studentIds,
+      avatarUrl: guardian.avatarUrl || userAvatar(mongoUser),
+    };
+  });
+
+  const className = scope.className || scope.classTitle || scope.classId;
+  const schoolYearName = scope.schoolYearName || scope.schoolYearTitle || scope.schoolYearId;
+
+  return {
+    type,
+    title,
+    classId: scope.classId,
+    className,
+    schoolYearId: scope.schoolYearId,
+    schoolYearName,
+    status: scope.isActive === false ? 'locked' : 'active',
+    lockedReason: scope.isActive === false ? 'Lớp/năm học cũ chỉ cho xem lại lịch sử' : undefined,
+    participants: [...teacherParticipants, ...guardianParticipants],
+    studentIds: [...studentIds].map(String).filter(Boolean),
+    guardians: guardianSnapshots,
+    teachers: teacherSnapshots,
+  };
+}
+
 async function buildConversationPayload(scope, type, requestUser, targetStudent) {
   const targetStudentId = getStudentId(targetStudent);
   const guardians = targetStudentId
@@ -441,6 +574,88 @@ function countParticipantsByRole(participants, role) {
   return (participants || []).filter((p) => p?.role === role).length;
 }
 
+/**
+ * Upsert conversation theo payload — UNION membership với bản ghi Mongo hiện có.
+ */
+async function upsertMergedConversationFromPayload(payload) {
+  const existing = await ChatConversation.findOne({
+    classId: payload.classId,
+    schoolYearId: payload.schoolYearId,
+    type: payload.type,
+  }).lean();
+
+  if (existing) {
+    const existingTeacherCount = countParticipantsByRole(existing.participants, 'teacher');
+    const newTeacherCount = countParticipantsByRole(payload.participants, 'teacher');
+    if (existingTeacherCount > 0 && newTeacherCount === 0) {
+      console.debug('[Chat] Scope mới không có teacher — preserve teachers từ existing', {
+        conversationId: String(existing._id),
+        classId: payload.classId,
+        schoolYearId: payload.schoolYearId,
+        type: payload.type,
+        existingTeacherCount,
+      });
+    }
+  }
+
+  const mergedParticipants = unionByKey(
+    existing?.participants,
+    payload.participants,
+    participantIdentityKey,
+    mergeParticipantFields,
+  );
+  const mergedTeachers = unionByKey(
+    existing?.teachers,
+    payload.teachers,
+    teacherSnapshotKey,
+    mergeSnapshotFields,
+  );
+  const mergedGuardians = unionByKey(
+    existing?.guardians,
+    payload.guardians,
+    guardianSnapshotKey,
+    mergeSnapshotFields,
+  );
+  const mergedStudentIds = Array.from(new Set([
+    ...((existing?.studentIds || []).map(String)),
+    ...((payload.studentIds || []).map(String)),
+  ])).filter(Boolean);
+
+  return ChatConversation.findOneAndUpdate(
+    { classId: payload.classId, schoolYearId: payload.schoolYearId, type: payload.type },
+    {
+      $set: {
+        title: payload.title,
+        className: payload.className,
+        schoolYearName: payload.schoolYearName,
+        status: payload.status,
+        lockedReason: payload.lockedReason,
+        participants: mergedParticipants,
+        studentIds: mergedStudentIds,
+        guardians: mergedGuardians,
+        teachers: mergedTeachers,
+      },
+      $setOnInsert: {
+        classId: payload.classId,
+        schoolYearId: payload.schoolYearId,
+        type: payload.type,
+      },
+    },
+    { new: true, upsert: true, setDefaultsOnInsert: true, timestamps: !existing },
+  );
+}
+
+function findScopeGuardianById(scope, guardianId) {
+  const gid = normalizeId(guardianId);
+  return (scope.guardians || []).find((g) => {
+    const gGid = normalizeId(g.guardian_id);
+    if (gGid && gGid === gid) return true;
+    const gEmail = normalizeEmail(g.email || g.portalEmail);
+    if (gEmail && gEmail === normalizeEmail(parentPortalEmailFromGuardianId(gid))) return true;
+    return false;
+  });
+}
+
 async function ensureClassConversations({ classId, schoolYearId, token, trustedScope, user }) {
   const isGuardian = userRole(user) === 'guardian';
   let scope;
@@ -518,103 +733,13 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
     }
   }
 
-  const scopedStudents = (() => {
-    if (trustedScope?._mergedStudents?.length && userRole(user) === 'guardian') {
-      const idSet = new Set(trustedScope._mergedStudents.map((s) => s.student_id));
-      return (scope.students || []).filter((student) => idSet.has(getStudentId(student)));
-    }
-    if (trustedScope?.studentId && userRole(user) === 'guardian') {
-      return (scope.students || []).filter((student) => getStudentId(student) === trustedScope.studentId);
-    }
-    return scope.students || [];
-  })();
-  const conversationSpecs = [
-    { type: 'class_general' },
-    ...scopedStudents
-      .map((student) => ({ type: studentConversationType(getStudentId(student)), student }))
-      .filter((spec) => spec.type !== 'student_guardians:undefined'),
-  ];
+  // Chỉ tạo / duy trì nhóm chung lớp; nhóm GVCN–PH theo từng HS (student_guardians:) đã bỏ — dùng endpoint on-demand.
+  const conversationSpecs = [{ type: 'class_general' }];
 
   const conversations = [];
   for (const spec of conversationSpecs) {
     const payload = await buildConversationPayload(scope, spec.type, user, spec.student);
-
-    // Đọc existing TRƯỚC để merge membership (UNION) thay vì REPLACE.
-    // .lean() để không trả Mongoose Document — chỉ cần dữ liệu thuần.
-    const existing = await ChatConversation.findOne({
-      classId: payload.classId,
-      schoolYearId: payload.schoolYearId,
-      type: payload.type,
-    }).lean();
-
-    // Cảnh báo khi scope hiện tại rớt teacher mà existing đang có — đây là dấu hiệu
-    // bug gốc ở getClassChatScope/fallback. Sau fix vẫn LOG để monitor tần suất.
-    if (existing) {
-      const existingTeacherCount = countParticipantsByRole(existing.participants, 'teacher');
-      const newTeacherCount = countParticipantsByRole(payload.participants, 'teacher');
-      if (existingTeacherCount > 0 && newTeacherCount === 0) {
-        console.debug('[Chat] Scope mới không có teacher — preserve teachers từ existing', {
-          conversationId: String(existing._id),
-          classId: payload.classId,
-          schoolYearId: payload.schoolYearId,
-          type: payload.type,
-          existingTeacherCount,
-          requesterEmail: user?.email,
-          requesterRole: userRole(user),
-          usingFallback: !!trustedScope,
-        });
-      }
-    }
-
-    const mergedParticipants = unionByKey(
-      existing?.participants,
-      payload.participants,
-      participantIdentityKey,
-      mergeParticipantFields,
-    );
-    const mergedTeachers = unionByKey(
-      existing?.teachers,
-      payload.teachers,
-      teacherSnapshotKey,
-      mergeSnapshotFields,
-    );
-    const mergedGuardians = unionByKey(
-      existing?.guardians,
-      payload.guardians,
-      guardianSnapshotKey,
-      mergeSnapshotFields,
-    );
-    const mergedStudentIds = Array.from(new Set([
-      ...((existing?.studentIds || []).map(String)),
-      ...((payload.studentIds || []).map(String)),
-    ])).filter(Boolean);
-
-    const conversation = await ChatConversation.findOneAndUpdate(
-      { classId: payload.classId, schoolYearId: payload.schoolYearId, type: payload.type },
-      {
-        $set: {
-          // Metadata vẫn REPLACE (không phải membership)
-          title: payload.title,
-          className: payload.className,
-          schoolYearName: payload.schoolYearName,
-          status: payload.status,
-          lockedReason: payload.lockedReason,
-          // Membership: dùng kết quả đã UNION với existing (nếu có)
-          participants: mergedParticipants,
-          studentIds: mergedStudentIds,
-          guardians: mergedGuardians,
-          teachers: mergedTeachers,
-        },
-        $setOnInsert: {
-          classId: payload.classId,
-          schoolYearId: payload.schoolYearId,
-          type: payload.type,
-        },
-      },
-      // Chỉ bản ghi mới (upsert) mới auto timestamps; update membership không bump updatedAt
-      // (nếu bump thì mọi nhóm "Chưa có tin" lên đầu vì updatedAt=now, thua lastMessage.createdAt cũ).
-      { new: true, upsert: true, setDefaultsOnInsert: true, timestamps: !existing },
-    );
+    const conversation = await upsertMergedConversationFromPayload(payload);
     conversations.push(conversation);
   }
 
@@ -854,6 +979,7 @@ exports.listConversations = async (req, res) => {
 
     const visible = uniqueConversations
       .filter((conversation) => canAccessConversation(conversation, req.user))
+      .filter((c) => !String(c.type || '').startsWith('student_guardians:'))
       .sort((a, b) => {
         const rb = conversationUnreadCountForUser(b, req.user) > 0 ? 1 : 0;
         const ra = conversationUnreadCountForUser(a, req.user) > 0 ? 1 : 0;
@@ -868,6 +994,200 @@ exports.listConversations = async (req, res) => {
   } catch (error) {
     console.error('[Chat] listConversations error:', error);
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải nhóm chat' });
+  }
+};
+
+/**
+ * Tạo/lấy hội thoại 1-1: một GV + một PH (on-demand).
+ * Body: { classId, schoolYearId, teacherId, guardianId? } — PH không cần guardianId (suy từ token).
+ */
+exports.ensureTeacherGuardianConversation = async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    const body = req.body || {};
+    const classId = body.classId;
+    const schoolYearId = body.schoolYearId;
+    const teacherIdRaw = body.teacherId;
+    const guardianIdBody = body.guardianId;
+
+    if (!classId || !schoolYearId || !teacherIdRaw) {
+      return res.status(400).json({
+        success: false,
+        message: 'Thiếu classId, schoolYearId hoặc teacherId',
+      });
+    }
+
+    const isGuardian = userRole(req.user) === 'guardian';
+    const isTeacher = userRole(req.user) === 'teacher';
+    if (!isGuardian && !isTeacher) {
+      return res.status(403).json({ success: false, message: 'Không được phép' });
+    }
+
+    let scope;
+    if (isGuardian && token) {
+      try {
+        scope = await frappeService.getClassChatScope(classId, schoolYearId, { parentPortalToken: token });
+      } catch (portalErr) {
+        scope = await frappeService.getClassChatScope(classId, schoolYearId, null);
+      }
+    } else {
+      scope = await frappeService.getClassChatScope(classId, schoolYearId, token);
+    }
+
+    if (!scope?.classId || !scope?.schoolYearId) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy lớp/năm học' });
+    }
+    if (!isRegularScope(scope)) {
+      return res.status(400).json({ success: false, message: 'Lớp không hỗ trợ chat nhóm' });
+    }
+
+    const teacherId = normalizeId(teacherIdRaw);
+    if (!teacherIdAllowedInScope(scope, teacherId)) {
+      return res.status(403).json({ success: false, message: 'Giáo viên không thuộc lớp này' });
+    }
+
+    const teacherSnap = findTeacherSnapshotInScope(scope, teacherId);
+    if (!teacherSnap || !teacherSnap.teacherId) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy thông tin giáo viên' });
+    }
+
+    let resolvedGuardianId = '';
+    if (isGuardian) {
+      const selfGid = normalizeId(req.user.guardian_id) || portalGuardianIdFromEmail(req.user.email);
+      if (guardianIdBody && normalizeId(guardianIdBody) !== selfGid) {
+        return res.status(403).json({ success: false, message: 'guardianId không khớp tài khoản' });
+      }
+      resolvedGuardianId = selfGid;
+    } else {
+      if (!guardianIdBody) {
+        return res.status(400).json({ success: false, message: 'Thiếu guardianId' });
+      }
+      resolvedGuardianId = normalizeId(guardianIdBody);
+      const callerTid = resolveCallerTeacherIdFromScope(req.user, scope);
+      if (!callerTid || normalizeId(callerTid) !== normalizeId(teacherId)) {
+        return res.status(403).json({ success: false, message: 'teacherId không khớp tài khoản giáo viên' });
+      }
+    }
+
+    if (!resolvedGuardianId) {
+      return res.status(400).json({ success: false, message: 'Không xác định được phụ huynh' });
+    }
+
+    const guardianRow = findScopeGuardianById(scope, resolvedGuardianId);
+    if (!guardianRow) {
+      return res.status(403).json({ success: false, message: 'Phụ huynh không thuộc roster lớp' });
+    }
+
+    if (isGuardian && !matchesGuardianUser(req.user, guardianRow)) {
+      return res.status(403).json({ success: false, message: 'Chỉ được mở chat với tài khoản của bạn' });
+    }
+
+    const convType = `teacher_guardian:${teacherId}:${resolvedGuardianId}`;
+    const gLabel = guardianRow.guardian_name || guardianRow.name || resolvedGuardianId;
+    const title = `${teacherSnap.name} — ${gLabel}`;
+
+    const payload = await buildSubsetConversationPayload(scope, convType, req.user, {
+      teachers: [teacherSnap],
+      guardians: [guardianRow],
+      title,
+      studentIds: [],
+    });
+
+    const conversation = await upsertMergedConversationFromPayload(payload);
+    res.json({ success: true, data: serializeConversation(conversation, req.user) });
+  } catch (error) {
+    console.error('[Chat] ensureTeacherGuardianConversation error:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Không thể tạo nhóm chat',
+    });
+  }
+};
+
+/**
+ * Tạo/lấy hội thoại: một GV (caller) + tất cả PH của một học sinh trong lớp.
+ * Body: { classId, schoolYearId, studentId, teacherId? } — teacherId mặc định = GV đăng nhập.
+ */
+exports.ensureTeacherStudentGuardiansConversation = async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    const body = req.body || {};
+    const classId = body.classId;
+    const schoolYearId = body.schoolYearId;
+    const studentIdRaw = body.studentId;
+    const bodyTeacherId = body.teacherId;
+
+    if (!classId || !schoolYearId || !studentIdRaw) {
+      return res.status(400).json({
+        success: false,
+        message: 'Thiếu classId, schoolYearId hoặc studentId',
+      });
+    }
+    if (userRole(req.user) !== 'teacher') {
+      return res.status(403).json({ success: false, message: 'Chỉ giáo viên được mở nhóm này' });
+    }
+
+    const scope = await frappeService.getClassChatScope(classId, schoolYearId, token);
+    if (!scope?.classId || !isRegularScope(scope)) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy lớp hoặc lớp không hỗ trợ chat' });
+    }
+
+    const sid = normalizeId(studentIdRaw);
+    const studentRow = (scope.students || []).find((s) => getStudentId(s) === sid);
+    if (!studentRow) {
+      return res.status(404).json({ success: false, message: 'Học sinh không thuộc lớp' });
+    }
+
+    const fromUser = resolveCallerTeacherIdFromScope(req.user, scope);
+    if (!fromUser) {
+      return res.status(403).json({
+        success: false,
+        message: 'Tài khoản không khớp giáo viên được phân công lớp',
+      });
+    }
+
+    let teacherId = normalizeId(bodyTeacherId) || fromUser;
+    if (normalizeId(teacherId) !== normalizeId(fromUser)) {
+      return res.status(403).json({ success: false, message: 'Chỉ được chat với vai trò GV của chính bạn' });
+    }
+
+    if (!teacherIdAllowedInScope(scope, teacherId)) {
+      return res.status(403).json({ success: false, message: 'Giáo viên không thuộc lớp này' });
+    }
+
+    const teacherSnap = findTeacherSnapshotInScope(scope, teacherId);
+    if (!teacherSnap) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy thông tin giáo viên' });
+    }
+
+    const guardians = (scope.guardians || []).filter((g) => (
+      (g.students || []).some((s) => getStudentId(s) === sid)
+    ));
+    if (!guardians.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Học sinh chưa có phụ huynh liên kết trên lớp',
+      });
+    }
+
+    const convType = `teacher_student_guardians:${teacherId}:${sid}`;
+    const title = `GVCN ${getStudentName(studentRow)} - ${teacherSnap.name}`;
+
+    const payload = await buildSubsetConversationPayload(scope, convType, req.user, {
+      teachers: [teacherSnap],
+      guardians,
+      title,
+      studentIds: [sid],
+    });
+
+    const conversation = await upsertMergedConversationFromPayload(payload);
+    res.json({ success: true, data: serializeConversation(conversation, req.user) });
+  } catch (error) {
+    console.error('[Chat] ensureTeacherStudentGuardiansConversation error:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Không thể tạo nhóm chat',
+    });
   }
 };
 

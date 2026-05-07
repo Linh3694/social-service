@@ -505,6 +505,7 @@ class FrappeService {
     }));
 
     const effectiveSchoolYearId = schoolYearId || metadata?.schoolYearId || cls.school_year_id;
+    const subjectTeachers = await this.fetchSubjectTeachersForClass(classId, hdr);
     return {
       classId: cls.name,
       className: metadata?.classTitle || cls.title || cls.short_title || cls.name,
@@ -515,7 +516,52 @@ class FrappeService {
       students: directory.students || [],
       guardians: directory.guardians || [],
       teachers,
+      subject_teachers: subjectTeachers,
     };
+  }
+
+  /**
+   * GV bộ môn từ SIS Subject Assignment (Bearer / Resource API).
+   */
+  async fetchSubjectTeachersForClass(classId, hdr) {
+    try {
+      const config = hdr ? { headers: hdr } : {};
+      const filters = JSON.stringify([['class_id', '=', classId]]);
+      const response = await this.api.get('/api/resource/SIS Subject Assignment', {
+        ...config,
+        params: {
+          fields: '["teacher_id"]',
+          filters,
+          limit_page_length: 500,
+        },
+      });
+      const rows = response.data?.data || [];
+      const teacherIds = [...new Set(rows.map((r) => r.teacher_id).filter(Boolean))];
+      const snapshots = [];
+      for (const teacherId of teacherIds) {
+        try {
+          const teacher = await this.getResource('SIS Teacher', teacherId, hdr);
+          const userId = teacher?.user_id;
+          let user = null;
+          if (userId) {
+            user = await this.getUserDetail(userId, hdr);
+          }
+          snapshots.push({
+            teacherId,
+            email: user?.email || teacher?.email || userId || '',
+            name: user?.full_name || teacher?.teacher_name || teacherId,
+            avatarUrl: user?.user_image || '',
+          });
+        } catch (e) {
+          console.warn(`[FrappeService] Subject teacher ${teacherId}:`, e.message);
+          snapshots.push({ teacherId, name: teacherId, email: '', avatarUrl: '' });
+        }
+      }
+      return snapshots;
+    } catch (e) {
+      console.warn('[FrappeService] fetchSubjectTeachersForClass:', e.message);
+      return [];
+    }
   }
 
   async getClassGuardianDirectory(classId, schoolYearId, hdr) {

@@ -324,7 +324,21 @@ exports.createPost = async (req, res) => {
       });
     }
 
-    // Bài Nhật ký theo lớp không broadcast toàn trường; feed Wislife cũ vẫn theo quyền BOD/IT.
+    // Bài theo lớp: thông báo tới PH có con trong SIS Class Student (Frappe new_class_post)
+    if (audienceType === 'class' && post.classId) {
+      notify('new_class_post', {
+        postId: post._id.toString(),
+        authorEmail: req.user.email,
+        authorName: req.user.fullname,
+        content: content.trim().substring(0, 100),
+        type: type,
+        classId: String(post.classId),
+        schoolYearId: post.schoolYearId ? String(post.schoolYearId) : '',
+        ...wislifePayloadExtra(post),
+      });
+    }
+
+    // Bảng tin toàn trường: chỉ BOD/IT, không gửi khi audienceType = class
     const authorRoles = req.user.roles || [];
     const isBODorAdmin = authorRoles.some(role =>
       role === 'Mobile BOD' || role === 'Mobile IT'
@@ -339,8 +353,8 @@ exports.createPost = async (req, res) => {
         type: type,
         ...wislifePayloadExtra(post),
       });
-    } else {
-      console.log(`[CreatePost] ⏭️ User không có role BOD/IT, skip broadcast notification`);
+    } else if (audienceType !== 'class') {
+      console.log(`[CreatePost] ⏭️ Skip school-wide broadcast (not BOD/IT)`);
     }
 
     res.status(201).json({ success: true, message: 'Tạo bài viết thành công', data: populatedPost });
