@@ -448,6 +448,31 @@ class FrappeService {
   }
 
   /**
+   * Đọc scope chat lớp cho GIÁO VIÊN qua whitelist method (không phụ thuộc Resource permission).
+   * Trả schema giống journal.get_class_chat_scope (gồm `subjects` và `is_key_person_any`).
+   */
+  async getClassChatScopeViaTeacherMethod(classId, schoolYearId, bearerToken) {
+    const headers = this.buildAuthHeaders(bearerToken);
+    const response = await this.api.post(
+      '/api/method/erp.api.erp_sis.chat_scope.get_class_chat_scope_for_teacher',
+      {
+        class_id: classId,
+        school_year_id: schoolYearId || '',
+      },
+      { headers },
+    );
+    const message = response.data?.message ?? response.data;
+    if (message && message.success === false) {
+      const err = new Error(message.message || 'get_class_chat_scope_for_teacher failed');
+      err.response = response;
+      throw err;
+    }
+    const payload = message?.data ?? message;
+    if (!payload?.classId) return null;
+    return payload;
+  }
+
+  /**
    * auth: Bearer Frappe (string) | chỉ service key (null/undefined) | Parent Portal { parentPortalToken }.
    */
   async getClassChatScope(classId, schoolYearId, auth) {
@@ -462,6 +487,19 @@ class FrappeService {
         if (scoped) return scoped;
       } catch (e) {
         console.debug('[FrappeService] get_class_chat_scope journal:', e?.response?.status || e.message);
+      }
+    }
+
+    // GV: ưu tiên method mới — không phụ thuộc Resource permission, có sẵn `subjects`/`is_key_person_any`.
+    if (typeof auth === 'string' && auth) {
+      try {
+        const scoped = await this.getClassChatScopeViaTeacherMethod(classId, schoolYearId, auth);
+        if (scoped) return scoped;
+      } catch (e) {
+        console.debug(
+          '[FrappeService] get_class_chat_scope_for_teacher:',
+          e?.response?.status || e.message,
+        );
       }
     }
 

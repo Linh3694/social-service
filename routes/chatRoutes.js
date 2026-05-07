@@ -55,11 +55,15 @@ router.post(
   authenticate,
   chatController.ensureTeacherGuardianConversation,
 );
-router.post(
-  '/conversations/teacher-student',
-  authenticate,
-  chatController.ensureTeacherStudentGuardiansConversation,
-);
+// Endpoint cũ (group GV + tất cả guardian của HS) đã được thay bằng chat 1-1 GV<->guardian.
+// Trả 410 để các client cũ biết và chuyển sang `teacher-guardian`.
+router.post('/conversations/teacher-student', authenticate, (req, res) => {
+  res.status(410).json({
+    success: false,
+    code: 'ENDPOINT_REMOVED',
+    message: 'Endpoint /conversations/teacher-student đã bị thay thế bởi /conversations/teacher-guardian (chat 1-1).',
+  });
+});
 router.get('/conversations', authenticate, chatController.listConversations);
 router.post('/messages/:messageId/reactions', authenticate, chatController.toggleReaction);
 router.post('/messages/:messageId/recall', authenticate, chatController.recallMessage);

@@ -979,7 +979,12 @@ exports.listConversations = async (req, res) => {
 
     const visible = uniqueConversations
       .filter((conversation) => canAccessConversation(conversation, req.user))
-      .filter((c) => !String(c.type || '').startsWith('student_guardians:'))
+      .filter((c) => {
+        const t = String(c.type || '');
+        // Ẩn legacy: nhóm tự sinh GVCN-PH cũ (`student_guardians:*`)
+        // và nhóm GV+toàn bộ guardian theo HS (`teacher_student_guardians:*`) — đã thay bằng chat 1-1.
+        return !t.startsWith('student_guardians:') && !t.startsWith('teacher_student_guardians:');
+      })
       .sort((a, b) => {
         const rb = conversationUnreadCountForUser(b, req.user) > 0 ? 1 : 0;
         const ra = conversationUnreadCountForUser(a, req.user) > 0 ? 1 : 0;
@@ -1104,92 +1109,8 @@ exports.ensureTeacherGuardianConversation = async (req, res) => {
   }
 };
 
-/**
- * Tạo/lấy hội thoại: một GV (caller) + tất cả PH của một học sinh trong lớp.
- * Body: { classId, schoolYearId, studentId, teacherId? } — teacherId mặc định = GV đăng nhập.
- */
-exports.ensureTeacherStudentGuardiansConversation = async (req, res) => {
-  try {
-    const token = getBearerToken(req);
-    const body = req.body || {};
-    const classId = body.classId;
-    const schoolYearId = body.schoolYearId;
-    const studentIdRaw = body.studentId;
-    const bodyTeacherId = body.teacherId;
-
-    if (!classId || !schoolYearId || !studentIdRaw) {
-      return res.status(400).json({
-        success: false,
-        message: 'Thiếu classId, schoolYearId hoặc studentId',
-      });
-    }
-    if (userRole(req.user) !== 'teacher') {
-      return res.status(403).json({ success: false, message: 'Chỉ giáo viên được mở nhóm này' });
-    }
-
-    const scope = await frappeService.getClassChatScope(classId, schoolYearId, token);
-    if (!scope?.classId || !isRegularScope(scope)) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy lớp hoặc lớp không hỗ trợ chat' });
-    }
-
-    const sid = normalizeId(studentIdRaw);
-    const studentRow = (scope.students || []).find((s) => getStudentId(s) === sid);
-    if (!studentRow) {
-      return res.status(404).json({ success: false, message: 'Học sinh không thuộc lớp' });
-    }
-
-    const fromUser = resolveCallerTeacherIdFromScope(req.user, scope);
-    if (!fromUser) {
-      return res.status(403).json({
-        success: false,
-        message: 'Tài khoản không khớp giáo viên được phân công lớp',
-      });
-    }
-
-    let teacherId = normalizeId(bodyTeacherId) || fromUser;
-    if (normalizeId(teacherId) !== normalizeId(fromUser)) {
-      return res.status(403).json({ success: false, message: 'Chỉ được chat với vai trò GV của chính bạn' });
-    }
-
-    if (!teacherIdAllowedInScope(scope, teacherId)) {
-      return res.status(403).json({ success: false, message: 'Giáo viên không thuộc lớp này' });
-    }
-
-    const teacherSnap = findTeacherSnapshotInScope(scope, teacherId);
-    if (!teacherSnap) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy thông tin giáo viên' });
-    }
-
-    const guardians = (scope.guardians || []).filter((g) => (
-      (g.students || []).some((s) => getStudentId(s) === sid)
-    ));
-    if (!guardians.length) {
-      return res.status(400).json({
-        success: false,
-        message: 'Học sinh chưa có phụ huynh liên kết trên lớp',
-      });
-    }
-
-    const convType = `teacher_student_guardians:${teacherId}:${sid}`;
-    const title = `GVCN ${getStudentName(studentRow)} - ${teacherSnap.name}`;
-
-    const payload = await buildSubsetConversationPayload(scope, convType, req.user, {
-      teachers: [teacherSnap],
-      guardians,
-      title,
-      studentIds: [sid],
-    });
-
-    const conversation = await upsertMergedConversationFromPayload(payload);
-    res.json({ success: true, data: serializeConversation(conversation, req.user) });
-  } catch (error) {
-    console.error('[Chat] ensureTeacherStudentGuardiansConversation error:', error);
-    res.status(error.statusCode || 500).json({
-      success: false,
-      message: error.message || 'Không thể tạo nhóm chat',
-    });
-  }
-};
+// Đã loại bỏ: ensureTeacherStudentGuardiansConversation (GV + tất cả PH của 1 HS).
+// Phía workspace giờ tạo chat 1-1 dùng chung endpoint `ensureTeacherGuardianConversation`.
 
 exports.getMessages = async (req, res) => {
   try {
