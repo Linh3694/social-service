@@ -17,6 +17,8 @@ const memberSnapshotSchema = new mongoose.Schema({
   guardianId: { type: String, trim: true },
   teacherId: { type: String, trim: true },
   studentIds: [{ type: String, trim: true }],
+  /** Tên HS gắn PH — phục vụ subtitle "Phụ huynh của …" (workspace GV). */
+  studentNames: [{ type: String, trim: true }],
   avatarUrl: { type: String, default: '' },
 }, { _id: false });
 

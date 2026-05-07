@@ -271,6 +271,22 @@ function getStudentName(student) {
   return student?.student_name || student?.studentName || student?.name || getStudentId(student);
 }
 
+/** Tên HS (không trùng, giữ thứ tự) từ mảng students của guardian trong scope Frappe. */
+function studentNamesFromScopeGuardian(guardian) {
+  const students = guardian?.students || [];
+  const out = [];
+  const seen = new Set();
+  for (const st of students) {
+    const n = String(getStudentName(st) || '').trim();
+    if (!n) continue;
+    const k = n.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(n);
+  }
+  return out;
+}
+
 function studentConversationType(studentId) {
   return `student_guardians:${studentId}`;
 }
@@ -355,6 +371,7 @@ async function buildSubsetConversationPayload(scope, type, requestUser, {
     name: guardian.guardian_name || guardian.name || guardian.email || guardian.portalEmail,
     guardianId: guardian.guardian_id || guardian.name,
     studentIds: (guardian.students || []).map((student) => getStudentId(student)).filter(Boolean),
+    studentNames: studentNamesFromScopeGuardian(guardian),
     avatarUrl: guardian.guardian_image || '',
   }));
 
@@ -444,15 +461,27 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
     avatarUrl: teacher.avatarUrl || '',
   }));
 
-  const guardianSnapshots = guardians.map((guardian) => ({
-    email: normalizeEmail(guardian.email || guardian.portalEmail),
-    name: guardian.guardian_name || guardian.name || guardian.email || guardian.portalEmail,
-    guardianId: guardian.guardian_id || guardian.name,
-    studentIds: targetStudentId
+  const guardianSnapshots = guardians.map((guardian) => {
+    const studentIdsResolved = targetStudentId
       ? [targetStudentId]
-      : (guardian.students || []).map((student) => getStudentId(student)).filter(Boolean),
-    avatarUrl: guardian.guardian_image || '',
-  }));
+      : (guardian.students || []).map((student) => getStudentId(student)).filter(Boolean);
+    let studentNamesResolved = studentNamesFromScopeGuardian(guardian);
+    if (targetStudentId) {
+      const st = (guardian.students || []).find(
+        (x) => String(getStudentId(x)) === String(targetStudentId),
+      );
+      const one = st ? String(getStudentName(st) || '').trim() : '';
+      studentNamesResolved = one ? [one] : [];
+    }
+    return {
+      email: normalizeEmail(guardian.email || guardian.portalEmail),
+      name: guardian.guardian_name || guardian.name || guardian.email || guardian.portalEmail,
+      guardianId: guardian.guardian_id || guardian.name,
+      studentIds: studentIdsResolved,
+      studentNames: studentNamesResolved,
+      avatarUrl: guardian.guardian_image || '',
+    };
+  });
 
   const teacherParticipants = teacherSnapshots.map((teacher) => {
     const user = byEmail.get(normalizeEmail(teacher.email));
@@ -618,6 +647,10 @@ function mergeSnapshotFields(oldS, newS) {
       ...((oldS.studentIds || []).map(String)),
       ...((newS.studentIds || []).map(String)),
     ])).filter(Boolean),
+    studentNames: Array.from(new Set([
+      ...((oldS.studentNames || []).map(String)),
+      ...((newS.studentNames || []).map(String)),
+    ])).map((s) => String(s).trim()).filter(Boolean),
   };
 }
 
