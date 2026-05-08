@@ -123,7 +123,12 @@ async function sendViaHttp(kind, eventType, eventData) {
  * @param {string} transport
  */
 async function sendToNotificationService(kind, eventType, data, transport) {
-  if (transport.startsWith('stream')) {
+  // 'dual' = song song Frappe + notification-service: dùng cùng chiến lược "stream rồi fallback HTTP".
+  const wantStream = transport.startsWith('stream') || transport === 'dual';
+  const wantHttpFallback =
+    transport === 'http' || transport === 'stream_then_http' || transport === 'dual';
+
+  if (wantStream) {
     try {
       const pub = redis.getPubClient();
       if (pub?.isOpen) {
@@ -144,7 +149,7 @@ async function sendToNotificationService(kind, eventType, data, transport) {
     }
   }
 
-  if (transport === 'http' || transport === 'stream_then_http') {
+  if (wantHttpFallback) {
     return sendViaHttp(kind, eventType, data);
   }
 
