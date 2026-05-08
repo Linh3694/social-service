@@ -66,6 +66,11 @@ const chatConversationSchema = new mongoose.Schema({
     createdAt: Date,
   },
   pinnedMessage: { type: pinnedMessageSchema, default: null },
+  /**
+   * Ẩn khỏi danh sách (soft) — key = participantKey(User) = String(user._id).
+   * Tin mới trong hội thoại luôn gỡ ẩn cho người nhận (không gồm người gửi).
+   */
+  hiddenFromListAtByUserId: { type: Map, of: Date, default: {} },
 }, { timestamps: true });
 
 chatConversationSchema.index({ classId: 1, schoolYearId: 1, type: 1 }, { unique: true });

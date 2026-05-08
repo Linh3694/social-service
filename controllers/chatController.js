@@ -149,6 +149,39 @@ function participantKey(user) {
   return String(user?._id || '');
 }
 
+/** Soft ẩn danh sách: lấy ngày user (participantKey Mongo _id) đã ẩn hội thoại này. */
+function conversationHiddenFromListAt(conversation, userKey) {
+  const raw = conversation.hiddenFromListAtByUserId;
+  if (!raw || !userKey || !mongoose.Types.ObjectId.isValid(userKey)) return null;
+  if (raw instanceof Map) {
+    const hit = raw.get(userKey);
+    return hit ? new Date(hit) : null;
+  }
+  const v = raw[userKey];
+  return v ? new Date(v) : null;
+}
+
+function isConversationHiddenFromCurrentUserList(conversation, user) {
+  const pk = participantKey(user);
+  return Boolean(conversationHiddenFromListAt(conversation, pk));
+}
+
+/** Tin xuất hiện — gỡ ẩn danh sách cho mọi người tham gia khác người gửi tin. */
+function pruneHiddenFromListForRecipients(conversation, senderMongoUserIdStr) {
+  const raw = conversation.hiddenFromListAtByUserId;
+  if (!raw || !(conversation.participants || []).some((p) => p.user)) return;
+  let map = raw instanceof Map ? new Map(raw) : new Map(Object.entries(raw));
+  const senderNorm = String(senderMongoUserIdStr || '');
+  for (const p of conversation.participants || []) {
+    if (!p?.user) continue;
+    const k = String(p.user);
+    if (!k || k === senderNorm) continue;
+    map.delete(k);
+  }
+  conversation.hiddenFromListAtByUserId = map;
+  conversation.markModified('hiddenFromListAtByUserId');
+}
+
 function normalizeClassType(scope) {
   return String(scope?.classType || scope?.class_type || '').trim().toLowerCase();
 }
@@ -985,6 +1018,7 @@ function serializeConversation(conversation, user) {
       ? serializePinnedMessage(plain.pinnedMessage)
       : null,
   };
+  delete base.hiddenFromListAtByUserId;
   return base;
 }
 
@@ -1357,6 +1391,7 @@ async function appendMessageToConversation(conversation, req, {
     createdAt: message.createdAt,
   };
   conversation.unreadCounts = unreadCounts;
+  pruneHiddenFromListForRecipients(conversation, String(req.user._id));
   await conversation.save();
 
   cacheDel(messageCountRedisKey(conversation._id)).catch(() => {});
@@ -1457,6 +1492,7 @@ exports.listConversations = async (req, res) => {
           const lm = c.lastMessage;
           if (!lm || !lm.messageId) return false;
         }
+        if (isConversationHiddenFromCurrentUserList(c, req.user)) return false;
         return true;
       });
 
@@ -1753,6 +1789,38 @@ exports.markRead = async (req, res) => {
   } catch (error) {
     console.error('[Chat] markRead error:', error);
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể đánh dấu đã đọc' });
+  }
+};
+
+/**
+ * Ẩn hội thoại khỏi danh sách (soft — chỉ ghi nhận theo user, không xóa tin/group Mongo).
+ */
+exports.hideConversationFromList = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    const key = participantKey(req.user);
+    if (!key || !mongoose.Types.ObjectId.isValid(key)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Không xác định được người dùng để ẩn nhóm chat',
+      });
+    }
+    let hm = conversation.hiddenFromListAtByUserId;
+    hm = hm instanceof Map ? new Map(hm) : new Map(Object.entries(hm || {}));
+    hm.set(key, new Date());
+    conversation.hiddenFromListAtByUserId = hm;
+    conversation.markModified('hiddenFromListAtByUserId');
+    await conversation.save();
+
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+
+    res.json({ success: true, message: 'Đã ẩn nhóm khỏi danh sách' });
+  } catch (error) {
+    console.error('[Chat] hideConversationFromList error:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Không thể ẩn nhóm chat',
+    });
   }
 };
 
