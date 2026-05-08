@@ -39,7 +39,8 @@ class RedisClient {
       data,
       timestamp: new Date().toISOString(),
     };
-    await this.pubClient.publish(channel, JSON.stringify(message));
+    const { publishEnvelope } = require('../utils/eventBus');
+    await publishEnvelope(this.pubClient, channel, message);
   }
 
   async subscribeUserEvents() {
