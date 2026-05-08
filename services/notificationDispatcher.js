@@ -119,10 +119,12 @@ async function dispatch({ kind, eventType, eventData }) {
     data = await enrichWislifeEventData(eventType, data);
 
     if (eventType === 'new_class_post' || eventType === 'new_post_broadcast') {
-      if (!Array.isArray(data.recipientEmails) || data.recipientEmails.length === 0) {
+      const n = Array.isArray(data.recipientEmails) ? data.recipientEmails.length : 0;
+      if (n === 0) {
         console.warn(`[Notify] ${eventType}: không có recipient sau resolve — bỏ qua`);
         return { success: false, reason: 'no_recipients' };
       }
+      console.log(`[Notify] ${eventType}: resolve ${n} người nhận`);
     }
   }
 

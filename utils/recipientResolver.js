@@ -37,30 +37,53 @@ async function resolveClassRecipients(classId, schoolYearId, bearerToken) {
 
   const frappeService = require('../services/frappeService');
   const hdr = bearerToken && typeof bearerToken === 'string' ? bearerToken : null;
-  let dir = null;
-  try {
-    dir = await frappeService.getClassGuardianDirectory(cid, sy || undefined, hdr);
-  } catch (e) {
-    console.warn('[recipientResolver] getClassGuardianDirectory lỗi (token):', e?.response?.status || e.message);
-    if (hdr) {
-      try {
-        dir = await frappeService.getClassGuardianDirectory(cid, sy || undefined, null);
-      } catch (e2) {
-        console.warn('[recipientResolver] getClassGuardianDirectory lỗi (service key):', e2?.response?.status || e2.message);
+
+  /** @type {Array<{email?: string, portalEmail?: string}>} */
+  let guardians = [];
+
+  // Ưu tiên method whitelist (chat_scope) — không cần Resource permission như /api/resource.
+  if (hdr) {
+    try {
+      const scope = await frappeService.getClassChatScope(cid, sy || undefined, hdr);
+      if (Array.isArray(scope?.guardians)) guardians = scope.guardians;
+    } catch (e) {
+      console.warn('[recipientResolver] getClassChatScope (teacher) lỗi:', e?.response?.status || e.message);
+    }
+  }
+
+  // Fallback: getClassGuardianDirectory (Resource API — có thể 403 nếu API key thiếu quyền).
+  if (guardians.length === 0) {
+    try {
+      const dir = await frappeService.getClassGuardianDirectory(cid, sy || undefined, hdr);
+      if (Array.isArray(dir?.guardians)) guardians = dir.guardians;
+    } catch (e) {
+      console.warn('[recipientResolver] getClassGuardianDirectory lỗi (token):', e?.response?.status || e.message);
+      if (hdr) {
+        try {
+          const dir = await frappeService.getClassGuardianDirectory(cid, sy || undefined, null);
+          if (Array.isArray(dir?.guardians)) guardians = dir.guardians;
+        } catch (e2) {
+          console.warn('[recipientResolver] getClassGuardianDirectory lỗi (service key):', e2?.response?.status || e2.message);
+        }
       }
     }
   }
+
   const seen = new Set();
   const emails = [];
-  for (const g of dir?.guardians || []) {
-    const raw = g.email || g.portalEmail;
+  for (const g of guardians) {
+    const raw = g?.email || g?.portalEmail;
     const e = oneEmail(raw);
     if (!e || seen.has(e)) continue;
     seen.add(e);
     emails.push(e);
   }
 
-  await cacheSetJSON(cacheKey, emails, TTL_NOTIFY_RECIPIENTS_SEC);
+  if (emails.length > 0) {
+    await cacheSetJSON(cacheKey, emails, TTL_NOTIFY_RECIPIENTS_SEC);
+  } else {
+    console.warn(`[recipientResolver] class ${cid} (${sy || '_'}): không resolve được PH nào`);
+  }
   return emails;
 }
 
