@@ -55,6 +55,17 @@ router.post(
   authenticate,
   chatController.ensureTeacherGuardianConversation,
 );
+router.post(
+  '/conversations/teacher-guardian/messages',
+  authenticate,
+  chatController.sendTeacherGuardianMessage,
+);
+router.post(
+  '/conversations/teacher-guardian/attachments',
+  authenticate,
+  chatUpload.array('files', 10),
+  chatController.uploadTeacherGuardianAttachments,
+);
 // Endpoint cũ (group GV + tất cả guardian của HS) đã được thay bằng chat 1-1 GV<->guardian.
 // Trả 410 để các client cũ biết và chuyển sang `teacher-guardian`.
 router.post('/conversations/teacher-student', authenticate, (req, res) => {

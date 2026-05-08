@@ -988,6 +988,59 @@ function serializeConversation(conversation, user) {
   return base;
 }
 
+/** Tách teacherId + guardianId từ `type` dạng `teacher_guardian:<tid>:<gid>`. */
+function parseTeacherGuardianTypeSegments(convType) {
+  const raw = String(convType || '');
+  const prefix = 'teacher_guardian:';
+  if (!raw.startsWith(prefix)) {
+    return { teacherId: '', guardianId: '' };
+  }
+  const rest = raw.slice(prefix.length);
+  const i = rest.indexOf(':');
+  if (i < 0) return { teacherId: rest, guardianId: '' };
+  return { teacherId: rest.slice(0, i), guardianId: rest.slice(i + 1) };
+}
+
+/**
+ * Hội thoại GV–PH chưa ghi Mongo — client mở composer; tin đầu gọi `sendTeacherGuardianMessage`.
+ */
+function serializeDraftTeacherGuardianConversation(payload, user) {
+  const { teacherId, guardianId } = parseTeacherGuardianTypeSegments(payload.type);
+  const nowIso = new Date().toISOString();
+  const participants = (payload.participants || []).map((p) => ({
+    ...p,
+    user: p.user ? String(p.user) : undefined,
+  }));
+  const draft = {
+    classId: payload.classId,
+    schoolYearId: payload.schoolYearId,
+    teacherId,
+    guardianId,
+  };
+  const plain = {
+    _id: '',
+    isDraft: true,
+    draft,
+    type: payload.type,
+    title: payload.title,
+    classId: payload.classId,
+    className: payload.className,
+    schoolYearId: payload.schoolYearId,
+    schoolYearName: payload.schoolYearName,
+    studentIds: payload.studentIds,
+    status: payload.status,
+    lockedReason: payload.lockedReason,
+    participants,
+    guardians: payload.guardians,
+    teachers: payload.teachers,
+    unreadCount: 0,
+    pinnedMessage: null,
+    lastMessage: undefined,
+    updatedAt: nowIso,
+  };
+  return serializeConversation(plain, user);
+}
+
 /** Số tin chưa đọc của user (sort API trước khi serialize). */
 function conversationUnreadCountForUser(conversation, user) {
   const plain = conversation.toObject ? conversation.toObject() : conversation;
@@ -1114,6 +1167,223 @@ async function loadMessageWithAccess(messageId, user) {
   return { message, conversation };
 }
 
+/**
+ * Chuẩn bị payload hội thoại GV↔PH (kiểm quyền + scope). Lỗi ném Error kèm `statusCode`.
+ */
+async function buildTeacherGuardianPayloadFromRequest(req) {
+  const token = getBearerToken(req);
+  const body = req.body || {};
+  const classId = body.classId;
+  const schoolYearId = body.schoolYearId;
+  const teacherIdRaw = body.teacherId;
+  const guardianIdBody = body.guardianId;
+
+  if (!classId || !schoolYearId || !teacherIdRaw) {
+    const err = new Error('Thiếu classId, schoolYearId hoặc teacherId');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const isGuardian = userRole(req.user) === 'guardian';
+  const isTeacher = userRole(req.user) === 'teacher';
+  if (!isGuardian && !isTeacher) {
+    const err = new Error('Không được phép');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  let scope;
+  if (isGuardian && token) {
+    try {
+      scope = await frappeService.getClassChatScope(classId, schoolYearId, { parentPortalToken: token }, { bypassCache: true });
+    } catch (portalErr) {
+      scope = await frappeService.getClassChatScope(classId, schoolYearId, null, { bypassCache: true });
+    }
+  } else {
+    scope = await frappeService.getClassChatScope(classId, schoolYearId, token, { bypassCache: true });
+  }
+
+  if (!scope?.classId || !scope?.schoolYearId) {
+    const err = new Error('Không tìm thấy lớp/năm học');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isRegularScope(scope)) {
+    const err = new Error('Lớp không hỗ trợ chat nhóm');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const teacherId = normalizeId(teacherIdRaw);
+  if (!teacherIdAllowedInScope(scope, teacherId)) {
+    const err = new Error('Giáo viên không thuộc lớp này');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const teacherSnap = findTeacherSnapshotInScope(scope, teacherId);
+  if (!teacherSnap || !teacherSnap.teacherId) {
+    const err = new Error('Không tìm thấy thông tin giáo viên');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  let resolvedGuardianId = '';
+  if (isGuardian) {
+    const selfGid = normalizeId(req.user.guardian_id) || portalGuardianIdFromEmail(req.user.email);
+    if (guardianIdBody && normalizeId(guardianIdBody) !== selfGid) {
+      const err = new Error('guardianId không khớp tài khoản');
+      err.statusCode = 403;
+      throw err;
+    }
+    resolvedGuardianId = selfGid;
+  } else {
+    if (!guardianIdBody) {
+      const err = new Error('Thiếu guardianId');
+      err.statusCode = 400;
+      throw err;
+    }
+    resolvedGuardianId = normalizeId(guardianIdBody);
+    const callerTid = resolveCallerTeacherIdFromScope(req.user, scope);
+    if (!callerTid || normalizeId(callerTid) !== normalizeId(teacherId)) {
+      const err = new Error('teacherId không khớp tài khoản giáo viên');
+      err.statusCode = 403;
+      throw err;
+    }
+  }
+
+  if (!resolvedGuardianId) {
+    const err = new Error('Không xác định được phụ huynh');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const guardianRow = findScopeGuardianById(scope, resolvedGuardianId);
+  if (!guardianRow) {
+    const err = new Error('Phụ huynh không thuộc roster lớp');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  if (isGuardian && !matchesGuardianUser(req.user, guardianRow)) {
+    const err = new Error('Chỉ được mở chat với tài khoản của bạn');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const convType = `teacher_guardian:${teacherId}:${resolvedGuardianId}`;
+  const gLabel = guardianRow.guardian_name || guardianRow.name || resolvedGuardianId;
+  const title = `${teacherSnap.name} — ${gLabel}`;
+
+  const payload = await buildSubsetConversationPayload(scope, convType, req.user, {
+    teachers: [teacherSnap],
+    guardians: [guardianRow],
+    title,
+    studentIds: [],
+  });
+
+  return { payload, classId: String(classId), schoolYearId: String(schoolYearId) };
+}
+
+/** Tạo tin, cập nhật lastMessage/unread, socket + webhook — dùng chung sendMessage và sendTeacherGuardianMessage. */
+async function appendMessageToConversation(conversation, req, {
+  content,
+  attachments = [],
+  replyToId,
+}) {
+  if (conversation.status === 'locked') {
+    const err = new Error('Nhóm chat năm học cũ chỉ cho xem lại lịch sử');
+    err.statusCode = 423;
+    throw err;
+  }
+
+  const att = sanitizeIncomingAttachments(attachments);
+  const c = String(content || '').trim();
+  if (!c && !att.length) {
+    const err = new Error('Nội dung hoặc tệp đính kèm là bắt buộc');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  let replyTo;
+  if (replyToId) {
+    const replyMessage = await ChatMessage.findOne({
+      _id: replyToId,
+      conversation: conversation._id,
+      isDeleted: false,
+    });
+    if (replyMessage) {
+      replyTo = {
+        messageId: replyMessage._id,
+        content: messageSnippetForReply(replyMessage),
+        senderName: replyMessage.senderSnapshot?.name,
+      };
+    }
+  }
+
+  const message = await ChatMessage.create({
+    conversation: conversation._id,
+    sender: req.user._id,
+    senderSnapshot: {
+      name: userDisplayName(req.user),
+      email: req.user.email,
+      role: userRole(req.user),
+      avatarUrl: userAvatar(req.user),
+    },
+    content: c || '',
+    attachments: att,
+    replyTo,
+    readBy: [{ user: req.user._id, readAt: new Date() }],
+  });
+
+  const unreadCounts = conversation.unreadCounts || new Map();
+  (conversation.participants || []).forEach((participant) => {
+    if (!participant.user) return;
+    const key = String(participant.user);
+    if (key === String(req.user._id)) {
+      unreadCounts.set(key, 0);
+    } else {
+      unreadCounts.set(key, (unreadCounts.get(key) || 0) + 1);
+    }
+  });
+
+  const lastPreview = lastMessageContentPreview(message.content, message.attachments);
+  conversation.lastMessage = {
+    messageId: message._id,
+    content: lastPreview,
+    senderName: message.senderSnapshot.name,
+    senderEmail: normalizeEmail(message.senderSnapshot.email),
+    senderId: req.user._id,
+    createdAt: message.createdAt,
+  };
+  conversation.unreadCounts = unreadCounts;
+  await conversation.save();
+
+  cacheDel(messageCountRedisKey(conversation._id)).catch(() => {});
+  invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+
+  const payloadMsg = messagePayloadForApi(message);
+  await emitToConversation(conversation, 'chat:message', {
+    conversation: serializeConversation(conversation, req.user),
+    message: payloadMsg,
+  });
+
+  fireChatToFrappe('new_message', {
+    conversationId: String(conversation._id),
+    conversationType: conversation.type,
+    messageId: String(message._id),
+    senderEmail: req.user.email,
+    senderName: message.senderSnapshot.name,
+    senderRole: message.senderSnapshot.role,
+    recipientEmails: chatRecipientEmails(conversation, req.user.email),
+    messagePreview: (lastPreview || c || '').slice(0, 100),
+    hasAttachment: att.length > 0,
+    timestamp: new Date().toISOString(),
+  });
+
+  return { message: payloadMsg, conversation: serializeConversation(conversation, req.user) };
+}
+
 exports.listConversations = async (req, res) => {
   try {
     const token = getBearerToken(req);
@@ -1179,7 +1449,15 @@ exports.listConversations = async (req, res) => {
         const t = String(c.type || '');
         // Ẩn legacy: nhóm tự sinh GVCN-PH cũ (`student_guardians:*`)
         // và nhóm GV+toàn bộ guardian theo HS (`teacher_student_guardians:*`) — đã thay bằng chat 1-1.
-        return !t.startsWith('student_guardians:') && !t.startsWith('teacher_student_guardians:');
+        if (t.startsWith('student_guardians:') || t.startsWith('teacher_student_guardians:')) {
+          return false;
+        }
+        // Không hiển thị kênh GV↔PH chưa có tin (tránh "Chưa có tin nhắn" / bản ghi rỗng).
+        if (t.startsWith('teacher_guardian:')) {
+          const lm = c.lastMessage;
+          if (!lm || !lm.messageId) return false;
+        }
+        return true;
       });
 
     // Thứ tự hoạt động cuối từ Mongo (P1.3 — lastMessage.updatedAt có index hỗ trợ sort).
@@ -1223,110 +1501,107 @@ exports.listConversations = async (req, res) => {
 
 /**
  * Tạo/lấy hội thoại 1-1: một GV + một PH (on-demand).
+ * Chưa có hội thoại trong DB → trả bản nháp (không upsert); có rồi → merge snapshot như cũ.
  * Body: { classId, schoolYearId, teacherId, guardianId? } — PH không cần guardianId (suy từ token).
  */
 exports.ensureTeacherGuardianConversation = async (req, res) => {
   try {
-    const token = getBearerToken(req);
-    const body = req.body || {};
-    const classId = body.classId;
-    const schoolYearId = body.schoolYearId;
-    const teacherIdRaw = body.teacherId;
-    const guardianIdBody = body.guardianId;
+    const { payload, classId, schoolYearId } = await buildTeacherGuardianPayloadFromRequest(req);
 
-    if (!classId || !schoolYearId || !teacherIdRaw) {
-      return res.status(400).json({
-        success: false,
-        message: 'Thiếu classId, schoolYearId hoặc teacherId',
-      });
+    const existing = await ChatConversation.findOne({
+      classId: payload.classId,
+      schoolYearId: payload.schoolYearId,
+      type: payload.type,
+    }).lean();
+
+    if (existing) {
+      const conversation = await upsertMergedConversationFromPayload(payload);
+      frappeService.invalidateCachesForClassChat(classId, schoolYearId).catch(() => {});
+      invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+      return res.json({ success: true, data: serializeConversation(conversation, req.user) });
     }
 
-    const isGuardian = userRole(req.user) === 'guardian';
-    const isTeacher = userRole(req.user) === 'teacher';
-    if (!isGuardian && !isTeacher) {
-      return res.status(403).json({ success: false, message: 'Không được phép' });
-    }
-
-    let scope;
-    if (isGuardian && token) {
-      try {
-        scope = await frappeService.getClassChatScope(classId, schoolYearId, { parentPortalToken: token }, { bypassCache: true });
-      } catch (portalErr) {
-        scope = await frappeService.getClassChatScope(classId, schoolYearId, null, { bypassCache: true });
-      }
-    } else {
-      scope = await frappeService.getClassChatScope(classId, schoolYearId, token, { bypassCache: true });
-    }
-
-    if (!scope?.classId || !scope?.schoolYearId) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy lớp/năm học' });
-    }
-    if (!isRegularScope(scope)) {
-      return res.status(400).json({ success: false, message: 'Lớp không hỗ trợ chat nhóm' });
-    }
-
-    const teacherId = normalizeId(teacherIdRaw);
-    if (!teacherIdAllowedInScope(scope, teacherId)) {
-      return res.status(403).json({ success: false, message: 'Giáo viên không thuộc lớp này' });
-    }
-
-    const teacherSnap = findTeacherSnapshotInScope(scope, teacherId);
-    if (!teacherSnap || !teacherSnap.teacherId) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy thông tin giáo viên' });
-    }
-
-    let resolvedGuardianId = '';
-    if (isGuardian) {
-      const selfGid = normalizeId(req.user.guardian_id) || portalGuardianIdFromEmail(req.user.email);
-      if (guardianIdBody && normalizeId(guardianIdBody) !== selfGid) {
-        return res.status(403).json({ success: false, message: 'guardianId không khớp tài khoản' });
-      }
-      resolvedGuardianId = selfGid;
-    } else {
-      if (!guardianIdBody) {
-        return res.status(400).json({ success: false, message: 'Thiếu guardianId' });
-      }
-      resolvedGuardianId = normalizeId(guardianIdBody);
-      const callerTid = resolveCallerTeacherIdFromScope(req.user, scope);
-      if (!callerTid || normalizeId(callerTid) !== normalizeId(teacherId)) {
-        return res.status(403).json({ success: false, message: 'teacherId không khớp tài khoản giáo viên' });
-      }
-    }
-
-    if (!resolvedGuardianId) {
-      return res.status(400).json({ success: false, message: 'Không xác định được phụ huynh' });
-    }
-
-    const guardianRow = findScopeGuardianById(scope, resolvedGuardianId);
-    if (!guardianRow) {
-      return res.status(403).json({ success: false, message: 'Phụ huynh không thuộc roster lớp' });
-    }
-
-    if (isGuardian && !matchesGuardianUser(req.user, guardianRow)) {
-      return res.status(403).json({ success: false, message: 'Chỉ được mở chat với tài khoản của bạn' });
-    }
-
-    const convType = `teacher_guardian:${teacherId}:${resolvedGuardianId}`;
-    const gLabel = guardianRow.guardian_name || guardianRow.name || resolvedGuardianId;
-    const title = `${teacherSnap.name} — ${gLabel}`;
-
-    const payload = await buildSubsetConversationPayload(scope, convType, req.user, {
-      teachers: [teacherSnap],
-      guardians: [guardianRow],
-      title,
-      studentIds: [],
+    return res.json({
+      success: true,
+      data: serializeDraftTeacherGuardianConversation(payload, req.user),
     });
-
-    const conversation = await upsertMergedConversationFromPayload(payload);
-    frappeService.invalidateCachesForClassChat(classId, schoolYearId).catch(() => {});
-    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
-    res.json({ success: true, data: serializeConversation(conversation, req.user) });
   } catch (error) {
     console.error('[Chat] ensureTeacherGuardianConversation error:', error);
     res.status(error.statusCode || 500).json({
       success: false,
       message: error.message || 'Không thể tạo nhóm chat',
     });
+  }
+};
+
+/**
+ * Tin đầu (hoặc tiếp theo) trong kênh GV↔PH — upsert hội thoại rồi lưu tin.
+ * Body giống ensure + { content, attachments?, replyTo? }.
+ */
+exports.sendTeacherGuardianMessage = async (req, res) => {
+  try {
+    const { payload, classId, schoolYearId } = await buildTeacherGuardianPayloadFromRequest(req);
+
+    let attachments = [];
+    if (req.body.attachments != null) {
+      if (typeof req.body.attachments === 'string') {
+        try {
+          attachments = JSON.parse(req.body.attachments);
+        } catch (_) {
+          attachments = [];
+        }
+      } else {
+        attachments = req.body.attachments;
+      }
+    }
+
+    const content = String(req.body.content || '').trim();
+    const attSan = sanitizeIncomingAttachments(attachments);
+    if (!content && !attSan.length) {
+      return res.status(400).json({ success: false, message: 'Nội dung hoặc tệp đính kèm là bắt buộc' });
+    }
+
+    const conversation = await upsertMergedConversationFromPayload(payload);
+    frappeService.invalidateCachesForClassChat(classId, schoolYearId).catch(() => {});
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+
+    const data = await appendMessageToConversation(conversation, req, {
+      content,
+      attachments: attSan,
+      replyToId: req.body.replyTo,
+    });
+
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    console.error('[Chat] sendTeacherGuardianMessage error:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Không thể gửi tin nhắn',
+    });
+  }
+};
+
+/**
+ * Upload đính kèm trước khi có conversationId — chỉ cho kênh GV↔PH (đã kiểm scope).
+ */
+exports.uploadTeacherGuardianAttachments = async (req, res) => {
+  try {
+    await buildTeacherGuardianPayloadFromRequest(req);
+    const files = req.files || [];
+    if (!files.length) {
+      return res.status(400).json({ success: false, message: 'Không có tệp tải lên' });
+    }
+    const attachments = files.map((file) => ({
+      kind: attachmentKindFromMime(file.mimetype),
+      url: `/uploads/chat/${file.filename}`,
+      name: String(file.originalname || file.filename || 'file').slice(0, 220),
+      mimeType: file.mimetype || '',
+      size: file.size || 0,
+    }));
+    res.json({ success: true, data: { attachments } });
+  } catch (error) {
+    console.error('[Chat] uploadTeacherGuardianAttachments error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải tệp' });
   }
 };
 
@@ -1420,9 +1695,6 @@ exports.uploadAttachments = async (req, res) => {
 exports.sendMessage = async (req, res) => {
   try {
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
-    if (conversation.status === 'locked') {
-      return res.status(423).json({ success: false, message: 'Nhóm chat năm học cũ chỉ cho xem lại lịch sử' });
-    }
 
     const content = String(req.body.content || '').trim();
     let attachments = [];
@@ -1441,83 +1713,13 @@ exports.sendMessage = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Nội dung hoặc tệp đính kèm là bắt buộc' });
     }
 
-    let replyTo;
-    if (req.body.replyTo) {
-      const replyMessage = await ChatMessage.findOne({
-        _id: req.body.replyTo,
-        conversation: conversation._id,
-        isDeleted: false,
-      });
-      if (replyMessage) {
-        replyTo = {
-          messageId: replyMessage._id,
-          content: messageSnippetForReply(replyMessage),
-          senderName: replyMessage.senderSnapshot?.name,
-        };
-      }
-    }
-
-    const message = await ChatMessage.create({
-      conversation: conversation._id,
-      sender: req.user._id,
-      senderSnapshot: {
-        name: userDisplayName(req.user),
-        email: req.user.email,
-        role: userRole(req.user),
-        avatarUrl: userAvatar(req.user),
-      },
-      content: content || '',
+    const data = await appendMessageToConversation(conversation, req, {
+      content,
       attachments,
-      replyTo,
-      readBy: [{ user: req.user._id, readAt: new Date() }],
+      replyToId: req.body.replyTo,
     });
 
-    const unreadCounts = conversation.unreadCounts || new Map();
-    (conversation.participants || []).forEach((participant) => {
-      if (!participant.user) return;
-      const key = String(participant.user);
-      if (key === String(req.user._id)) {
-        unreadCounts.set(key, 0);
-      } else {
-        unreadCounts.set(key, (unreadCounts.get(key) || 0) + 1);
-      }
-    });
-
-    const lastPreview = lastMessageContentPreview(message.content, message.attachments);
-    conversation.lastMessage = {
-      messageId: message._id,
-      content: lastPreview,
-      senderName: message.senderSnapshot.name,
-      senderEmail: normalizeEmail(message.senderSnapshot.email),
-      senderId: req.user._id,
-      createdAt: message.createdAt,
-    };
-    conversation.unreadCounts = unreadCounts;
-    await conversation.save();
-
-    cacheDel(messageCountRedisKey(conversation._id)).catch(() => {});
-    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
-
-    const payloadMsg = messagePayloadForApi(message);
-    await emitToConversation(conversation, 'chat:message', {
-      conversation: serializeConversation(conversation, req.user),
-      message: payloadMsg,
-    });
-
-    fireChatToFrappe('new_message', {
-      conversationId: String(conversation._id),
-      conversationType: conversation.type,
-      messageId: String(message._id),
-      senderEmail: req.user.email,
-      senderName: message.senderSnapshot.name,
-      senderRole: message.senderSnapshot.role,
-      recipientEmails: chatRecipientEmails(conversation, req.user.email),
-      messagePreview: (lastPreview || content || '').slice(0, 100),
-      hasAttachment: attachments.length > 0,
-      timestamp: new Date().toISOString(),
-    });
-
-    res.status(201).json({ success: true, data: { message: payloadMsg, conversation: serializeConversation(conversation, req.user) } });
+    res.status(201).json({ success: true, data });
   } catch (error) {
     console.error('[Chat] sendMessage error:', error);
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể gửi tin nhắn' });
