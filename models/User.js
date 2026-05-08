@@ -9,14 +9,15 @@ const { formatVietnameseName } = require('../utils/nameUtils');
 const userSchema = new mongoose.Schema({
   // Core identity - đồng bộ từ Frappe
   name: { type: String, index: true },
-  email: { type: String, required: true, unique: true, trim: true, lowercase: true, index: true },
+  // unique đã tạo index btree trên email — không thêm index: true / schema.index({ email }) tránh trùng
+  email: { type: String, required: true, unique: true, trim: true, lowercase: true },
   fullname: { type: String, trim: true },
   fullName: { type: String, trim: true }, // Alias cho compatibility
-  username: { type: String, trim: true, sparse: true },
+  username: { type: String, trim: true },
   guardian_id: { type: String, trim: true, sparse: true, index: true },
   
   // Employee info
-  employeeCode: { type: String, index: true, sparse: true },
+  employeeCode: { type: String },
   department: { type: String, default: '' },
   jobTitle: { type: String, default: 'User' },
   
@@ -49,10 +50,9 @@ const userSchema = new mongoose.Schema({
   lastSeen: { type: Date, default: Date.now },
 }, { timestamps: true });
 
-// Indexes để tối ưu query
-userSchema.index({ email: 1 });
-userSchema.index({ username: 1 });
-userSchema.index({ employeeCode: 1 });
+// Indexes để tối ưu query (định nghĩa một lần — tránh trùng với index / unique trên path)
+userSchema.index({ username: 1 }, { sparse: true });
+userSchema.index({ employeeCode: 1 }, { sparse: true });
 userSchema.index({ role: 1 });
 userSchema.index({ roles: 1 });
 userSchema.index({ active: 1 });
