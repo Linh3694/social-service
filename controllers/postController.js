@@ -1084,7 +1084,8 @@ exports.addComment = async (req, res) => {
     
     // Gửi notification cho author của post
     if (post.author.toString() !== userId.toString()) {
-      const author = await User.findById(post.author).select('email');
+      const author = await User.findById(post.author).select('email fullname');
+      console.log(`[Comment][Notify] post=${postId} → author._id=${post.author} email=${author?.email || '(missing)'} commenter=${req.user.email}`);
       if (author?.email) {
         notify('post_commented', { 
           postId, 
@@ -1094,7 +1095,11 @@ exports.addComment = async (req, res) => {
           content: content.trim(),
           ...wislifePayloadExtra(post),
         });
+      } else {
+        console.warn(`[Comment][Notify] Bỏ qua notify vì author không có email (post.author=${post.author})`);
       }
+    } else {
+      console.log(`[Comment][Notify] Bỏ qua: commenter == post author (self-comment) postId=${postId}`);
     }
     
     // Xử lý mentions - hỗ trợ cả client gửi lên và parse từ content
@@ -1274,7 +1279,9 @@ exports.replyComment = async (req, res) => {
     // Gửi notification cho author của parent comment
     const parentComment = post.comments.find(c => c._id.toString() === commentId.toString());
     if (parentComment && parentComment.user.toString() !== userId.toString()) {
-      const commentAuthor = await User.findById(parentComment.user).select('email');
+      const commentAuthor = await User.findById(parentComment.user).select('email fullname');
+      // Log debug: phát hiện trường hợp email Mongo không khớp Frappe (đặc biệt PH portal)
+      console.log(`[Reply][Notify] post=${postId} parentComment=${commentId} → author._id=${parentComment.user} email=${commentAuthor?.email || '(missing)'} replier=${req.user.email}`);
       if (commentAuthor?.email) {
         notify('comment_replied', {
           postId: postId.toString(),
@@ -1285,7 +1292,11 @@ exports.replyComment = async (req, res) => {
           content: content.trim().substring(0, 100),
           ...wislifePayloadExtra(post),
         });
+      } else {
+        console.warn(`[Reply][Notify] Bỏ qua notify vì commentAuthor không có email (parentComment.user=${parentComment.user})`);
       }
+    } else if (parentComment) {
+      console.log(`[Reply][Notify] Bỏ qua: replier == author (self-reply) postId=${postId} commentId=${commentId}`);
     }
 
     // Xử lý mentions trong reply
@@ -1384,7 +1395,8 @@ exports.addCommentReaction = async (req, res) => {
 
     // Gửi notification cho author của comment
     if (comment.user.toString() !== userId.toString()) {
-      const commentAuthor = await User.findById(comment.user).select('email');
+      const commentAuthor = await User.findById(comment.user).select('email fullname');
+      console.log(`[CommentReact][Notify] post=${postId} comment=${commentId} → author._id=${comment.user} email=${commentAuthor?.email || '(missing)'} reactor=${req.user.email}`);
       if (commentAuthor?.email) {
         notify('comment_reacted', {
           postId: postId.toString(),
@@ -1395,6 +1407,8 @@ exports.addCommentReaction = async (req, res) => {
           reactionType: type.trim(),
           ...wislifePayloadExtra(post),
         });
+      } else {
+        console.warn(`[CommentReact][Notify] Bỏ qua notify vì commentAuthor không có email (comment.user=${comment.user})`);
       }
     }
 
