@@ -19,6 +19,20 @@ const commentSchema = new mongoose.Schema({
 const postSchema = new mongoose.Schema(
   {
     author: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    /** Bản chụp hiển thị tại lúc đăng — tránh gọi Frappe enrich mỗi lần list feed */
+    authorSnapshot: {
+      fullname: String,
+      fullName: String,
+      email: { type: String, trim: true, lowercase: true },
+      avatarUrl: String,
+      guardian_image: String,
+      user_image: String,
+      sis_photo: String,
+      guardian_id: String,
+      department: String,
+      jobTitle: String,
+      username: String,
+    },
     content: { type: String, required: true },
     images: [{ type: String }],
     videos: [{ type: String }],
@@ -42,6 +56,9 @@ const postSchema = new mongoose.Schema(
 
 postSchema.index({ audienceType: 1, classId: 1, schoolYearId: 1, createdAt: -1 });
 postSchema.index({ classId: 1, createdAt: -1 });
+/** Bảng tin toàn trường audienceType≠class + visibility sort */
+postSchema.index({ audienceType: 1, visibility: 1, createdAt: -1 });
+postSchema.index({ isPinned: 1, updatedAt: -1 }, { partialFilterExpression: { isPinned: true } });
 
 module.exports = mongoose.model('Post', postSchema);
 

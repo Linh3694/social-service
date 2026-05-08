@@ -63,6 +63,10 @@ const chatMessageSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 chatMessageSchema.index({ conversation: 1, createdAt: -1 });
+/** Tin theo hội thoại — lọc isDeleted giống getMessages */
+chatMessageSchema.index({ conversation: 1, isDeleted: 1, createdAt: -1 });
+/** markRead: updateMany readBy.user $ne */
+chatMessageSchema.index({ conversation: 1, 'readBy.user': 1 });
 /** Tìm reaction theo user trong một tin (toggle nhanh). */
 chatMessageSchema.index({ 'reactions.user': 1 });
 

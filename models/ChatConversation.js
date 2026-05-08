@@ -19,7 +19,24 @@ const memberSnapshotSchema = new mongoose.Schema({
   studentIds: [{ type: String, trim: true }],
   /** Tên HS gắn PH — phục vụ subtitle "Phụ huynh của …" (workspace GV). */
   studentNames: [{ type: String, trim: true }],
+  /** Môn dạy (GVBM) — app PH hiển thị "Giáo viên môn …". */
+  subjects: [{
+    id: { type: String, trim: true },
+    title: { type: String, trim: true },
+  }],
   avatarUrl: { type: String, default: '' },
+}, { _id: false });
+
+/** Snapshot tin ghim (1 conversation tối đa 1 tin) — hiển thị banner, đồng bộ socket. */
+const pinnedMessageSchema = new mongoose.Schema({
+  messageId: { type: mongoose.Schema.Types.ObjectId, ref: 'ChatMessage' },
+  contentPreview: { type: String, default: '' },
+  attachmentsCount: { type: Number, default: 0 },
+  senderName: { type: String, default: '' },
+  senderEmail: { type: String, trim: true, lowercase: true, default: '' },
+  avatarUrl: { type: String, default: '' },
+  pinnedBy: { type: String, trim: true, lowercase: true, default: '' },
+  pinnedAt: { type: Date, default: Date.now },
 }, { _id: false });
 
 const chatConversationSchema = new mongoose.Schema({
@@ -48,9 +65,12 @@ const chatConversationSchema = new mongoose.Schema({
     senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     createdAt: Date,
   },
+  pinnedMessage: { type: pinnedMessageSchema, default: null },
 }, { timestamps: true });
 
 chatConversationSchema.index({ classId: 1, schoolYearId: 1, type: 1 }, { unique: true });
+/** Sort danh sách chat theo hoạt động cuối (sau unread-priority trong app). */
+chatConversationSchema.index({ 'lastMessage.createdAt': -1 });
 chatConversationSchema.index({ 'participants.user': 1, updatedAt: -1 });
 chatConversationSchema.index({ 'participants.email': 1, updatedAt: -1 });
 chatConversationSchema.index({ 'participants.guardianId': 1, updatedAt: -1 });

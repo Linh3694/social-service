@@ -7,8 +7,50 @@ const {
   getChatBroadcastRooms,
   ioEmitToEachRoom,
 } = require('../utils/chatBroadcastRooms');
+const {
+  cacheGetJSON,
+  cacheSetJSON,
+  cacheDel,
+  cacheDelByPattern,
+  TTL_CHAT_LIST_SEC,
+  TTL_MSG_COUNT_SEC,
+} = require('../utils/cache');
 
 const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
+
+/** Chuẩn hoá tin trả API/socket: không populate User — client dùng senderSnapshot (+ _id sender). */
+function messagePayloadForApi(doc) {
+  const m = doc?.toObject ? doc.toObject() : { ...doc };
+  const uid = m.sender;
+  const snap = m.senderSnapshot || {};
+  m.sender = {
+    _id: uid,
+    fullname: snap.name,
+    fullName: snap.name,
+    email: snap.email || '',
+    avatarUrl: snap.avatarUrl || '',
+  };
+  return m;
+}
+
+/** Khoá Redis đếm tin (TTL ngắn, invalidate khi gửi/thu hồi xoá…) */
+function messageCountRedisKey(conversationId) {
+  return `chat:msgcount:${String(conversationId)}`;
+}
+
+function chatConversationListCacheKey(userId, classId, schoolYearId) {
+  const u = String(userId || '');
+  const c = classId ? String(classId).trim() : '_';
+  const y = schoolYearId ? String(schoolYearId).trim() : '_';
+  return `chat:conv:${u}:${encodeURIComponent(c)}:${encodeURIComponent(y)}`;
+}
+
+async function invalidateConversationParticipantsListCaches(conversation) {
+  const parts = conversation?.participants || [];
+  const uniq = new Set(parts.filter((p) => p.user).map((p) => String(p.user)));
+  await Promise.all([...uniq].map((uid) => cacheDelByPattern(`chat:conv:${String(uid)}:*`)));
+}
+
 
 function getBearerToken(req) {
   const authHeader = req.headers.authorization || '';
@@ -271,6 +313,17 @@ function getStudentName(student) {
   return student?.student_name || student?.studentName || student?.name || getStudentId(student);
 }
 
+/** Chuẩn hóa mảng môn dạy lưu snapshot Mongo. */
+function compactSubjectSnapshots(subjects) {
+  if (!Array.isArray(subjects)) return [];
+  return subjects
+    .map((s) => ({
+      id: String(s?.id || '').trim(),
+      title: String(s?.title || s?.name || '').trim(),
+    }))
+    .filter((s) => s.title);
+}
+
 /** Tên HS (không trùng, giữ thứ tự) từ mảng students của guardian trong scope Frappe. */
 function studentNamesFromScopeGuardian(guardian) {
   const students = guardian?.students || [];
@@ -359,12 +412,16 @@ async function buildSubsetConversationPayload(scope, type, requestUser, {
 }) {
   const { byEmail, byGuardianId } = await attachMongoUsers({ teachers, guardians });
 
-  const teacherSnapshots = teachers.map((teacher) => ({
-    email: normalizeEmail(teacher.email),
-    name: teacher.name || teacher.email || teacher.teacherId,
-    teacherId: teacher.teacherId,
-    avatarUrl: teacher.avatarUrl || '',
-  }));
+  const teacherSnapshots = teachers.map((teacher) => {
+    const norm = normalizeTeacherSnapshot(teacher) || {};
+    return {
+      email: normalizeEmail(norm.email || teacher.email),
+      name: norm.name || teacher.name || teacher.email || teacher.teacherId,
+      teacherId: norm.teacherId || normalizeId(teacher.teacherId || teacher.name),
+      avatarUrl: norm.avatarUrl || teacher.avatarUrl || '',
+      subjects: compactSubjectSnapshots(norm.subjects || teacher.subjects),
+    };
+  });
 
   const guardianSnapshots = guardians.map((guardian) => ({
     email: normalizeEmail(guardian.email || guardian.portalEmail),
@@ -454,12 +511,16 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
   const teachers = scope.teachers || [];
   const { byEmail, byGuardianId } = await attachMongoUsers({ teachers, guardians });
 
-  const teacherSnapshots = teachers.map((teacher) => ({
-    email: normalizeEmail(teacher.email),
-    name: teacher.name || teacher.email || teacher.teacherId,
-    teacherId: teacher.teacherId,
-    avatarUrl: teacher.avatarUrl || '',
-  }));
+  const teacherSnapshots = teachers.map((teacher) => {
+    const norm = normalizeTeacherSnapshot(teacher) || {};
+    return {
+      email: normalizeEmail(norm.email || teacher.email),
+      name: norm.name || teacher.name || teacher.email || teacher.teacherId,
+      teacherId: norm.teacherId || normalizeId(teacher.teacherId || teacher.name),
+      avatarUrl: norm.avatarUrl || teacher.avatarUrl || '',
+      subjects: compactSubjectSnapshots(norm.subjects || teacher.subjects),
+    };
+  });
 
   const guardianSnapshots = guardians.map((guardian) => {
     const studentIdsResolved = targetStudentId
@@ -635,6 +696,11 @@ function mergeParticipantFields(oldP, newP) {
 
 /** Merge field-by-field cho snapshot teacher/guardian. */
 function mergeSnapshotFields(oldS, newS) {
+  const mergedSubjects = (() => {
+    const next = compactSubjectSnapshots(newS?.subjects);
+    if (next.length) return next;
+    return compactSubjectSnapshots(oldS?.subjects);
+  })();
   return {
     ...oldS,
     ...newS,
@@ -651,6 +717,7 @@ function mergeSnapshotFields(oldS, newS) {
       ...((oldS.studentNames || []).map(String)),
       ...((newS.studentNames || []).map(String)),
     ])).map((s) => String(s).trim()).filter(Boolean),
+    subjects: mergedSubjects,
   };
 }
 
@@ -749,7 +816,7 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
     if (isGuardian && token) {
       // Parent Portal JWT không phải Bearer Frappe: gửi qua X-Parent-Portal-Token + API key để đọc roster lớp.
       try {
-        scope = await frappeService.getClassChatScope(classId, schoolYearId, { parentPortalToken: token });
+        scope = await frappeService.getClassChatScope(classId, schoolYearId, { parentPortalToken: token }, { bypassCache: true });
       } catch (portalErr) {
         console.debug('[Chat] getClassChatScope với Parent Portal token thất bại — thử service key', {
           classId,
@@ -757,12 +824,12 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
           status: portalErr?.response?.status,
           message: portalErr.message,
         });
-        scope = await frappeService.getClassChatScope(classId, schoolYearId, null);
+        scope = await frappeService.getClassChatScope(classId, schoolYearId, null, { bypassCache: true });
       }
     } else {
       // Giáo viên: Bearer Frappe. PH không token (hiếm): chỉ service key.
       const auth = trustedScope && isGuardian ? null : token;
-      scope = await frappeService.getClassChatScope(classId, schoolYearId, auth);
+      scope = await frappeService.getClassChatScope(classId, schoolYearId, auth, { bypassCache: true });
     }
   } catch (error) {
     if (!trustedScope || !isGuardian) throw error;
@@ -828,6 +895,13 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
     conversations.push(conversation);
   }
 
+  // Gỡ cache Frappe lớp/năm sau khi đồng bộ Mongo — request sau lấy roster mới nhất.
+  frappeService.invalidateCachesForClassChat(scope.classId, scope.schoolYearId).catch(() => {});
+
+  for (const c of conversations) {
+    invalidateConversationParticipantsListCaches(c).catch(() => {});
+  }
+
   return conversations;
 }
 
@@ -881,6 +955,22 @@ async function getConversationForUser(conversationId, user) {
   return conversation;
 }
 
+/** Chuẩn hóa pinnedMessage cho JSON + socket (ObjectId → string, date → ISO). */
+function serializePinnedMessage(raw) {
+  if (!raw || !raw.messageId) return null;
+  const plain = raw.toObject ? raw.toObject() : raw;
+  return {
+    messageId: String(plain.messageId),
+    contentPreview: String(plain.contentPreview || '').slice(0, 500),
+    attachmentsCount: Math.max(0, Number(plain.attachmentsCount) || 0),
+    senderName: plain.senderName || '',
+    senderEmail: plain.senderEmail || '',
+    avatarUrl: plain.avatarUrl || '',
+    pinnedBy: plain.pinnedBy || '',
+    pinnedAt: plain.pinnedAt ? new Date(plain.pinnedAt).toISOString() : new Date().toISOString(),
+  };
+}
+
 function serializeConversation(conversation, user) {
   const plain = conversation.toObject ? conversation.toObject() : conversation;
   const key = participantKey(user);
@@ -888,10 +978,14 @@ function serializeConversation(conversation, user) {
   const unreadCount = unreadCounts instanceof Map
     ? unreadCounts.get(key) || 0
     : unreadCounts[key] || 0;
-  return {
+  const base = {
     ...plain,
     unreadCount,
+    pinnedMessage: plain.pinnedMessage
+      ? serializePinnedMessage(plain.pinnedMessage)
+      : null,
   };
+  return base;
 }
 
 /** Số tin chưa đọc của user (sort API trước khi serialize). */
@@ -1024,6 +1118,13 @@ exports.listConversations = async (req, res) => {
   try {
     const token = getBearerToken(req);
     const { classId, schoolYearId } = req.query;
+
+    const listCacheKey = chatConversationListCacheKey(req.user._id, classId, schoolYearId);
+    const cachedList = await cacheGetJSON(listCacheKey);
+    if (cachedList?.payloads) {
+      return res.json({ success: true, data: cachedList.payloads });
+    }
+
     let conversations = [];
 
     if (classId) {
@@ -1072,25 +1173,48 @@ exports.listConversations = async (req, res) => {
       conversations.map((conversation) => [String(conversation._id), conversation])
     ).values());
 
-    const visible = uniqueConversations
+    const filtered = uniqueConversations
       .filter((conversation) => canAccessConversation(conversation, req.user))
       .filter((c) => {
         const t = String(c.type || '');
         // Ẩn legacy: nhóm tự sinh GVCN-PH cũ (`student_guardians:*`)
         // và nhóm GV+toàn bộ guardian theo HS (`teacher_student_guardians:*`) — đã thay bằng chat 1-1.
         return !t.startsWith('student_guardians:') && !t.startsWith('teacher_student_guardians:');
-      })
-      .sort((a, b) => {
-        const rb = conversationUnreadCountForUser(b, req.user) > 0 ? 1 : 0;
-        const ra = conversationUnreadCountForUser(a, req.user) > 0 ? 1 : 0;
-        if (rb !== ra) return rb - ra;
-        const db = conversationActivityMillisForSort(b);
-        const da = conversationActivityMillisForSort(a);
-        if (db !== da) return db - da;
-        return String(a._id).localeCompare(String(b._id));
       });
 
-    res.json({ success: true, data: visible.map((conversation) => serializeConversation(conversation, req.user)) });
+    // Thứ tự hoạt động cuối từ Mongo (P1.3 — lastMessage.updatedAt có index hỗ trợ sort).
+    const idList = [...new Set(filtered.map((c) => String(c._id)))].filter((id) => mongoose.Types.ObjectId.isValid(id));
+    let dbRank = new Map();
+    if (idList.length) {
+      const oids = idList.map((id) => new mongoose.Types.ObjectId(id));
+      const sortedFromDb = await ChatConversation.find({ _id: { $in: oids } })
+        .sort({ 'lastMessage.createdAt': -1, updatedAt: -1 })
+        .select('_id')
+        .lean();
+      sortedFromDb.forEach((doc, idx) => {
+        dbRank.set(String(doc._id), idx);
+      });
+    }
+
+    const visible = filtered.sort((a, b) => {
+      const ub = conversationUnreadCountForUser(b, req.user) > 0 ? 1 : 0;
+      const ua = conversationUnreadCountForUser(a, req.user) > 0 ? 1 : 0;
+      if (ub !== ua) return ub - ua;
+      const ra = dbRank.get(String(a._id));
+      const rb = dbRank.get(String(b._id));
+      const fa = typeof ra === 'number' ? ra : Number.MAX_SAFE_INTEGER;
+      const fb = typeof rb === 'number' ? rb : Number.MAX_SAFE_INTEGER;
+      if (fa !== fb) return fa - fb;
+      const dbAct = conversationActivityMillisForSort(b);
+      const daAct = conversationActivityMillisForSort(a);
+      if (dbAct !== daAct) return dbAct - daAct;
+      return String(a._id).localeCompare(String(b._id));
+    });
+
+    const payloads = visible.map((conversation) => serializeConversation(conversation, req.user));
+    cacheSetJSON(listCacheKey, { payloads }, TTL_CHAT_LIST_SEC).catch(() => {});
+
+    res.json({ success: true, data: payloads });
   } catch (error) {
     console.error('[Chat] listConversations error:', error);
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải nhóm chat' });
@@ -1126,12 +1250,12 @@ exports.ensureTeacherGuardianConversation = async (req, res) => {
     let scope;
     if (isGuardian && token) {
       try {
-        scope = await frappeService.getClassChatScope(classId, schoolYearId, { parentPortalToken: token });
+        scope = await frappeService.getClassChatScope(classId, schoolYearId, { parentPortalToken: token }, { bypassCache: true });
       } catch (portalErr) {
-        scope = await frappeService.getClassChatScope(classId, schoolYearId, null);
+        scope = await frappeService.getClassChatScope(classId, schoolYearId, null, { bypassCache: true });
       }
     } else {
-      scope = await frappeService.getClassChatScope(classId, schoolYearId, token);
+      scope = await frappeService.getClassChatScope(classId, schoolYearId, token, { bypassCache: true });
     }
 
     if (!scope?.classId || !scope?.schoolYearId) {
@@ -1194,6 +1318,8 @@ exports.ensureTeacherGuardianConversation = async (req, res) => {
     });
 
     const conversation = await upsertMergedConversationFromPayload(payload);
+    frappeService.invalidateCachesForClassChat(classId, schoolYearId).catch(() => {});
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
     res.json({ success: true, data: serializeConversation(conversation, req.user) });
   } catch (error) {
     console.error('[Chat] ensureTeacherGuardianConversation error:', error);
@@ -1214,24 +1340,49 @@ exports.getMessages = async (req, res) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit || '30', 10), 1), 100);
     const skip = (page - 1) * limit;
 
-    const [messages, total] = await Promise.all([
-      ChatMessage.find({ conversation: conversation._id, isDeleted: false })
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .populate('sender', USER_SELECT),
-      ChatMessage.countDocuments({ conversation: conversation._id, isDeleted: false }),
-    ]);
+    const baseQuery = { conversation: conversation._id, isDeleted: false };
+    const ck = messageCountRedisKey(conversation._id);
+
+    const loadRows = async (take) => ChatMessage.find(baseQuery)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(take)
+      .lean();
+
+    let messages;
+    let total;
+    let hasNext;
+
+    if (page === 1) {
+      const take = limit + 1;
+      const rawRows = await loadRows(take);
+      hasNext = rawRows.length > limit;
+      messages = rawRows.slice(0, limit);
+
+      const hit = await cacheGetJSON(ck);
+      if (hit && typeof hit.total === 'number') {
+        total = hit.total;
+      } else {
+        total = await ChatMessage.countDocuments(baseQuery);
+        cacheSetJSON(ck, { total }, TTL_MSG_COUNT_SEC).catch(() => {});
+      }
+    } else {
+      messages = await loadRows(limit + 1);
+      hasNext = messages.length > limit;
+      messages = messages.slice(0, limit);
+
+      total = await ChatMessage.countDocuments(baseQuery);
+    }
 
     res.json({
       success: true,
       data: {
-        messages: messages.reverse(),
+        messages: messages.reverse().map((m) => messagePayloadForApi(m)),
         pagination: {
           currentPage: page,
           totalPages: Math.ceil(total / limit),
           totalMessages: total,
-          hasNext: page < Math.ceil(total / limit),
+          hasNext,
         },
         conversation: serializeConversation(conversation, req.user),
       },
@@ -1344,10 +1495,13 @@ exports.sendMessage = async (req, res) => {
     conversation.unreadCounts = unreadCounts;
     await conversation.save();
 
-    const populated = await ChatMessage.findById(message._id).populate('sender', USER_SELECT);
+    cacheDel(messageCountRedisKey(conversation._id)).catch(() => {});
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+
+    const payloadMsg = messagePayloadForApi(message);
     await emitToConversation(conversation, 'chat:message', {
       conversation: serializeConversation(conversation, req.user),
-      message: populated,
+      message: payloadMsg,
     });
 
     fireChatToFrappe('new_message', {
@@ -1363,7 +1517,7 @@ exports.sendMessage = async (req, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    res.status(201).json({ success: true, data: { message: populated, conversation: serializeConversation(conversation, req.user) } });
+    res.status(201).json({ success: true, data: { message: payloadMsg, conversation: serializeConversation(conversation, req.user) } });
   } catch (error) {
     console.error('[Chat] sendMessage error:', error);
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể gửi tin nhắn' });
@@ -1385,6 +1539,8 @@ exports.markRead = async (req, res) => {
       },
       { $push: { readBy: { user: req.user._id, readAt: new Date() } } }
     );
+
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
 
     await emitToConversation(conversation, 'chat:read', {
       conversationId: String(conversation._id),
@@ -1480,6 +1636,96 @@ exports.toggleReaction = async (req, res) => {
   }
 };
 
+/** Ghim 1 tin vào conversation (ghi đè ghim cũ). */
+exports.pinMessage = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (conversation.status === 'locked') {
+      return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
+    }
+    const messageId = String(req.body.messageId || '').trim();
+    if (!mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ success: false, message: 'Tin nhắn không hợp lệ' });
+    }
+    const message = await ChatMessage.findOne({
+      _id: messageId,
+      conversation: conversation._id,
+      isDeleted: false,
+    });
+    if (!message) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy tin nhắn' });
+    }
+    if (message.recalledAt) {
+      return res.status(400).json({ success: false, message: 'Không thể ghim tin đã thu hồi' });
+    }
+
+    conversation.pinnedMessage = {
+      messageId: message._id,
+      contentPreview: String(messageSnippetForReply(message) || '').slice(0, 140),
+      attachmentsCount: Array.isArray(message.attachments) ? message.attachments.length : 0,
+      senderName: message.senderSnapshot?.name || '',
+      senderEmail: normalizeEmail(message.senderSnapshot?.email || ''),
+      avatarUrl: String(message.senderSnapshot?.avatarUrl || '').slice(0, 500),
+      pinnedBy: normalizeEmail(req.user.email),
+      pinnedAt: new Date(),
+    };
+    conversation.markModified('pinnedMessage');
+    await conversation.save();
+
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+
+    const pinned = serializePinnedMessage(conversation.pinnedMessage);
+    await emitToConversation(conversation, 'chat:conversation:pinned', {
+      conversationId: String(conversation._id),
+      pinnedMessage: pinned,
+      by: normalizeEmail(req.user.email),
+    });
+
+    res.json({
+      success: true,
+      data: {
+        conversation: serializeConversation(conversation, req.user),
+        pinnedMessage: pinned,
+      },
+    });
+  } catch (error) {
+    console.error('[Chat] pinMessage error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể ghim tin nhắn' });
+  }
+};
+
+/** Bỏ ghim. */
+exports.unpinMessage = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (conversation.status === 'locked') {
+      return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
+    }
+    conversation.pinnedMessage = null;
+    conversation.markModified('pinnedMessage');
+    await conversation.save();
+
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+
+    await emitToConversation(conversation, 'chat:conversation:pinned', {
+      conversationId: String(conversation._id),
+      pinnedMessage: null,
+      by: normalizeEmail(req.user.email),
+    });
+
+    res.json({
+      success: true,
+      data: {
+        conversation: serializeConversation(conversation, req.user),
+        pinnedMessage: null,
+      },
+    });
+  } catch (error) {
+    console.error('[Chat] unpinMessage error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể bỏ ghim' });
+  }
+};
+
 /** Thu hồi tin: chỉ người gửi, trong RECALL_WINDOW_MS. */
 exports.recallMessage = async (req, res) => {
   try {
@@ -1505,6 +1751,13 @@ exports.recallMessage = async (req, res) => {
     message.recalledBy = req.user._id;
     await message.save();
 
+    const unpinBecauseRecall = Boolean(
+      conversation.pinnedMessage
+      && conversation.pinnedMessage.messageId
+      && String(conversation.pinnedMessage.messageId) === String(message._id),
+    );
+
+    let needConvSave = false;
     if (
       conversation.lastMessage
       && conversation.lastMessage.messageId
@@ -1512,8 +1765,18 @@ exports.recallMessage = async (req, res) => {
     ) {
       conversation.lastMessage.content = '';
       conversation.markModified('lastMessage');
+      needConvSave = true;
+    }
+    if (unpinBecauseRecall) {
+      conversation.pinnedMessage = null;
+      conversation.markModified('pinnedMessage');
+      needConvSave = true;
+    }
+    if (needConvSave) {
       await conversation.save();
     }
+
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
 
     await emitToConversation(conversation, 'chat:message:recalled', {
       conversationId: String(conversation._id),
@@ -1521,6 +1784,14 @@ exports.recallMessage = async (req, res) => {
       recalledAt: message.recalledAt.toISOString(),
       recalledBy: String(req.user._id),
     });
+
+    if (unpinBecauseRecall) {
+      await emitToConversation(conversation, 'chat:conversation:pinned', {
+        conversationId: String(conversation._id),
+        pinnedMessage: null,
+        by: normalizeEmail(req.user.email),
+      });
+    }
 
     fireChatToFrappe('message_recalled', {
       conversationId: String(conversation._id),
@@ -1550,3 +1821,4 @@ exports.recallMessage = async (req, res) => {
 };
 
 exports.canAccessConversation = canAccessConversation;
+exports.buildParticipantMatchOr = buildParticipantMatchOr;

@@ -73,6 +73,15 @@ class RedisClient {
     });
   }
 
+  /** Client Redis chung (đọc/ghi cache TTL) — dùng chung adapter pub/sub không lẫn keyspace nhờ prefix `social:cache:` */
+  getClient() {
+    return this.client;
+  }
+
+  isReady() {
+    return Boolean(this.client && this.client.isOpen);
+  }
+
   getPubClient() { return this.pubClient; }
   getSubClient() { return this.subClient; }
 }

@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
 const Post = require('../models/Post');
+const PostComment = require('../models/PostComment');
 const User = require('../models/User');
 const PostService = require('../services/postService');
 const redisClient = require('../config/redis');
@@ -54,6 +55,98 @@ function populatePostQuery(query) {
     .populate('comments.user', POST_USER_SELECT)
     .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
     .populate('reactions.user', POST_REACTION_USER_SELECT);
+}
+
+/** Feed list: không nhúng mảng `comments` (query phụ một lần cho summary). */
+function populateFeedListQuery(query) {
+  return query
+    .populate('tags', POST_USER_SELECT)
+    .populate('reactions.user', POST_REACTION_USER_SELECT);
+}
+
+/** Feed list: không populate author (hydrate batch); KHÔNG dùng cho list lớn (đã có populateFeedListQuery). */
+function populateFeedBodiesQuery(query) {
+  return query
+    .populate('tags', POST_USER_SELECT)
+    .populate('comments.user', POST_USER_SELECT)
+    .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
+    .populate('reactions.user', POST_REACTION_USER_SELECT);
+}
+
+/**
+ * Snapshot tác giả tại lúc đăng — tránh enrich Frappe runtime trên feed lớp.
+ */
+function buildAuthorSnapshotPayload(reqUser) {
+  if (!reqUser) return undefined;
+  const display = reqUser.fullname || reqUser.fullName || reqUser.email || '';
+  return {
+    fullname: display,
+    fullName: display,
+    email: reqUser.email ? String(reqUser.email).trim().toLowerCase() : '',
+    avatarUrl:
+      reqUser.avatarUrl
+      || reqUser.guardian_image
+      || reqUser.user_image
+      || reqUser.sis_photo
+      || '',
+    guardian_image: reqUser.guardian_image || '',
+    user_image: reqUser.user_image || '',
+    sis_photo: reqUser.sis_photo || '',
+    guardian_id: reqUser.guardian_id ? String(reqUser.guardian_id) : '',
+    department: reqUser.department || '',
+    jobTitle: reqUser.jobTitle || '',
+    username: reqUser.username ? String(reqUser.username) : '',
+  };
+}
+
+/**
+ * Gộp author từ User + authorSnapshot chỉ một lần query User/page (không populate từng post).
+ */
+async function hydrateFeedPostsAuthorsFromSnapshot(postDocs) {
+  if (!postDocs?.length) return postDocs.map((p) => (p.toObject ? p.toObject() : p));
+  const idSet = new Set();
+  for (const doc of postDocs) {
+    const oid = doc.author || doc.author?._id;
+    if (oid) idSet.add(String(oid));
+  }
+  const oids = [...idSet]
+    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+  const users = await User.find({ _id: { $in: oids } }).select(POST_AUTHOR_SELECT).lean();
+  const byId = new Map(users.map((u) => [String(u._id), u]));
+
+  return postDocs.map((doc) => {
+    const o = doc.toObject ? doc.toObject() : doc;
+    const sid = String(o.author?._id || o.author || '');
+    const baseLean = sid ? byId.get(sid) : undefined;
+    const snap = o.authorSnapshot;
+    if (!snap) {
+      const authorFallback = baseLean
+        ? { ...baseLean, _id: baseLean._id }
+        : (o.author ? { _id: o.author } : undefined);
+      return { ...o, author: authorFallback };
+    }
+    const displayName = snap.fullname || snap.fullName || baseLean?.fullname || baseLean?.fullName;
+    return {
+      ...o,
+      author: {
+        ...(baseLean || {}),
+        _id: baseLean?._id || o.author,
+        fullname: displayName || baseLean?.fullname,
+        fullName: displayName || baseLean?.fullName,
+        email: snap.email || baseLean?.email,
+        avatarUrl: snap.avatarUrl || baseLean?.avatarUrl,
+        guardian_image: snap.guardian_image || baseLean?.guardian_image,
+        guardian_id: snap.guardian_id || baseLean?.guardian_id,
+        user_image: snap.user_image || baseLean?.user_image,
+        sis_photo: snap.sis_photo || baseLean?.sis_photo,
+        department: snap.department || baseLean?.department,
+        jobTitle: snap.jobTitle || baseLean?.jobTitle,
+        username: snap.username || baseLean?.username,
+        name: baseLean?.name,
+      },
+    };
+  });
 }
 
 function normalizeLookupKey(value) {
@@ -153,6 +246,138 @@ function paginationResponse(posts, totalPosts, page, limit) {
       hasPrev: page > 1,
     },
   };
+}
+
+async function aggregatePostCommentSummaries(postOidList, topN) {
+  if (!postOidList?.length) {
+    return { countMap: new Map(), topsByPostMap: new Map() };
+  }
+
+  const [facet] = await PostComment.aggregate([
+    { $match: { post: { $in: postOidList }, isDeleted: false } },
+    {
+      $facet: {
+        allCounts: [{ $group: { _id: '$post', n: { $sum: 1 } } }],
+        tops: [
+          { $match: { parentComment: null } },
+          { $sort: { createdAt: -1 } },
+          { $group: { _id: '$post', ids: { $push: '$_id' } } },
+          {
+            $project: {
+              postId: '$_id',
+              topIds: { $slice: ['$ids', topN] },
+              _id: 0,
+            },
+          },
+        ],
+      },
+    },
+  ]);
+
+  const countMap = new Map((facet?.allCounts || []).map((r) => [String(r._id), r.n]));
+  const flatTopIds = [];
+  const topIdToPostId = new Map();
+  for (const row of facet?.tops || []) {
+    const pid = String(row.postId);
+    for (const tid of row.topIds || []) {
+      const idStr = String(tid);
+      flatTopIds.push(tid);
+      topIdToPostId.set(idStr, pid);
+    }
+  }
+
+  const topsByPostMap = new Map();
+  if (flatTopIds.length) {
+    const topDocs = await PostComment.find({ _id: { $in: flatTopIds } })
+      .populate('user', POST_USER_SELECT)
+      .lean();
+    for (const doc of topDocs) {
+      const mappedPost = topIdToPostId.get(String(doc._id));
+      if (!mappedPost) continue;
+      if (!topsByPostMap.has(mappedPost)) topsByPostMap.set(mappedPost, []);
+      topsByPostMap.get(mappedPost).push(doc);
+    }
+  }
+
+  return { countMap, topsByPostMap };
+}
+
+function pickEmbeddedRootComments(comments, limitN) {
+  const roots = (comments || []).filter((c) => !c.parentComment && !c.isDeleted);
+  roots.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  return roots.slice(0, limitN).map((c) => (typeof c.toObject === 'function' ? c.toObject() : { ...c }));
+}
+
+async function hydrateCommentUsersBare(commentObjs) {
+  const needIds = [];
+  const idxNeed = [];
+  commentObjs.forEach((c, i) => {
+    const uid = c.user;
+    if (uid && !uid.email && mongoose.Types.ObjectId.isValid(String(uid))) {
+      idxNeed.push(i);
+      needIds.push(String(uid));
+    }
+  });
+  if (!needIds.length) return commentObjs;
+  const uniq = [...new Set(needIds)].map((id) => new mongoose.Types.ObjectId(id));
+  const users = await User.find({ _id: { $in: uniq } }).select(POST_USER_SELECT).lean();
+  const byId = new Map(users.map((u) => [String(u._id), u]));
+  return commentObjs.map((c, i) => {
+    if (!idxNeed.includes(i)) return { ...c };
+    const uid = c.user;
+    const uDoc = typeof uid === 'object' && uid?.email ? uid : byId.get(String(uid));
+    return { ...c, user: uDoc || uid };
+  });
+}
+
+/** Gộp commentCount + topComments cho feed — đọc song song Post.comments nhúng + collection PostComment. */
+async function attachFeedCommentSummaries(postObjects, topN = 2) {
+  const oidForAgg = postObjects
+    .map((p) => p._id)
+    .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)))
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  const { countMap, topsByPostMap } =
+    oidForAgg.length > 0
+      ? await aggregatePostCommentSummaries(oidForAgg, topN)
+      : { countMap: new Map(), topsByPostMap: new Map() };
+
+  const out = [];
+  for (const plain of postObjects) {
+    const embedded = plain.comments || [];
+    const pid = String(plain._id);
+    let commentCount = countMap.get(pid);
+    if (typeof commentCount !== 'number') {
+      commentCount = embedded.filter((c) => !c.isDeleted).length;
+    }
+
+    let topComments = topsByPostMap.get(pid);
+    if (!topComments?.length) {
+      const picked = pickEmbeddedRootComments(embedded, topN);
+      topComments = await hydrateCommentUsersBare(picked);
+    }
+
+    const { comments: _drop, ...rest } = plain;
+    out.push({
+      ...rest,
+      commentCount,
+      topComments: topComments || [],
+    });
+  }
+  return out;
+}
+
+/** Sau khi list feed chỉ `.select('-comments')` — một query nhỏ ghép mảng comments cho summary. */
+async function attachFeedCommentSummariesWithFetch(hydratedPlainPosts, topN = 2) {
+  if (!hydratedPlainPosts.length) return [];
+  const ids = hydratedPlainPosts.map((p) => p._id);
+  const rows = await Post.find({ _id: { $in: ids } }).select('comments').lean();
+  const embedMap = new Map(rows.map((r) => [String(r._id), r.comments || []]));
+  const merged = hydratedPlainPosts.map((p) => ({
+    ...p,
+    comments: embedMap.get(String(p._id)) || [],
+  }));
+  return attachFeedCommentSummaries(merged, topN);
 }
 
 function normalizeAudience(value, classId) {
@@ -293,6 +518,7 @@ exports.createPost = async (req, res) => {
     });
     const postData = {
       author: authorId,
+      authorSnapshot: buildAuthorSnapshotPayload(req.user),
       content: content.trim(),
       type,
       visibility,
@@ -378,13 +604,15 @@ exports.getNewsfeed = async (req, res) => {
     if (type) filter.type = type; if (author) filter.author = author; if (department) filter.department = department;
     const sortOptions = { [sortBy]: sortOrder === 'desc' ? -1 : 1 };
     const [posts, totalPosts] = await Promise.all([
-      populatePostQuery(Post.find(filter))
+      populateFeedListQuery(Post.find(filter).select('-comments'))
         .sort(sortOptions)
         .skip(skip)
         .limit(limit),
       Post.countDocuments(filter),
     ]);
-    res.status(200).json({ success: true, data: paginationResponse(posts, totalPosts, page, limit) });
+    const hydratedPosts = await hydrateFeedPostsAuthorsFromSnapshot(posts);
+    const withSummaries = await attachFeedCommentSummariesWithFetch(hydratedPosts);
+    res.status(200).json({ success: true, data: paginationResponse(withSummaries, totalPosts, page, limit) });
   } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi lấy bảng tin', error: error.message }); }
 };
 
@@ -400,27 +628,16 @@ exports.getClassFeed = async (req, res) => {
     if (schoolYearId) filter.schoolYearId = String(schoolYearId);
 
     const [posts, totalPosts] = await Promise.all([
-      populatePostQuery(Post.find(filter))
+      populateFeedListQuery(Post.find(filter).select('-comments'))
         .sort({ isPinned: -1, createdAt: -1 })
         .skip(skip)
         .limit(limit),
       Post.countDocuments(filter),
     ]);
 
-    let enrichedPosts = posts;
-    try {
-      const token = getBearerToken(req);
-      const directory = await frappeService.getClassGuardianDirectory(
-        String(classId),
-        schoolYearId ? String(schoolYearId) : undefined,
-        token
-      );
-      enrichedPosts = enrichPostsWithGuardianDirectory(posts, directory.guardians || []);
-    } catch (directoryError) {
-      console.warn('[PostController] Không enrich được guardian directory cho class feed:', directoryError.message);
-    }
-
-    return res.status(200).json({ success: true, data: paginationResponse(enrichedPosts, totalPosts, page, limit) });
+    const hydratedPosts = await hydrateFeedPostsAuthorsFromSnapshot(posts);
+    const withSummaries = await attachFeedCommentSummariesWithFetch(hydratedPosts);
+    return res.status(200).json({ success: true, data: paginationResponse(withSummaries, totalPosts, page, limit) });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Lỗi server khi lấy Nhật ký lớp', error: error.message });
   }
@@ -474,16 +691,18 @@ exports.getStudentFeed = async (req, res) => {
     const { page, limit, skip } = parsePagination(req.query);
     const filter = { audienceType: 'class', $or: classFilters };
     const [posts, totalPosts] = await Promise.all([
-      populatePostQuery(Post.find(filter))
+      populateFeedListQuery(Post.find(filter).select('-comments'))
         .sort({ isPinned: -1, createdAt: -1 })
         .skip(skip)
         .limit(limit),
       Post.countDocuments(filter),
     ]);
+    const hydratedPosts = await hydrateFeedPostsAuthorsFromSnapshot(posts);
+    const withSummaries = await attachFeedCommentSummariesWithFetch(hydratedPosts);
 
     return res.status(200).json({
       success: true,
-      data: paginationResponse(posts, totalPosts, page, limit),
+      data: paginationResponse(withSummaries, totalPosts, page, limit),
       classScopes: scopes,
     });
   } catch (error) {
@@ -594,6 +813,62 @@ exports.getPostById = async (req, res) => {
   } catch (error) { res.status(500).json({ success: false, message: 'Lỗi server khi lấy bài viết', error: error.message }); }
 };
 
+/** Comments phân trang — collection PostComment hoặc fallback nhúng cũ (trước `/:postId` trong routes). */
+exports.getPostCommentsPaged = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: 'ID bài viết không hợp lệ' });
+    }
+
+    const meta = await Post.findById(postId).select('department visibility').lean();
+    if (!meta) return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết' });
+
+    const userDepartment = req.user?.department;
+    if (meta.visibility === 'department' && meta.department && meta.department !== userDepartment) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xem bài viết này' });
+    }
+
+    const { page, limit, skip } = parsePagination(req.query);
+    const rooted = req.query.threaded !== '1';
+    const pid = new mongoose.Types.ObjectId(postId);
+    const hasColl = await PostComment.exists({ post: pid });
+
+    if (!hasColl) {
+      const populated = await Post.findById(postId)
+        .populate('comments.user', POST_USER_SELECT)
+        .populate('comments.reactions.user', POST_REACTION_USER_SELECT);
+      const allPlain = populated?.comments || [];
+      const filtered = allPlain.filter(
+        (c) => !c.isDeleted && (!rooted || !c.parentComment),
+      );
+      const total = filtered.length;
+      filtered.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      const slice = filtered.slice(skip, skip + limit);
+      const sliceObjs = slice.map((c) => (typeof c.toObject === 'function' ? c.toObject() : { ...c }));
+      return res.status(200).json({ success: true, data: paginationResponse(sliceObjs, total, page, limit) });
+    }
+
+    const filter = { post: pid, isDeleted: false };
+    if (rooted) filter.parentComment = null;
+
+    const [items, total] = await Promise.all([
+      PostComment.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('user', POST_USER_SELECT)
+        .populate('reactions.user', POST_REACTION_USER_SELECT)
+        .lean(),
+      PostComment.countDocuments(filter),
+    ]);
+
+    res.status(200).json({ success: true, data: paginationResponse(items, total, page, limit) });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Lỗi server khi lấy danh sách comments', error: error.message });
+  }
+};
+
 exports.updatePost = async (req, res) => {
   try {
     const { postId } = req.params;
@@ -659,6 +934,7 @@ exports.updatePost = async (req, res) => {
     if (nextImages !== undefined) updateData.images = nextImages;
     if (nextVideos !== undefined) updateData.videos = nextVideos;
     if (badgeInfo !== undefined) updateData.badgeInfo = badgeInfo;
+    if (isAuthor) updateData.authorSnapshot = buildAuthorSnapshotPayload(req.user);
     // Chỉ Mobile BOD mới được update isPinned qua updatePost (không khuyến khích, nên dùng pin/unpin endpoint)
     if (isPinned !== undefined && isMobileBOD) updateData.isPinned = isPinned;
     
@@ -696,7 +972,9 @@ exports.deletePost = async (req, res) => {
     if (!isAuthor && !isMobileBOD) {
       return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa bài viết này' });
     }
-    
+
+    await PostComment.deleteMany({ post: post._id }).catch(() => {});
+
     await Post.findByIdAndDelete(postId);
     res.status(200).json({ success: true, message: 'Xóa bài viết thành công' });
   } catch (error) {
@@ -779,7 +1057,23 @@ exports.addComment = async (req, res) => {
       reactions: [] 
     });
     await post.save();
-    
+
+    try {
+      const last = post.comments[post.comments.length - 1];
+      await PostComment.create({
+        post: post._id,
+        legacyCommentId: last._id,
+        user: last.user,
+        content: last.content,
+        createdAt: last.createdAt || new Date(),
+        reactions: last.reactions || [],
+        parentComment: null,
+        isDeleted: false,
+      });
+    } catch (syncErr) {
+      console.warn('[PostComment] dual-write root comment:', syncErr.message);
+    }
+
     const updated = await Post.findById(postId)
       .populate('author', POST_AUTHOR_SELECT)
       .populate('comments.user', POST_USER_SELECT);
@@ -892,6 +1186,19 @@ exports.deleteComment = async (req, res) => {
     }
     
     await post.save();
+
+    try {
+      const oidComment = new mongoose.Types.ObjectId(commentId);
+      await PostComment.updateMany(
+        {
+          post: post._id,
+          $or: [{ legacyCommentId: oidComment }, { parentComment: oidComment }],
+        },
+        { $set: { isDeleted: true } },
+      );
+    } catch (syncErr) {
+      console.warn('[PostComment] dual-write soft-delete:', syncErr.message);
+    }
     
     const updated = await Post.findById(postId)
       .populate('author', POST_AUTHOR_SELECT)
@@ -937,6 +1244,22 @@ exports.replyComment = async (req, res) => {
     });
 
     await post.save();
+
+    try {
+      const last = post.comments[post.comments.length - 1];
+      await PostComment.create({
+        post: post._id,
+        legacyCommentId: last._id,
+        user: last.user,
+        content: last.content,
+        createdAt: last.createdAt || new Date(),
+        reactions: last.reactions || [],
+        parentComment: new mongoose.Types.ObjectId(commentId),
+        isDeleted: false,
+      });
+    } catch (syncErr) {
+      console.warn('[PostComment] dual-write reply:', syncErr.message);
+    }
 
     const updated = await Post.findById(postId)
       .populate('author', POST_AUTHOR_SELECT)
@@ -1036,6 +1359,20 @@ exports.addCommentReaction = async (req, res) => {
     }
 
     await post.save();
+
+    try {
+      const pc = await PostComment.findOne({
+        post: post._id,
+        legacyCommentId: new mongoose.Types.ObjectId(commentId),
+        isDeleted: false,
+      });
+      if (pc) {
+        pc.reactions = post.comments[idx].reactions;
+        pc.markModified('reactions');
+        await pc.save();
+      }
+    } catch (_) { /* không chặn response */ }
+
     const updated = await Post.findById(postId)
       .populate('author', POST_AUTHOR_SELECT)
       .populate('reactions.user', POST_REACTION_USER_SELECT)
@@ -1086,6 +1423,20 @@ exports.removeCommentReaction = async (req, res) => {
     );
 
     await post.save();
+
+    try {
+      const pc = await PostComment.findOne({
+        post: post._id,
+        legacyCommentId: new mongoose.Types.ObjectId(commentId),
+        isDeleted: false,
+      });
+      if (pc) {
+        pc.reactions = post.comments[idx].reactions;
+        pc.markModified('reactions');
+        await pc.save();
+      }
+    } catch (_) { /* không chặn response */ }
+
     const updated = await Post.findById(postId)
       .populate('author', POST_AUTHOR_SELECT)
       .populate('reactions.user', POST_REACTION_USER_SELECT)

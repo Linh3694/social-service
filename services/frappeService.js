@@ -1,6 +1,15 @@
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 require('dotenv').config({ path: './config.env' });
+const {
+  cacheGetJSON,
+  cacheSetJSON,
+  cacheDelByPattern,
+  hashToken,
+  TTL_FRAPPE_DEFAULT_SEC,
+  TTL_CLASS_META_SEC,
+  TTL_GUARDIAN_DIRECTORY_SEC,
+} = require('../utils/cache');
 
 /**
  * 🔗 Frappe Service - Social Service
@@ -68,6 +77,49 @@ class FrappeService {
     if (hdr == null || hdr === '') return undefined;
     if (typeof hdr === 'string') return this.buildAuthHeaders(hdr);
     return hdr;
+  }
+
+  /**
+   * Fingerprint HTTP headers Frappe để làm Redis key (Bearer / Portal / service-only).
+   */
+  authHdrFingerprint(hdr) {
+    if (hdr == null || hdr === '') return 'svc';
+    if (typeof hdr === 'string') return `b:${hashToken(hdr)}`;
+    const portal = hdr['X-Parent-Portal-Token'] || hdr['x-parent-portal-token'];
+    if (portal) return `pp:${hashToken(String(portal))}`;
+    try {
+      return `hdr:${hashToken(JSON.stringify(hdr))}`;
+    } catch {
+      return 'hdr:hash';
+    }
+  }
+
+  /**
+   * Fingerprint tham số auth cho getClassChatScope (chuỗi Bearer | { parentPortalToken } | falsy).
+   */
+  chatScopeAuthFingerprint(auth) {
+    if (auth == null || auth === '') return 'svc';
+    if (typeof auth === 'object' && auth.parentPortalToken) {
+      return `pp:${hashToken(String(auth.parentPortalToken))}`;
+    }
+    if (typeof auth === 'string' && auth) return `b:${hashToken(auth)}`;
+    return 'unknown';
+  }
+
+  /**
+   * Xóa cache Frappe của một lớp — gọi sau upsert roster hội thoại trong social-service.
+   */
+  async invalidateCachesForClassChat(classId, schoolYearId = '') {
+    const cid = encodeURIComponent(classId || '');
+    await Promise.all([
+      cacheDelByPattern(`frappe:class-scope:${cid}:*`),
+      cacheDelByPattern(`frappe:guardian-dir:${cid}:*`),
+      cacheDelByPattern(`frappe:class-meta:${cid}:*`),
+    ]);
+    if (schoolYearId) {
+      const syId = encodeURIComponent(String(schoolYearId));
+      await cacheDelByPattern(`frappe:guardian-dir:${cid}:${syId}:*`);
+    }
   }
 
   decodeParentPortalToken(token) {
@@ -401,6 +453,11 @@ class FrappeService {
   }
 
   async getClassMetadata(classId, hdr) {
+    const fid = this.authHdrFingerprint(hdr);
+    const cacheKey = `frappe:class-meta:${encodeURIComponent(classId)}:${fid}`;
+    const cached = await cacheGetJSON(cacheKey);
+    if (cached) return cached;
+
     const cls = await this.getResource('SIS Class', classId, hdr);
     if (!cls) return null;
 
@@ -413,7 +470,7 @@ class FrappeService {
       }
     }
 
-    return {
+    const out = {
       classId: cls.name,
       classTitle: cls.title || cls.short_title || cls.name,
       schoolYearId: cls.school_year_id,
@@ -421,6 +478,8 @@ class FrappeService {
       campusId: cls.campus_id,
       classType: cls.class_type,
     };
+    await cacheSetJSON(cacheKey, out, TTL_CLASS_META_SEC);
+    return out;
   }
 
   /**
@@ -475,7 +534,26 @@ class FrappeService {
   /**
    * auth: Bearer Frappe (string) | chỉ service key (null/undefined) | Parent Portal { parentPortalToken }.
    */
-  async getClassChatScope(classId, schoolYearId, auth) {
+  async getClassChatScope(classId, schoolYearId, auth, opts = {}) {
+    const bypassCache = Boolean(opts.bypassCache);
+    const finger = this.chatScopeAuthFingerprint(auth);
+    const sy = schoolYearId != null ? String(schoolYearId) : '';
+    const cacheKey = `frappe:class-scope:${encodeURIComponent(classId)}:${encodeURIComponent(sy)}:${finger}`;
+
+    if (!bypassCache) {
+      const cached = await cacheGetJSON(cacheKey);
+      if (cached) return cached;
+    }
+
+    const scope = await this._computeClassChatScope(classId, schoolYearId, auth, opts);
+    if (!bypassCache && scope) await cacheSetJSON(cacheKey, scope, TTL_FRAPPE_DEFAULT_SEC);
+    return scope;
+  }
+
+  /**
+   * Thuật toán gốc getClassChatScope (không cache) — được extract để bọc TTL Redis.
+   */
+  async _computeClassChatScope(classId, schoolYearId, auth, opts = {}) {
     // PHHS: ưu tiên journal.get_class_chat_scope (db/sql nội bộ) — Resource + header portal vẫn 403 trên nhiều site.
     if (auth && typeof auth === 'object' && auth.parentPortalToken) {
       try {
@@ -518,7 +596,12 @@ class FrappeService {
     if (!cls) return null;
 
     const metadata = await this.getClassMetadata(classId, hdr);
-    const directory = await this.getClassGuardianDirectory(classId, schoolYearId || cls.school_year_id, hdr);
+    const directory = await this.getClassGuardianDirectory(
+      classId,
+      schoolYearId || cls.school_year_id,
+      hdr,
+      opts
+    );
     const teacherIds = [cls.homeroom_teacher, cls.vice_homeroom_teacher].filter(Boolean);
     const teachers = [];
 
@@ -602,7 +685,23 @@ class FrappeService {
     }
   }
 
-  async getClassGuardianDirectory(classId, schoolYearId, hdr) {
+  async getClassGuardianDirectory(classId, schoolYearId, hdr, opts = {}) {
+    const bypassCache = Boolean(opts.bypassCache);
+    const fid = this.authHdrFingerprint(hdr);
+    const sy = schoolYearId != null ? String(schoolYearId) : '_';
+    const cacheKey = `frappe:guardian-dir:${encodeURIComponent(classId)}:${encodeURIComponent(sy)}:${fid}`;
+    if (!bypassCache) {
+      const cached = await cacheGetJSON(cacheKey);
+      if (cached) return cached;
+    }
+    const out = await this._computeClassGuardianDirectory(classId, schoolYearId, hdr);
+    if (!bypassCache) {
+      await cacheSetJSON(cacheKey, out, TTL_GUARDIAN_DIRECTORY_SEC);
+    }
+    return out;
+  }
+
+  async _computeClassGuardianDirectory(classId, schoolYearId, hdr) {
     if (!classId) return { guardians: [], students: [] };
 
     const classRowsPayload = await this.callFrappeGetMethod(
@@ -845,7 +944,21 @@ class FrappeService {
     };
   }
 
-  async getStudentClassScopes(studentId, token) {
+  async getCurrentGuardianData(token) {
+    const cacheKey = `frappe:pp:data:${hashToken(token)}`;
+    const cached = await cacheGetJSON(cacheKey);
+    if (cached !== undefined && cached !== null) return cached;
+
+    const response = await this.api.get(
+      '/api/method/erp.api.parent_portal.otp_auth.get_current_guardian_comprehensive_data',
+      { headers: this.buildParentPortalAuthHeaders(token) }
+    );
+    const data = response.data?.message || response.data;
+    await cacheSetJSON(cacheKey, data, TTL_FRAPPE_DEFAULT_SEC);
+    return data;
+  }
+
+  async _fetchStudentClassScopesUncached(studentId, token) {
     if (token) {
       try {
         const response = await this.api.post(
@@ -913,12 +1026,15 @@ class FrappeService {
     return scopes;
   }
 
-  async getCurrentGuardianData(token) {
-    const response = await this.api.get(
-      '/api/method/erp.api.parent_portal.otp_auth.get_current_guardian_comprehensive_data',
-      { headers: this.buildParentPortalAuthHeaders(token) }
-    );
-    return response.data?.message || response.data;
+  /** Danh sách scope lớp của một HS — TTL Redis bọc trong _fetchStudentClassScopesUncached. */
+  async getStudentClassScopes(studentId, token) {
+    const part = token ? hashToken(token) : 'svc';
+    const key = `frappe:st-scopes:${encodeURIComponent(studentId)}:${part}`;
+    const cached = await cacheGetJSON(key);
+    if (Array.isArray(cached)) return cached;
+    const scopes = await this._fetchStudentClassScopesUncached(studentId, token);
+    await cacheSetJSON(key, scopes, TTL_FRAPPE_DEFAULT_SEC);
+    return scopes;
   }
 
   async getGuardianChatScopes(token) {

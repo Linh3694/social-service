@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const frappeService = require('../services/frappeService');
+const { resolveAuthenticatedUser, toReqUserShape } = require('../utils/authResolve');
 
 // Chuẩn hoá: tách optionalAuth và authenticate để dùng tuỳ route
 const authenticate = async (req, res, next) => {
@@ -12,80 +12,22 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ message: 'Unauthorized', detail: 'No token' });
     }
 
-    let user = null;
-    let decoded = null;
-    try { decoded = jwt.verify(token, process.env.JWT_SECRET || 'breakpoint'); } catch {}
-    if (decoded) {
-      try {
-        // Ưu tiên tìm theo email trong claim (hỗ trợ cả sub và email từ Frappe JWT)
-        // - Frappe JWT: decoded.sub (chuẩn JWT) hoặc decoded.email
-        // - Local JWT: decoded.email hoặc decoded.id
-        const userEmail = decoded.sub || decoded.email;
-        if (userEmail) {
-          user = await User.findOne({ email: userEmail }).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image guardian_id');
-        }
-        // Backward: nếu có id
-        if (!user && decoded.id) {
-          user = await User.findById(decoded.id).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image guardian_id');
-        }
-      } catch {}
-    }
-    const isParentPortalToken = Boolean(decoded?.guardian);
-    // Nếu là token guardian thì luôn refresh để lấy ảnh mới từ Parent Portal.
-    if (isParentPortalToken || !user || !user.roles || user.roles.length === 0) {
-      try {
-        // Bước 1: Xác thực token với Frappe
-        let frappeUser;
-        try {
-          if (isParentPortalToken) {
-            frappeUser = await frappeService.authenticateParentGuardian(token);
-          } else {
-            frappeUser = await frappeService.authenticateUser(token);
-          }
-        } catch (authError) {
-          // Token Parent Portal OTP không phải lúc nào cũng đi qua endpoint user chung.
-          frappeUser = await frappeService.authenticateParentGuardian(token);
-        }
+    const wantsRefresh =
+      req.query?.refresh === '1'
+      || req.headers['x-auth-refresh'] === '1';
 
-        if (!frappeUser && !isParentPortalToken) {
-          frappeUser = await frappeService.authenticateUser(token);
-        }
-        
-        // Bước 2: Nếu không có roles đầy đủ, lấy thêm user detail
-        if (!isParentPortalToken && (!frappeUser.roles || frappeUser.roles.length === 0)) {
-          console.log('[Auth] User from auth endpoint missing roles, fetching detail...');
-          const userEmail = frappeUser.email || frappeUser.name;
-          const userDetail = await frappeService.getUserDetail(userEmail, token);
-          if (userDetail && userDetail.roles && userDetail.roles.length > 0) {
-            frappeUser.roles = userDetail.roles;
-          }
-        }
-        
-        // Bước 3: Update/sync user vào MongoDB
-        user = await User.updateFromFrappe(frappeUser);
-        if (!user) {
-          console.warn('[Auth] Frappe returned no user context');
-          return res.status(401).json({ message: 'Unauthorized', detail: 'Frappe user not found' });
-        }
-      } catch (e) {
-        console.error('[Auth] Frappe auth failed:', e?.message || e);
-        return res.status(401).json({ message: 'Unauthorized', detail: 'Auth failed' });
-      }
+    let userDoc;
+    try {
+      userDoc = await resolveAuthenticatedUser(token, { forceRefresh: Boolean(wantsRefresh) });
+    } catch (e) {
+      console.error('[Auth] Resolve failed:', e?.message || e);
+      return res.status(e.statusCode || 401).json({
+        message: 'Unauthorized',
+        detail: e.message || 'Auth failed',
+      });
     }
-    req.user = {
-      _id: user._id,
-      fullname: user.fullname || user.fullName,
-      email: user.email,
-      role: user.role,
-      roles: user.roles || [],
-      department: user.department,
-      avatarUrl: user.avatarUrl,
-      user_image: user.user_image,
-      sis_photo: user.sis_photo,
-      guardian_image: user.guardian_image,
-      guardian_id: user.guardian_id,
-    };
-    // Debug: quick trace
+
+    req.user = toReqUserShape(userDoc);
     try { console.log('[Auth] OK user=', req.user.email, 'role=', req.user.role, 'roles=', req.user.roles); } catch {}
     next();
   } catch (error) {
@@ -129,4 +71,3 @@ const optionalAuth = async (req, res, next) => {
 };
 
 module.exports = { authenticate, optionalAuth };
-

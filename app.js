@@ -24,30 +24,7 @@ const server = http.createServer(app);
 const uploadPath = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadPath)) fs.mkdirSync(uploadPath, { recursive: true });
 
-const jwt = require('jsonwebtoken');
-const User = require('./models/User');
-const frappeService = require('./services/frappeService');
-async function resolveSocketUser(token) {
-  let decoded = null;
-  try {
-    decoded = jwt.verify(token, process.env.JWT_SECRET || 'breakpoint');
-  } catch {
-    decoded = jwt.verify(token, process.env.PARENT_PORTAL_JWT_SECRET || process.env.JWT_SECRET || 'breakpoint');
-  }
-  const userEmail = decoded.sub || decoded.email;
-  let user = null;
-  if (userEmail) {
-    user = await User.findOne({ email: userEmail }).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image guardian_id');
-  }
-  if (!user && decoded.id) {
-    user = await User.findById(decoded.id).select('fullname fullName email role roles department avatarUrl user_image sis_photo guardian_image guardian_id');
-  }
-  if (!user && decoded.guardian) {
-    const frappeUser = await frappeService.authenticateParentGuardian(token);
-    user = await User.updateFromFrappe(frappeUser);
-  }
-  return user;
-}
+const { resolveSocketUser } = require('./utils/authResolve');
 
 const io = new Server(server, {
   path: '/api/social/socket.io',
@@ -122,9 +99,15 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
-// Static uploads: expose under both /uploads and /api/social/uploads to work behind reverse proxy
-app.use('/uploads', express.static(uploadPath));
-app.use('/api/social/uploads', express.static(uploadPath));
+// Static uploads — tên file đã có hash/timestamp ⇒ cache CDN an toàn (P3)
+const staticUploadsOptions = {
+  setHeaders(res) {
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+  },
+};
+const staticUploads = express.static(uploadPath, staticUploadsOptions);
+app.use('/uploads', staticUploads);
+app.use('/api/social/uploads', staticUploads);
 
 app.use((req, res, next) => {
   res.setHeader('X-Service', 'social-service');
@@ -138,6 +121,7 @@ app.get('/health', async (req, res) => {
 
 // Models (ensure registered)
 require('./models/Post');
+require('./models/PostComment');
 require('./models/ChatConversation');
 require('./models/ChatMessage');
 // User model is already required above for socket auth

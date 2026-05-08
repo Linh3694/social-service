@@ -76,5 +76,7 @@ router.post(
 );
 router.post('/conversations/:conversationId/messages', authenticate, chatController.sendMessage);
 router.post('/conversations/:conversationId/read', authenticate, chatController.markRead);
+router.post('/conversations/:conversationId/pin', authenticate, chatController.pinMessage);
+router.delete('/conversations/:conversationId/pin', authenticate, chatController.unpinMessage);
 
 module.exports = router;

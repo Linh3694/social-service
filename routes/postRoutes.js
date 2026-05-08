@@ -25,6 +25,7 @@ router.get('/class-feed', authenticate, postController.getClassFeed);
 router.get('/class-guardian-directory', authenticate, postController.getClassGuardianDirectory);
 router.get('/student-feed', optionalAuth, postController.getStudentFeed);
 router.get('/student-post/:postId', optionalAuth, postController.getStudentPostDetail);
+router.get('/:postId/comments', authenticate, postController.getPostCommentsPaged);
 router.get('/:postId', optionalAuth, postController.getPostById);
 router.get('/:postId/stats', optionalAuth, postController.getPostEngagementStats);
 router.get('/:postId/related', optionalAuth, postController.getRelatedPosts);

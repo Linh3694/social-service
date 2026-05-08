@@ -1,5 +1,5 @@
 const ChatConversation = require('../models/ChatConversation');
-const { canAccessConversation } = require('../controllers/chatController');
+const { canAccessConversation, buildParticipantMatchOr } = require('../controllers/chatController');
 const {
   getChatBroadcastRooms,
   ioEmitToEachRoom,
@@ -37,6 +37,28 @@ class ChatSocket {
       if (guardianRoom) socket.join(`guardian_${guardianRoom}`);
       const portalGuardianRoom = portalGuardianIdFromEmail(socket.user?.email);
       if (portalGuardianRoom) socket.join(`guardian_${portalGuardianRoom}`);
+
+      /* Tự join mọi phòng chat có quyền — giảm round-trip chat:join từ client (P1.2). */
+      if (socket.user?._id) {
+        const uid = socket.user._id;
+        void (async () => {
+          try {
+            const participantOr = buildParticipantMatchOr(socket.user);
+            const rows = await ChatConversation.find({ $or: participantOr })
+              .select('_id')
+              .limit(500)
+              .lean();
+            rows.forEach((row) => {
+              socket.join(`chat_${String(row._id)}`);
+            });
+            if (process.env.SOCIAL_DEBUG_SOCKET === '1') {
+              console.log('[ChatSocket] auto-joined chat rooms', { userId: String(uid), n: rows.length });
+            }
+          } catch (e) {
+            console.warn('[ChatSocket] auto-join failed:', e.message);
+          }
+        })();
+      }
 
       socket.on('chat:join', async ({ conversationId } = {}) => {
         try {
