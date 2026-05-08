@@ -75,7 +75,7 @@ function normalizeEmail(value) {
   return value ? String(value).trim().toLowerCase() : '';
 }
 
-/** Email người nhận từ participants, loại người gửi (Wave 3 — Frappe push). */
+/** Email người nhận từ participants, loại người gửi — gửi push qua notification-service. */
 function chatRecipientEmails(conversation, senderEmail) {
   const senderNorm = normalizeEmail(senderEmail);
   const seen = new Set();
@@ -92,7 +92,7 @@ function chatRecipientEmails(conversation, senderEmail) {
   return emails;
 }
 
-/** Gửi webhook chat sang Frappe — fire-and-forget. */
+/** Gửi notify chat qua notification-service — fire-and-forget. */
 function fireChatToFrappe(eventType, payload) {
   frappeService.sendChatNotification(eventType, payload).catch(() => {});
 }

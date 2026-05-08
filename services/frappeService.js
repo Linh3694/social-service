@@ -1130,131 +1130,23 @@ class FrappeService {
   }
 
   /**
-   * 📨 Gửi Wislife notification đến Frappe
-   * Pattern giống ticket-service: local auth với headers X-Service-Name và X-Request-Source
-   * @param {string} eventType - Event type (e.g., 'new_post_broadcast', 'post_reacted')
-   * @param {Object} eventData - Event data
+   * 📨 Wislife → notification-service (Stream ưu tiên, HTTP fallback). Không gọi Frappe handle_wislife_event.
+   * @param {string} eventType
+   * @param {Object} eventData
    */
   async sendWislifeNotification(eventType, eventData) {
-    /** frappe | stream — stream = Redis notify.send → notification-service (whitelist social-service). Broadcast vẫn cần Frappe. */
-    const transport = String(process.env.SOCIAL_WISLIFE_TRANSPORT || 'frappe').toLowerCase().trim();
-    if (transport === 'stream') {
-      try {
-        const redis = require('../config/redis');
-        const pub = redis.getPubClient();
-        if (pub?.isOpen) {
-          const { publishWislifeNotifyStream } = require('./wislifeStreamNotify');
-          const ok = await publishWislifeNotifyStream(pub, eventType, eventData);
-          if (ok) {
-            return { success: true };
-          }
-        } else {
-          console.warn('[FrappeService] SOCIAL_WISLIFE_TRANSPORT=stream nhưng Redis pub chưa sẵn sàng — fallback Frappe');
-        }
-      } catch (e) {
-        console.warn('[FrappeService] Wislife stream lỗi, fallback Frappe:', e?.message || e);
-      }
-    }
-
-    const MAX_RETRIES = 2;
-    const TIMEOUT_MS = 10000; // 10 giây - Frappe chỉ enqueue job, respond nhanh
-    
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        console.log(`[FrappeService] 📱 Sending Wislife notification: ${eventType} (attempt ${attempt}/${MAX_RETRIES})`);
-        
-        const response = await axios.post(
-          `${this.baseURL}/api/method/erp.api.notification.wislife.handle_wislife_event`,
-          {
-            event_type: eventType,
-            event_data: eventData
-          },
-          {
-            timeout: TIMEOUT_MS,
-            headers: {
-              'X-Service-Name': 'social-service',
-              'X-Request-Source': 'service-to-service',
-              'Content-Type': 'application/json'
-            }
-          }
-        );
-
-        if (response.data?.message?.success !== false) {
-          console.log(`[FrappeService] ✅ Wislife notification sent: ${eventType}`);
-          return { success: true };
-        } else {
-          console.warn(`[FrappeService] ⚠️ Wislife notification response:`, response.data);
-          return { success: false, message: response.data?.message };
-        }
-      } catch (error) {
-        const isTimeout = error.code === 'ECONNABORTED' || error.message.includes('timeout');
-        console.error(`[FrappeService] ❌ Notification failed (${eventType}), attempt ${attempt}: ${error.message}`);
-        
-        // Retry nếu timeout và chưa hết retry
-        if (isTimeout && attempt < MAX_RETRIES) {
-          console.log(`[FrappeService] 🔄 Retrying in 2 seconds...`);
-          await new Promise(r => setTimeout(r, 2000));
-          continue;
-        }
-        
-        if (error.response) {
-          console.error(`[FrappeService] Response status: ${error.response.status}`);
-        }
-        return { success: false, message: error.message };
-      }
-    }
-    return { success: false, message: 'Max retries exceeded' };
+    const { dispatch } = require('./notificationDispatcher');
+    return dispatch({ kind: 'wislife', eventType, eventData });
   }
 
   /**
-   * 💬 Wave 3: Chat / Trao đổi — webhook Frappe handle_chat_event (enqueue RQ).
+   * 💬 Chat → notification-service (Stream ưu tiên, HTTP fallback). Không gọi Frappe handle_chat_event.
+   * @param {string} eventType
+   * @param {Object} eventData
    */
   async sendChatNotification(eventType, eventData) {
-    const MAX_RETRIES = 2;
-    const TIMEOUT_MS = 5000;
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        console.log(`[FrappeService] 💬 Sending chat notification: ${eventType} (attempt ${attempt}/${MAX_RETRIES})`);
-
-        const response = await axios.post(
-          `${this.baseURL}/api/method/erp.api.notification.exchange.handle_chat_event`,
-          {
-            event_type: eventType,
-            event_data: eventData,
-          },
-          {
-            timeout: TIMEOUT_MS,
-            headers: {
-              'X-Service-Name': 'social-service',
-              'X-Request-Source': 'service-to-service',
-              'Content-Type': 'application/json',
-            },
-          },
-        );
-
-        if (response.data?.message?.success !== false) {
-          console.log(`[FrappeService] ✅ Chat notification sent: ${eventType}`);
-          return { success: true };
-        }
-        console.warn('[FrappeService] ⚠️ Chat notification response:', response.data);
-        return { success: false, message: response.data?.message };
-      } catch (error) {
-        const isTimeout = error.code === 'ECONNABORTED' || (error.message && error.message.includes('timeout'));
-        console.error(`[FrappeService] ❌ Chat notification failed (${eventType}), attempt ${attempt}: ${error.message}`);
-
-        if (isTimeout && attempt < MAX_RETRIES) {
-          await new Promise((r) => setTimeout(r, 2000));
-          continue;
-        }
-
-        if (error.response) {
-          console.error(`[FrappeService] Response status: ${error.response.status}`);
-        }
-        return { success: false, message: error.message };
-      }
-    }
-    return { success: false, message: 'Max retries exceeded' };
+    const { dispatch } = require('./notificationDispatcher');
+    return dispatch({ kind: 'chat', eventType, eventData });
   }
 }
 

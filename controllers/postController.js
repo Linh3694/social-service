@@ -14,8 +14,7 @@ const POST_USER_SELECT = 'name username guardian_id fullname fullName avatarUrl 
 const POST_REACTION_USER_SELECT = 'name username guardian_id fullname fullName avatarUrl user_image sis_photo guardian_image email jobTitle';
 
 /**
- * Gửi notification đến Frappe (fire-and-forget, không block response)
- * Timeout ngắn để không chờ quá lâu
+ * Gửi notification qua notification-service (stream / HTTP) — fire-and-forget.
  */
 function notify(event, data) {
   // Fire and forget - không await để không block response
@@ -550,7 +549,7 @@ exports.createPost = async (req, res) => {
       });
     }
 
-    // Bài theo lớp: thông báo tới PH có con trong SIS Class Student (Frappe new_class_post)
+    // Bài theo lớp: thông báo tới PH (resolve email trong social → notification-service)
     if (audienceType === 'class' && post.classId) {
       notify('new_class_post', {
         postId: post._id.toString(),
@@ -559,6 +558,7 @@ exports.createPost = async (req, res) => {
         content: content.trim().substring(0, 100),
         type: type,
         classId: String(post.classId),
+        classTitle: post.classTitle ? String(post.classTitle) : '',
         schoolYearId: post.schoolYearId ? String(post.schoolYearId) : '',
         ...wislifePayloadExtra(post),
       });

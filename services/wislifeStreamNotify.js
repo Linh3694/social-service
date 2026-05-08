@@ -1,6 +1,5 @@
 /**
- * Wislife → Redis Stream dạng `notify.send` (khớp notification-service Phase 3).
- * Bật SOCIAL_WISLIFE_TRANSPORT=stream để bỏ hop Frappe cho các event đã có email người nhận rõ ràng.
+ * Wislife → Redis Stream `notify.send` (notification-service Phase 3) + HTTP fallback qua notificationDispatcher.
  */
 const { publishEnvelope } = require('../utils/eventBus');
 
@@ -165,6 +164,55 @@ function buildParts(eventType, eventData) {
           postId,
           action: 'open_post',
           actorName: authorName,
+          ...extras,
+        },
+      };
+    }
+    case 'new_class_post': {
+      const emails = normalizeEmails(d.recipientEmails);
+      if (!emails.length) return null;
+      const authorName = normalizeName(d.authorName);
+      const classTitle = String(d.classTitle || d.classId || '').trim() || 'lớp';
+      const preview = d.content != null ? String(d.content).trim().slice(0, 80) : '';
+      const notification_message = preview
+        ? `${authorName} đã đăng Nhật ký lớp ${classTitle}: ${preview}`
+        : `${authorName} đã đăng Nhật ký lớp ${classTitle}`;
+      return {
+        recipients: emails,
+        title: 'Wislife',
+        body: notification_message,
+        notificationBodyKey: notification_message,
+        data: {
+          type: 'wislife_class_post',
+          postId,
+          action: 'open_post',
+          actorName: authorName,
+          postType: d.type,
+          classTitle: d.classTitle || '',
+          schoolYearId: d.schoolYearId != null ? String(d.schoolYearId) : '',
+          ...extras,
+        },
+      };
+    }
+    case 'new_post_broadcast': {
+      const emails = normalizeEmails(d.recipientEmails);
+      if (!emails.length) return null;
+      const authorName = normalizeName(d.authorName);
+      const preview = d.content != null ? String(d.content).trim().slice(0, 80) : '';
+      const notification_message = preview
+        ? `${authorName} đã đăng tin tức mới: ${preview}`
+        : `${authorName} đã đăng tin tức mới`;
+      return {
+        recipients: emails,
+        title: 'Wislife',
+        body: notification_message,
+        notificationBodyKey: notification_message,
+        data: {
+          type: 'wislife_broadcast',
+          postId,
+          action: 'open_post',
+          actorName: authorName,
+          postType: d.type,
           ...extras,
         },
       };
