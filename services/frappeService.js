@@ -1136,6 +1136,26 @@ class FrappeService {
    * @param {Object} eventData - Event data
    */
   async sendWislifeNotification(eventType, eventData) {
+    /** frappe | stream — stream = Redis notify.send → notification-service (whitelist social-service). Broadcast vẫn cần Frappe. */
+    const transport = String(process.env.SOCIAL_WISLIFE_TRANSPORT || 'frappe').toLowerCase().trim();
+    if (transport === 'stream') {
+      try {
+        const redis = require('../config/redis');
+        const pub = redis.getPubClient();
+        if (pub?.isOpen) {
+          const { publishWislifeNotifyStream } = require('./wislifeStreamNotify');
+          const ok = await publishWislifeNotifyStream(pub, eventType, eventData);
+          if (ok) {
+            return { success: true };
+          }
+        } else {
+          console.warn('[FrappeService] SOCIAL_WISLIFE_TRANSPORT=stream nhưng Redis pub chưa sẵn sàng — fallback Frappe');
+        }
+      } catch (e) {
+        console.warn('[FrappeService] Wislife stream lỗi, fallback Frappe:', e?.message || e);
+      }
+    }
+
     const MAX_RETRIES = 2;
     const TIMEOUT_MS = 10000; // 10 giây - Frappe chỉ enqueue job, respond nhanh
     
