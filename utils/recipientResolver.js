@@ -20,12 +20,13 @@ function oneEmail(v) {
 }
 
 /**
- * Danh sách email PH (guardian) trong lớp — từ getClassGuardianDirectory (API key service).
+ * Danh sách email PH (guardian) trong lớp — ưu tiên Bearer của người đăng (GV/BOD), fallback API key service.
  * @param {string} classId
  * @param {string} [schoolYearId]
+ * @param {string} [bearerToken]
  * @returns {Promise<string[]>}
  */
-async function resolveClassRecipients(classId, schoolYearId) {
+async function resolveClassRecipients(classId, schoolYearId, bearerToken) {
   const cid = String(classId || '').trim();
   if (!cid) return [];
 
@@ -35,7 +36,20 @@ async function resolveClassRecipients(classId, schoolYearId) {
   if (Array.isArray(cached)) return cached;
 
   const frappeService = require('../services/frappeService');
-  const dir = await frappeService.getClassGuardianDirectory(cid, sy || undefined, null);
+  const hdr = bearerToken && typeof bearerToken === 'string' ? bearerToken : null;
+  let dir = null;
+  try {
+    dir = await frappeService.getClassGuardianDirectory(cid, sy || undefined, hdr);
+  } catch (e) {
+    console.warn('[recipientResolver] getClassGuardianDirectory lỗi (token):', e?.response?.status || e.message);
+    if (hdr) {
+      try {
+        dir = await frappeService.getClassGuardianDirectory(cid, sy || undefined, null);
+      } catch (e2) {
+        console.warn('[recipientResolver] getClassGuardianDirectory lỗi (service key):', e2?.response?.status || e2.message);
+      }
+    }
+  }
   const seen = new Set();
   const emails = [];
   for (const g of dir?.guardians || []) {
@@ -51,10 +65,11 @@ async function resolveClassRecipients(classId, schoolYearId) {
 }
 
 /**
- * Broadcast toàn trường: ưu tiên User Mongo đã sync; fallback getAllEnabledUsers (API key / service).
+ * Broadcast toàn trường: ưu tiên User Mongo đã sync; fallback getAllEnabledUsers (Bearer của người đăng → API key).
+ * @param {string} [bearerToken]
  * @returns {Promise<string[]>}
  */
-async function resolveSchoolWideRecipients() {
+async function resolveSchoolWideRecipients(bearerToken) {
   const cached = await cacheGetJSON(CACHE_BROADCAST_KEY);
   if (Array.isArray(cached)) return cached;
 
@@ -83,7 +98,8 @@ async function resolveSchoolWideRecipients() {
   if (emails.length === 0) {
     try {
       const frappeService = require('../services/frappeService');
-      const frappeUsers = await frappeService.getAllEnabledUsers(null);
+      const tok = bearerToken && typeof bearerToken === 'string' ? bearerToken : null;
+      const frappeUsers = await frappeService.getAllEnabledUsers(tok);
       for (const fu of frappeUsers || []) {
         const e = oneEmail(fu.email || fu.name);
         if (!e || seen.has(e)) continue;

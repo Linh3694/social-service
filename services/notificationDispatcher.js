@@ -25,11 +25,14 @@ function filterOutAuthor(recipientEmails, authorEmail) {
  */
 async function enrichWislifeEventData(eventType, eventData) {
   const d = eventData && typeof eventData === 'object' ? { ...eventData } : {};
+  // Token chỉ dùng nội bộ social để gọi Frappe; KHÔNG gửi qua envelope ra notification-service.
+  const tok = typeof d.authorToken === 'string' ? d.authorToken : '';
+  delete d.authorToken;
   if (eventType === 'new_class_post') {
-    const list = await resolveClassRecipients(d.classId, d.schoolYearId);
+    const list = await resolveClassRecipients(d.classId, d.schoolYearId, tok);
     d.recipientEmails = filterOutAuthor(list, d.authorEmail);
   } else if (eventType === 'new_post_broadcast') {
-    const list = await resolveSchoolWideRecipients();
+    const list = await resolveSchoolWideRecipients(tok);
     d.recipientEmails = filterOutAuthor(list, d.authorEmail);
   }
   return d;
