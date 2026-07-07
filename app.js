@@ -19,6 +19,12 @@ process.on('uncaughtException', (err) => {
 });
 
 const app = express();
+try {
+	const { initObservability } = require('@wis/observability');
+	initObservability({ expressApp: app, serviceName: 'social-service' });
+} catch (e) {
+	console.warn('[social-service] @wis/observability:', e.message);
+}
 const server = http.createServer(app);
 
 const uploadPath = path.join(__dirname, 'uploads');

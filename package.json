@@ -9,6 +9,7 @@
     "sync-indexes": "node scripts/sync-social-indexes.js"
   },
   "dependencies": {
+    "@wis/observability": "file:./observability-node",
     "express": "^4.18.2",
     "mongoose": "^8.0.3",
     "cors": "^2.8.5",

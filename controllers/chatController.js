@@ -1544,23 +1544,14 @@ exports.ensureTeacherGuardianConversation = async (req, res) => {
   try {
     const { payload, classId, schoolYearId } = await buildTeacherGuardianPayloadFromRequest(req);
 
-    const existing = await ChatConversation.findOne({
-      classId: payload.classId,
-      schoolYearId: payload.schoolYearId,
-      type: payload.type,
-    }).lean();
-
-    if (existing) {
-      const conversation = await upsertMergedConversationFromPayload(payload);
-      frappeService.invalidateCachesForClassChat(classId, schoolYearId).catch(() => {});
-      invalidateConversationParticipantsListCaches(conversation).catch(() => {});
-      return res.json({ success: true, data: serializeConversation(conversation, req.user) });
-    }
-
-    return res.json({
-      success: true,
-      data: serializeDraftTeacherGuardianConversation(payload, req.user),
-    });
+    // Luôn persist hội thoại 1-1 (giống luồng nhóm) để trả về _id THẬT — mở/đọc tin không bị 404.
+    // Trước đây khi chưa tồn tại thì trả draft _id:'' → FE gọi getMessages('') → URL `/conversations//messages`
+    // → Express không match route → 404. Vẫn ẩn khỏi danh sách khi chưa có tin (filter listConversations
+    // theo lastMessage.messageId) nên không làm rác list.
+    const conversation = await upsertMergedConversationFromPayload(payload);
+    frappeService.invalidateCachesForClassChat(classId, schoolYearId).catch(() => {});
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+    return res.json({ success: true, data: serializeConversation(conversation, req.user) });
   } catch (error) {
     console.error('[Chat] ensureTeacherGuardianConversation error:', error);
     res.status(error.statusCode || 500).json({
