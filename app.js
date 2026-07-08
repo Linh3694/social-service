@@ -100,7 +100,7 @@ const corsOptions = {
     ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With', 'X-Frappe-Token', 'X-Frappe-CSRF-Token'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With', 'X-Frappe-Token', 'X-Frappe-CSRF-Token', 'X-Campus-Id'],
 };
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
