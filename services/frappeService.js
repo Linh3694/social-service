@@ -48,11 +48,13 @@ class FrappeService {
   /**
    * 🔐 Build auth headers cho request
    */
-  buildAuthHeaders(token) {
+  buildAuthHeaders(token, campusId) {
     if (!token) return {};
     return {
       'Authorization': `Bearer ${token}`,
       'X-Frappe-CSRF-Token': token,
+      // Relay campus đang chọn để Frappe has_campus_permission chọn đúng campus (tránh 403 khi đọc SIS Class)
+      ...(campusId ? { 'X-Campus-Id': campusId } : {}),
       'Accept': 'application/json',
       'Content-Type': 'application/json',
     };
@@ -70,12 +72,18 @@ class FrappeService {
   }
 
   /**
-   * Chuẩn hoá headers cho Resource /api/method: string → Bearer Frappe, object → giữ nguyên (vd. Parent Portal).
-   * null/undefined/'' → không gửi headers (chỉ API key từ interceptor).
+   * Chuẩn hoá headers cho Resource /api/method:
+   *  - string → Bearer Frappe
+   *  - { token, campusId } → Bearer + X-Campus-Id (auth context từ controller)
+   *  - object headers khác (vd. Parent Portal) → giữ nguyên
+   *  - null/undefined/'' → không gửi headers (chỉ API key từ interceptor).
    */
   normalizeFrappeRequestHeaders(hdr) {
     if (hdr == null || hdr === '') return undefined;
     if (typeof hdr === 'string') return this.buildAuthHeaders(hdr);
+    if (typeof hdr === 'object' && 'token' in hdr) {
+      return this.buildAuthHeaders(hdr.token, hdr.campusId);
+    }
     return hdr;
   }
 
@@ -85,6 +93,9 @@ class FrappeService {
   authHdrFingerprint(hdr) {
     if (hdr == null || hdr === '') return 'svc';
     if (typeof hdr === 'string') return `b:${hashToken(hdr)}`;
+    if (typeof hdr === 'object' && 'token' in hdr) {
+      return `b:${hashToken(String(hdr.token))}:c:${hdr.campusId || ''}`;
+    }
     const portal = hdr['X-Parent-Portal-Token'] || hdr['x-parent-portal-token'];
     if (portal) return `pp:${hashToken(String(portal))}`;
     try {

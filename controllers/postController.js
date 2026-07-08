@@ -41,6 +41,18 @@ function getBearerToken(req) {
   return authHeader.split(' ')[1] || '';
 }
 
+function getCampusId(req) {
+  return req.headers['x-campus-id'] || req.headers['X-Campus-Id'] || '';
+}
+
+/**
+ * Auth context để FrappeService relay campus đang chọn sang Frappe (has_campus_permission).
+ * Thiếu campus → Frappe fallback theo campus role → 403 khi đọc SIS Class/CRM.
+ */
+function getAuthContext(req) {
+  return { token: getBearerToken(req), campusId: getCampusId(req) };
+}
+
 function parsePagination(query) {
   const page = Math.max(parseInt(query.page || '1', 10), 1);
   const limit = Math.min(Math.max(parseInt(query.limit || '10', 10), 1), 50);
@@ -434,7 +446,7 @@ function paginatePostComments(post, query) {
   };
 }
 
-async function buildClassPostMetadata({ audienceType, classId, schoolYearId, token }) {
+async function buildClassPostMetadata({ audienceType, classId, schoolYearId, auth }) {
   if (audienceType !== 'class') return {};
   if (!classId || !schoolYearId) {
     const err = new Error('Vui lòng chọn lớp và năm học cho bài viết Nhật ký');
@@ -442,7 +454,7 @@ async function buildClassPostMetadata({ audienceType, classId, schoolYearId, tok
     throw err;
   }
 
-  const metadata = await frappeService.getClassMetadata(classId, token);
+  const metadata = await frappeService.getClassMetadata(classId, auth);
   if (!metadata) {
     const err = new Error('Không tìm thấy lớp để đăng bài');
     err.statusCode = 400;
@@ -513,7 +525,7 @@ exports.createPost = async (req, res) => {
       audienceType,
       classId,
       schoolYearId,
-      token: getBearerToken(req),
+      auth: getAuthContext(req),
     });
     const postData = {
       author: authorId,
@@ -652,11 +664,11 @@ exports.getClassGuardianDirectory = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Thiếu classId' });
     }
 
-    const token = getBearerToken(req);
+    const auth = getAuthContext(req);
     const data = await frappeService.getClassGuardianDirectory(
       String(classId),
       schoolYearId ? String(schoolYearId) : undefined,
-      token
+      auth
     );
     return res.status(200).json({ success: true, data });
   } catch (error) {
