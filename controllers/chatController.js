@@ -1465,11 +1465,11 @@ exports.listConversations = async (req, res) => {
     const token = getBearerToken(req);
     const { classId, schoolYearId } = req.query;
 
-    // BOD observer: xem TOÀN BỘ hội thoại (nhóm lớp + 1-1) theo role — không ensure/scope,
-    // không match participant, không cache Redis (ít user, query có tham số search).
-    // CHỈ kích hoạt khi client yêu cầu rõ (?observer=1, trang /bod/messages) — user lai
-    // GV+BOD mở "Nhắn tin" thường vẫn thấy inbox cá nhân bình thường.
-    if (isBodUser(req.user) && String(req.query.observer || '') === '1') {
+    // BOD: xem TOÀN BỘ hội thoại (nhóm lớp + 1-1) ngay trong trang Nhắn tin — không
+    // ensure/scope, không match participant, không cache Redis (ít user, query có search).
+    // Quyền NHẮN vẫn xét theo thành viên từng hội thoại (rejectObserverWrite) — user lai
+    // GV+BOD nhắn được ở lớp mình, chỉ-xem ở hội thoại khác.
+    if (isBodUser(req.user)) {
       const q = String(req.query.q || '').trim();
       const filter = {
         $or: [
