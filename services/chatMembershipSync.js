@@ -125,16 +125,24 @@ function deleteMapKey(conversation, field, key) {
  * @returns {{ added: number, removed: number, reactivated: number, guard: string|null }}
  */
 async function reconcileClassConversation(conversationRef, scope, { dryRun = false } = {}) {
-  const stats = { added: 0, removed: 0, reactivated: 0, guard: null };
+  const stats = { added: 0, removed: 0, reactivated: 0, created: false, guard: null };
 
-  const before = await ChatConversation.findById(conversationRef._id || conversationRef);
-  if (!before) {
-    stats.guard = 'CONVERSATION_NOT_FOUND';
-    return stats;
+  // Target có thể chưa có nhóm trong Mongo (lớp enumerate từ Frappe, chưa ai mở chat)
+  // → upsert sẽ TẠO mới thay vì chỉ merge.
+  let before = null;
+  if (conversationRef?._id) {
+    before = await ChatConversation.findById(conversationRef._id);
+  }
+  if (!before && conversationRef?.classId) {
+    before = await ChatConversation.findOne({
+      classId: conversationRef.classId,
+      schoolYearId: conversationRef.schoolYearId,
+      type: 'class_general',
+    });
   }
 
-  const activeBefore = (before.participants || []).filter((p) => !p.removedAt);
-  const removedBefore = (before.participants || []).filter((p) => Boolean(p.removedAt));
+  const activeBefore = before ? (before.participants || []).filter((p) => !p.removedAt) : [];
+  const removedBefore = before ? (before.participants || []).filter((p) => Boolean(p.removedAt)) : [];
 
   // ===== BƯỚC 1: ADD/MERGE — payload dùng teachers ∪ subject_teachers (GVBM vào nhóm luôn,
   // fix luôn gap "GV mới được phân công chưa thấy nhóm"). Merge tự reactivate người quay lại roster.
@@ -143,6 +151,11 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
   let conversation = before;
   if (!dryRun) {
     conversation = await upsertMergedConversationFromPayload(payload);
+    stats.created = !before;
+  } else if (!before) {
+    // dryRun không ghi gì — chỉ báo sẽ tạo nhóm mới.
+    stats.guard = 'DRY_RUN_WOULD_CREATE';
+    return stats;
   }
 
   // ===== BƯỚC 2: diff — active participant không còn trong scope ⇒ candidate revoke.
@@ -161,6 +174,12 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
     0,
     removedBefore.length - (conversation.participants || []).filter((p) => Boolean(p.removedAt)).length,
   );
+
+  // Có thêm người / tạo nhóm mới ⇒ xóa cache list để GV/PH mới thấy nhóm ngay,
+  // kể cả khi không có ai bị revoke (bước 5 chỉ chạy khi có toRemove).
+  if (!dryRun && (stats.created || stats.added > 0 || stats.reactivated > 0)) {
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+  }
 
   // ===== BƯỚC 3: GUARDS — fail bất kỳ ⇒ chỉ ADD (đã làm ở bước 1), KHÔNG revoke.
   const scopeTeachers = collectScopeTeachers(scope);
@@ -286,9 +305,43 @@ async function runFullMembershipSync({ classId, schoolYearId, dryRun = false } =
   if (classId) filter.classId = String(classId).trim();
   if (schoolYearId) filter.schoolYearId = String(schoolYearId).trim();
 
-  const targets = await ChatConversation.find(filter)
+  const mongoTargets = await ChatConversation.find(filter)
     .select('_id classId schoolYearId status')
     .lean();
+
+  // Union thêm lớp từ Frappe (năm học đang bật) — TẠO nhóm còn thiếu cho lớp chưa ai mở chat.
+  // Lỗi liệt kê ⇒ fallback quét nhóm sẵn có (job vẫn chạy, chỉ mất chiều "tạo mới").
+  const byKey = new Map(
+    mongoTargets.map((t) => [`${t.classId}\0${t.schoolYearId}`, t]),
+  );
+  let frappeTargetCount = 0;
+  try {
+    const frappeTargets = await frappeService.listClassChatSyncTargets();
+    for (const t of frappeTargets) {
+      const cid = String(t.classId || '').trim();
+      const sy = String(t.schoolYearId || '').trim();
+      if (!cid || !sy) continue;
+      if (classId && cid !== String(classId).trim()) continue;
+      if (schoolYearId && sy !== String(schoolYearId).trim()) continue;
+      const key = `${cid}\0${sy}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, { classId: cid, schoolYearId: sy });
+        frappeTargetCount += 1;
+      }
+    }
+  } catch (e) {
+    console.warn('[ChatMembershipSync] listClassChatSyncTargets failed — chỉ quét nhóm sẵn có', {
+      error: e?.response?.status || e.message,
+    });
+  }
+  const targets = Array.from(byKey.values());
+  if (frappeTargetCount) {
+    console.info('[ChatMembershipSync] targets', {
+      fromMongo: mongoTargets.length,
+      newFromFrappe: frappeTargetCount,
+      total: targets.length,
+    });
+  }
 
   const summary = {
     dryRun: Boolean(dryRun),
@@ -297,6 +350,7 @@ async function runFullMembershipSync({ classId, schoolYearId, dryRun = false } =
     added: 0,
     removed: 0,
     reactivated: 0,
+    created: 0,
     guards: {},
     scopeErrors: 0,
     results: [],
@@ -341,6 +395,7 @@ async function runFullMembershipSync({ classId, schoolYearId, dryRun = false } =
       summary.added += line.added;
       summary.removed += line.removed;
       summary.reactivated += line.reactivated;
+      if (line.created) summary.created += 1;
       if (line.guard) summary.guards[line.guard] = (summary.guards[line.guard] || 0) + 1;
       summary.results.push(line);
       console.info('[ChatMembershipSync] class done', JSON.stringify(line));
@@ -357,6 +412,7 @@ async function runFullMembershipSync({ classId, schoolYearId, dryRun = false } =
     added: summary.added,
     removed: summary.removed,
     reactivated: summary.reactivated,
+    created: summary.created,
     guards: summary.guards,
     scopeErrors: summary.scopeErrors,
   }));

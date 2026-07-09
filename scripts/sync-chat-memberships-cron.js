@@ -58,6 +58,7 @@ const syncChatMemberships = async () => {
       console.log(`📊 Stats:`);
       console.log(`   🏫 Classes: ${s.processed}/${s.total}`);
       console.log(`   ➕ Added: ${s.added}`);
+      console.log(`   🆕 Created groups: ${s.created ?? 0}`);
       console.log(`   ➖ Removed: ${s.removed}`);
       console.log(`   ♻️  Reactivated: ${s.reactivated}`);
       console.log(`   🛡  Guards: ${JSON.stringify(s.guards || {})}`);

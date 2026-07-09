@@ -543,6 +543,25 @@ class FrappeService {
   }
 
   /**
+   * Danh sách (classId, schoolYearId) của các lớp thuộc năm học đang bật —
+   * job sync dùng để TẠO nhóm chat còn thiếu. Gọi bằng API key admin, không cache.
+   */
+  async listClassChatSyncTargets() {
+    const response = await this.api.post(
+      '/api/method/erp.api.erp_sis.chat_scope.list_class_chat_sync_targets',
+      {},
+    );
+    const message = response.data?.message ?? response.data;
+    if (message && message.success === false) {
+      const err = new Error(message.message || 'list_class_chat_sync_targets failed');
+      err.response = response;
+      throw err;
+    }
+    const payload = message?.data ?? message;
+    return Array.isArray(payload?.targets) ? payload.targets : [];
+  }
+
+  /**
    * Scope ĐẦY ĐỦ cho flow sync membership — gọi bằng API key admin (interceptor tự gắn
    * `token key:secret` khi không truyền headers). KHÔNG cache: sync cần roster mới nhất.
    * Throw nếu Frappe không trả marker `scopeComplete` — caller tuyệt đối không revoke khi thiếu.
