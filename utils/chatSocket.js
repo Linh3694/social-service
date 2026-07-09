@@ -1,5 +1,9 @@
 const ChatConversation = require('../models/ChatConversation');
-const { canAccessConversation, buildParticipantMatchOr, isBodUser } = require('../controllers/chatController');
+const {
+  canAccessConversation,
+  isConversationParticipant,
+  buildParticipantMatchOr,
+} = require('../controllers/chatController');
 const {
   getChatBroadcastRooms,
   ioEmitToEachRoom,
@@ -119,8 +123,6 @@ class ChatSocket {
             console.warn('[ChatSocket][typing] skip — missing conversationId/user');
             return;
           }
-          // BOD chỉ xem — không phát typing (sẽ lộ việc BOD đang theo dõi hội thoại).
-          if (isBodUser(socket.user)) return;
           const conversation = await ChatConversation.findById(String(conversationId).trim());
           if (!conversation) {
             console.warn('[ChatSocket][typing] skip — conversation not found', { conversationId });
@@ -132,8 +134,10 @@ class ChatSocket {
             });
             return;
           }
-          if (!canAccessConversation(conversation, socket.user)) {
-            console.warn('[ChatSocket][typing] skip — access denied', {
+          // Typing đòi hỏi là THÀNH VIÊN (không phải chỉ quyền đọc) — BOD observer
+          // không được phát typing, tránh lộ việc đang theo dõi hội thoại.
+          if (!isConversationParticipant(conversation, socket.user)) {
+            console.warn('[ChatSocket][typing] skip — not a participant', {
               conversationId: String(conversation._id),
               email: socket.user?.email,
               userId: socket.user?._id,

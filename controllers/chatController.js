@@ -957,10 +957,12 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
   return conversations;
 }
 
-function canAccessConversation(conversation, user) {
-  // BOD: quyền đọc theo role, không cần là participant (silent observer).
-  if (isBodUser(user)) return true;
-
+/**
+ * User có phải THÀNH VIÊN active của hội thoại không — điều kiện cho mọi thao tác GHI
+ * (send/markRead/reaction/pin/typing). Khác canAccessConversation: BOD KHÔNG bypass —
+ * user lai GV+BOD vẫn nhắn được ở lớp mình dạy, nhưng chỉ-xem ở hội thoại khác.
+ */
+function isConversationParticipant(conversation, user) {
   const userId = String(user?._id || '');
   const userEmail = normalizeEmail(user?.email);
   // PHHS đăng nhập portal có email <guardianId>@parent.wellspring.edu.vn nhưng socket.user.guardian_id thường undefined.
@@ -1000,6 +1002,12 @@ function canAccessConversation(conversation, user) {
   });
 }
 
+/** Quyền ĐỌC hội thoại: thành viên active, hoặc BOD (silent observer — đọc theo role). */
+function canAccessConversation(conversation, user) {
+  if (isBodUser(user)) return true;
+  return isConversationParticipant(conversation, user);
+}
+
 async function getConversationForUser(conversationId, user) {
   const conversation = await ChatConversation.findById(conversationId);
   if (!conversation || !canAccessConversation(conversation, user)) {
@@ -1010,9 +1018,12 @@ async function getConversationForUser(conversationId, user) {
   return conversation;
 }
 
-/** Chặn thao tác GHI cho BOD (chỉ có quyền xem). Trả true nếu đã chặn. */
-function rejectBodWrite(req, res) {
-  if (!isBodUser(req.user)) return false;
+/**
+ * Chặn thao tác GHI khi user KHÔNG phải thành viên (chỉ BOD observer mới lọt tới đây,
+ * vì non-BOD không phải thành viên đã bị 403 ở getConversationForUser). Trả true nếu đã chặn.
+ */
+function rejectObserverWrite(conversation, req, res) {
+  if (isConversationParticipant(conversation, req.user)) return false;
   res.status(403).json({ success: false, message: 'Tài khoản chỉ có quyền xem' });
   return true;
 }
@@ -1456,7 +1467,9 @@ exports.listConversations = async (req, res) => {
 
     // BOD observer: xem TOÀN BỘ hội thoại (nhóm lớp + 1-1) theo role — không ensure/scope,
     // không match participant, không cache Redis (ít user, query có tham số search).
-    if (isBodUser(req.user)) {
+    // CHỈ kích hoạt khi client yêu cầu rõ (?observer=1, trang /bod/messages) — user lai
+    // GV+BOD mở "Nhắn tin" thường vẫn thấy inbox cá nhân bình thường.
+    if (isBodUser(req.user) && String(req.query.observer || '') === '1') {
       const q = String(req.query.q || '').trim();
       const filter = {
         $or: [
@@ -1609,7 +1622,8 @@ exports.listConversations = async (req, res) => {
  */
 exports.ensureTeacherGuardianConversation = async (req, res) => {
   try {
-    if (rejectBodWrite(req, res)) return;
+    // Không chặn theo role BOD: user lai GV+BOD vẫn tạo 1-1 ở lớp mình dạy;
+    // BOD thuần không phải GV của lớp sẽ fail ở scope ACL trong buildTeacherGuardianPayloadFromRequest.
     const { payload, classId, schoolYearId } = await buildTeacherGuardianPayloadFromRequest(req);
 
     // Luôn persist hội thoại 1-1 (giống luồng nhóm) để trả về _id THẬT — mở/đọc tin không bị 404.
@@ -1635,7 +1649,7 @@ exports.ensureTeacherGuardianConversation = async (req, res) => {
  */
 exports.sendTeacherGuardianMessage = async (req, res) => {
   try {
-    if (rejectBodWrite(req, res)) return;
+    // BOD thuần không phải GV/PH của lớp sẽ fail ở scope ACL bên trong; GV+BOD dùng bình thường.
     const { payload, classId, schoolYearId } = await buildTeacherGuardianPayloadFromRequest(req);
 
     let attachments = [];
@@ -1682,7 +1696,6 @@ exports.sendTeacherGuardianMessage = async (req, res) => {
  */
 exports.uploadTeacherGuardianAttachments = async (req, res) => {
   try {
-    if (rejectBodWrite(req, res)) return;
     await buildTeacherGuardianPayloadFromRequest(req);
     const files = req.files || [];
     if (!files.length) {
@@ -1708,8 +1721,9 @@ exports.uploadTeacherGuardianAttachments = async (req, res) => {
 exports.getMessages = async (req, res) => {
   try {
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
-    // Audit: BOD đọc hội thoại — ẩn với người dùng nhưng tổ chức truy vết được.
-    if (isBodUser(req.user)) {
+    // Audit: BOD đọc hội thoại mình KHÔNG phải thành viên (observer) — ẩn với người dùng
+    // nhưng tổ chức truy vết được. GV+BOD đọc nhóm của chính mình thì không log.
+    if (isBodUser(req.user) && !isConversationParticipant(conversation, req.user)) {
       console.info('[Chat][BOD-AUDIT] read', {
         bodUserId: String(req.user._id),
         bodEmail: normalizeEmail(req.user.email),
@@ -1777,8 +1791,8 @@ exports.getMessages = async (req, res) => {
 
 exports.uploadAttachments = async (req, res) => {
   try {
-    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (rejectObserverWrite(conversation, req, res)) return;
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat năm học cũ chỉ cho xem lại lịch sử' });
     }
@@ -1802,8 +1816,8 @@ exports.uploadAttachments = async (req, res) => {
 
 exports.sendMessage = async (req, res) => {
   try {
-    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (rejectObserverWrite(conversation, req, res)) return;
 
     const content = String(req.body.content || '').trim();
     let attachments = [];
@@ -1837,9 +1851,10 @@ exports.sendMessage = async (req, res) => {
 
 exports.markRead = async (req, res) => {
   try {
-    // BOD tuyệt đối không markRead: readBy trả về mọi client + socket chat:read sẽ lộ việc BOD đang xem.
-    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    // Observer (BOD không phải thành viên) tuyệt đối không markRead:
+    // readBy trả về mọi client + socket chat:read sẽ lộ việc BOD đang xem.
+    if (rejectObserverWrite(conversation, req, res)) return;
     const key = participantKey(req.user);
     conversation.unreadCounts = conversation.unreadCounts || new Map();
     conversation.unreadCounts.set(key, 0);
@@ -1872,8 +1887,8 @@ exports.markRead = async (req, res) => {
  */
 exports.hideConversationFromList = async (req, res) => {
   try {
-    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (rejectObserverWrite(conversation, req, res)) return;
     const key = participantKey(req.user);
     if (!key || !mongoose.Types.ObjectId.isValid(key)) {
       return res.status(400).json({
@@ -1903,12 +1918,12 @@ exports.hideConversationFromList = async (req, res) => {
 /** Bật/tắt reaction emoji trên tin (1 user / 1 emoji; emoji lặp ⇒ gỡ). */
 exports.toggleReaction = async (req, res) => {
   try {
-    if (rejectBodWrite(req, res)) return;
     const emoji = String(req.body.emoji || '').trim();
     if (!CHAT_REACTION_EMOJIS.has(emoji)) {
       return res.status(400).json({ success: false, message: 'Emoji không hợp lệ' });
     }
     const { message, conversation } = await loadMessageWithAccess(req.params.messageId, req.user);
+    if (rejectObserverWrite(conversation, req, res)) return;
     if (message.recalledAt) {
       return res.status(400).json({ success: false, message: 'Tin nhắn đã thu hồi' });
     }
@@ -1986,8 +2001,8 @@ exports.toggleReaction = async (req, res) => {
 /** Ghim 1 tin vào conversation (ghi đè ghim cũ). */
 exports.pinMessage = async (req, res) => {
   try {
-    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (rejectObserverWrite(conversation, req, res)) return;
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
     }
@@ -2045,8 +2060,8 @@ exports.pinMessage = async (req, res) => {
 /** Bỏ ghim. */
 exports.unpinMessage = async (req, res) => {
   try {
-    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (rejectObserverWrite(conversation, req, res)) return;
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
     }
@@ -2078,8 +2093,8 @@ exports.unpinMessage = async (req, res) => {
 /** Thu hồi tin: chỉ người gửi, trong RECALL_WINDOW_MS. */
 exports.recallMessage = async (req, res) => {
   try {
-    if (rejectBodWrite(req, res)) return;
     const { message, conversation } = await loadMessageWithAccess(req.params.messageId, req.user);
+    if (rejectObserverWrite(conversation, req, res)) return;
     if (message.recalledAt) {
       return res.status(400).json({ success: false, message: 'Tin nhắn đã được thu hồi trước đó' });
     }
@@ -2171,6 +2186,7 @@ exports.recallMessage = async (req, res) => {
 };
 
 exports.canAccessConversation = canAccessConversation;
+exports.isConversationParticipant = isConversationParticipant;
 exports.buildParticipantMatchOr = buildParticipantMatchOr;
 exports.isBodUser = isBodUser;
 exports.isActiveParticipant = isActiveParticipant;
