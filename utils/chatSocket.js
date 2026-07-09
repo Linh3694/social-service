@@ -1,5 +1,5 @@
 const ChatConversation = require('../models/ChatConversation');
-const { canAccessConversation, buildParticipantMatchOr } = require('../controllers/chatController');
+const { canAccessConversation, buildParticipantMatchOr, isBodUser } = require('../controllers/chatController');
 const {
   getChatBroadcastRooms,
   ioEmitToEachRoom,
@@ -44,13 +44,17 @@ class ChatSocket {
         void (async () => {
           try {
             const participantOr = buildParticipantMatchOr(socket.user);
+            // Select thêm participants để lọc bằng canAccessConversation —
+            // match Mongo có thể trúng participant đã soft-remove (removedAt).
             const rows = await ChatConversation.find({ $or: participantOr })
-              .select('_id')
+              .select('_id participants')
               .limit(500)
               .lean();
-            rows.forEach((row) => {
-              socket.join(`chat_${String(row._id)}`);
-            });
+            rows
+              .filter((row) => canAccessConversation(row, socket.user))
+              .forEach((row) => {
+                socket.join(`chat_${String(row._id)}`);
+              });
             if (process.env.SOCIAL_DEBUG_SOCKET === '1') {
               console.log('[ChatSocket] auto-joined chat rooms', { userId: String(uid), n: rows.length });
             }
@@ -115,6 +119,8 @@ class ChatSocket {
             console.warn('[ChatSocket][typing] skip — missing conversationId/user');
             return;
           }
+          // BOD chỉ xem — không phát typing (sẽ lộ việc BOD đang theo dõi hội thoại).
+          if (isBodUser(socket.user)) return;
           const conversation = await ChatConversation.findById(String(conversationId).trim());
           if (!conversation) {
             console.warn('[ChatSocket][typing] skip — conversation not found', { conversationId });

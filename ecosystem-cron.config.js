@@ -22,6 +22,24 @@ module.exports = {
       out_file: './logs/sync-users-cron-out.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
       merge_logs: true,
+    },
+    {
+      // Sync/revoke membership nhóm chat theo roster — chạy SAU user-sync 6:00
+      // để Mongo User tươi (attachMongoUsers resolve được user._id cho GV/PH mới).
+      name: 'social-sync-chat-memberships-cron',
+      script: './scripts/sync-chat-memberships-cron.js',
+      cron_restart: '30 6 * * *', // 6:30 AM mỗi ngày
+      autorestart: false,
+      watch: false,
+      instances: 1,
+      env: {
+        NODE_ENV: 'production'
+        // CHAT_SYNC_DRY_RUN: '1', // bật trong giai đoạn rollout — chỉ log diff
+      },
+      error_file: './logs/sync-chat-memberships-cron-err.log',
+      out_file: './logs/sync-chat-memberships-cron-out.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      merge_logs: true,
     }
   ]
 };

@@ -543,6 +543,33 @@ class FrappeService {
   }
 
   /**
+   * Scope ĐẦY ĐỦ cho flow sync membership — gọi bằng API key admin (interceptor tự gắn
+   * `token key:secret` khi không truyền headers). KHÔNG cache: sync cần roster mới nhất.
+   * Throw nếu Frappe không trả marker `scopeComplete` — caller tuyệt đối không revoke khi thiếu.
+   */
+  async getClassChatScopeForSync(classId, schoolYearId) {
+    const response = await this.api.post(
+      '/api/method/erp.api.erp_sis.chat_scope.get_class_chat_scope_for_sync',
+      {
+        class_id: classId,
+        school_year_id: schoolYearId || '',
+      },
+    );
+    const message = response.data?.message ?? response.data;
+    if (message && message.success === false) {
+      const err = new Error(message.message || 'get_class_chat_scope_for_sync failed');
+      err.response = response;
+      throw err;
+    }
+    const payload = message?.data ?? message;
+    if (!payload?.classId) return null;
+    if (payload.scopeComplete !== true) {
+      throw new Error('Scope sync thiếu marker scopeComplete — không được dùng để revoke');
+    }
+    return payload;
+  }
+
+  /**
    * auth: Bearer Frappe (string) | chỉ service key (null/undefined) | Parent Portal { parentPortalToken }.
    */
   async getClassChatScope(classId, schoolYearId, auth, opts = {}) {

@@ -9,6 +9,12 @@ const participantSchema = new mongoose.Schema({
   teacherId: { type: String, trim: true, index: true },
   studentIds: [{ type: String, trim: true }],
   avatarUrl: { type: String, default: '' },
+  /**
+   * Soft-remove khi rời roster (sync membership). null/absent = đang active.
+   * Chỉ flow sync (scope authoritative) được set; read-path không tự revoke.
+   */
+  removedAt: { type: Date, default: null },
+  removedReason: { type: String, trim: true }, // 'roster_sync' | 'manual'
 }, { _id: false });
 
 const memberSnapshotSchema = new mongoose.Schema({
@@ -25,6 +31,8 @@ const memberSnapshotSchema = new mongoose.Schema({
     title: { type: String, trim: true },
   }],
   avatarUrl: { type: String, default: '' },
+  /** Soft-remove khi rời roster — đồng bộ với participant tương ứng. */
+  removedAt: { type: Date, default: null },
 }, { _id: false });
 
 /** Snapshot tin ghim (1 conversation tối đa 1 tin) — hiển thị banner, đồng bộ socket. */
@@ -71,6 +79,8 @@ const chatConversationSchema = new mongoose.Schema({
    * Tin mới trong hội thoại luôn gỡ ẩn cho người nhận (không gồm người gửi).
    */
   hiddenFromListAtByUserId: { type: Map, of: Date, default: {} },
+  /** Lần cuối flow sync membership (roster) chạy trên conversation này. */
+  membershipSyncedAt: { type: Date },
 }, { timestamps: true });
 
 chatConversationSchema.index({ classId: 1, schoolYearId: 1, type: 1 }, { unique: true });

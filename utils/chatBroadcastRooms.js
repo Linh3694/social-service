@@ -50,7 +50,11 @@ function getChatBroadcastRooms(conversation) {
   const conversationId = String(conversation?._id || conversation || '');
   const rooms = [
     `chat_${conversationId}`,
-    ...(conversation?.participants || []).flatMap(participantRooms),
+    // Bỏ participant đã soft-remove (removedAt) khỏi union room user_*/email_*/guardian_* —
+    // room chat_<id> vẫn giữ (người bị revoke sẽ bị socketsLeave bởi flow sync).
+    ...(conversation?.participants || [])
+      .filter((p) => p && !p.removedAt)
+      .flatMap(participantRooms),
   ].filter(Boolean);
   return Array.from(new Set(rooms));
 }
@@ -87,6 +91,7 @@ function socketEmitToEachRoomExceptSender(socket, rooms, event, payload) {
 }
 
 module.exports = {
+  participantRooms,
   getChatBroadcastRooms,
   ioEmitToEachRoom,
   socketEmitToEachRoomExceptSender,

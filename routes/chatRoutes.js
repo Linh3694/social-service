@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const chatController = require('../controllers/chatController');
+const chatSyncController = require('../controllers/chatSyncController');
 const { authenticate } = require('../middleware/authMiddleware');
 
 const chatUploadDir = path.join(__dirname, '../uploads/chat');
@@ -75,6 +76,10 @@ router.post('/conversations/teacher-student', authenticate, (req, res) => {
     message: 'Endpoint /conversations/teacher-student đã bị thay thế bởi /conversations/teacher-guardian (chat 1-1).',
   });
 });
+// Sync/revoke membership theo roster — auth bằng API key service (không phải user token).
+// Đặt trước các route /conversations/:conversationId để không bị nuốt param.
+router.post('/sync/memberships', chatSyncController.syncChatMemberships);
+
 router.get('/conversations', authenticate, chatController.listConversations);
 router.post('/messages/:messageId/reactions', authenticate, chatController.toggleReaction);
 router.post('/messages/:messageId/recall', authenticate, chatController.recallMessage);

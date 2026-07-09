@@ -71,6 +71,20 @@ function userRole(user) {
   return 'teacher';
 }
 
+/**
+ * BOD (Ban giám hiệu/HĐQT) — quan sát viên: đọc mọi hội thoại theo ROLE,
+ * không bao giờ nằm trong participants, không được ghi (send/markRead/reaction/pin...).
+ */
+function isBodUser(user) {
+  const roles = user?.roles || [];
+  return roles.includes('SIS BOD') || roles.includes('Mobile BOD');
+}
+
+/** Participant đang active (chưa bị soft-remove bởi sync roster). */
+function isActiveParticipant(p) {
+  return Boolean(p) && !p.removedAt;
+}
+
 function normalizeEmail(value) {
   return value ? String(value).trim().toLowerCase() : '';
 }
@@ -81,6 +95,7 @@ function chatRecipientEmails(conversation, senderEmail) {
   const seen = new Set();
   const emails = [];
   for (const p of conversation.participants || []) {
+    if (!isActiveParticipant(p)) continue;
     const raw = p.email;
     if (!raw) continue;
     const n = normalizeEmail(raw);
@@ -724,6 +739,9 @@ function mergeParticipantFields(oldP, newP) {
       ...((oldP.studentIds || []).map(String)),
       ...((newP.studentIds || []).map(String)),
     ])).filter(Boolean),
+    // Xuất hiện lại trong scope (mọi scope đều roster-derived) ⇒ tự khôi phục quyền.
+    removedAt: null,
+    removedReason: undefined,
   };
 }
 
@@ -751,6 +769,7 @@ function mergeSnapshotFields(oldS, newS) {
       ...((newS.studentNames || []).map(String)),
     ])).map((s) => String(s).trim()).filter(Boolean),
     subjects: mergedSubjects,
+    removedAt: null,
   };
 }
 
@@ -939,6 +958,9 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
 }
 
 function canAccessConversation(conversation, user) {
+  // BOD: quyền đọc theo role, không cần là participant (silent observer).
+  if (isBodUser(user)) return true;
+
   const userId = String(user?._id || '');
   const userEmail = normalizeEmail(user?.email);
   // PHHS đăng nhập portal có email <guardianId>@parent.wellspring.edu.vn nhưng socket.user.guardian_id thường undefined.
@@ -950,7 +972,7 @@ function canAccessConversation(conversation, user) {
     ? parentPortalEmailFromGuardianId(userGuardianId)
     : '';
 
-  return (conversation.participants || []).some((participant) => {
+  return (conversation.participants || []).filter(isActiveParticipant).some((participant) => {
     if (participant.user && String(participant.user) === userId) return true;
 
     const partEmail = normalizeEmail(participant.email);
@@ -986,6 +1008,13 @@ async function getConversationForUser(conversationId, user) {
     throw err;
   }
   return conversation;
+}
+
+/** Chặn thao tác GHI cho BOD (chỉ có quyền xem). Trả true nếu đã chặn. */
+function rejectBodWrite(req, res) {
+  if (!isBodUser(req.user)) return false;
+  res.status(403).json({ success: false, message: 'Tài khoản chỉ có quyền xem' });
+  return true;
 }
 
 /** Chuẩn hóa pinnedMessage cho JSON + socket (ObjectId → string, date → ISO). */
@@ -1372,6 +1401,7 @@ async function appendMessageToConversation(conversation, req, {
 
   const unreadCounts = conversation.unreadCounts || new Map();
   (conversation.participants || []).forEach((participant) => {
+    if (!isActiveParticipant(participant)) return;
     if (!participant.user) return;
     const key = String(participant.user);
     if (key === String(req.user._id)) {
@@ -1423,6 +1453,43 @@ exports.listConversations = async (req, res) => {
   try {
     const token = getBearerToken(req);
     const { classId, schoolYearId } = req.query;
+
+    // BOD observer: xem TOÀN BỘ hội thoại (nhóm lớp + 1-1) theo role — không ensure/scope,
+    // không match participant, không cache Redis (ít user, query có tham số search).
+    if (isBodUser(req.user)) {
+      const q = String(req.query.q || '').trim();
+      const filter = {
+        $or: [
+          { type: 'class_general' },
+          { type: { $regex: /^teacher_guardian:/ } },
+        ],
+      };
+      if (classId) filter.classId = String(classId).trim();
+      if (schoolYearId) filter.schoolYearId = String(schoolYearId).trim();
+      if (q) {
+        const safe = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        filter.$and = [{
+          $or: [
+            { title: { $regex: safe, $options: 'i' } },
+            { className: { $regex: safe, $options: 'i' } },
+          ],
+        }];
+      }
+      const rows = await ChatConversation.find(filter)
+        .sort({ 'lastMessage.createdAt': -1, updatedAt: -1 })
+        .limit(200);
+      const visibleForBod = rows.filter((c) => {
+        // 1-1 chưa có tin thì bỏ (như list thường) — BOD chỉ cần chat có nội dung.
+        if (String(c.type || '').startsWith('teacher_guardian:')) {
+          return Boolean(c.lastMessage && c.lastMessage.messageId);
+        }
+        return true;
+      });
+      return res.json({
+        success: true,
+        data: visibleForBod.map((c) => serializeConversation(c, req.user)),
+      });
+    }
 
     const listCacheKey = chatConversationListCacheKey(req.user._id, classId, schoolYearId);
     const cachedList = await cacheGetJSON(listCacheKey);
@@ -1542,6 +1609,7 @@ exports.listConversations = async (req, res) => {
  */
 exports.ensureTeacherGuardianConversation = async (req, res) => {
   try {
+    if (rejectBodWrite(req, res)) return;
     const { payload, classId, schoolYearId } = await buildTeacherGuardianPayloadFromRequest(req);
 
     // Luôn persist hội thoại 1-1 (giống luồng nhóm) để trả về _id THẬT — mở/đọc tin không bị 404.
@@ -1567,6 +1635,7 @@ exports.ensureTeacherGuardianConversation = async (req, res) => {
  */
 exports.sendTeacherGuardianMessage = async (req, res) => {
   try {
+    if (rejectBodWrite(req, res)) return;
     const { payload, classId, schoolYearId } = await buildTeacherGuardianPayloadFromRequest(req);
 
     let attachments = [];
@@ -1613,6 +1682,7 @@ exports.sendTeacherGuardianMessage = async (req, res) => {
  */
 exports.uploadTeacherGuardianAttachments = async (req, res) => {
   try {
+    if (rejectBodWrite(req, res)) return;
     await buildTeacherGuardianPayloadFromRequest(req);
     const files = req.files || [];
     if (!files.length) {
@@ -1638,6 +1708,16 @@ exports.uploadTeacherGuardianAttachments = async (req, res) => {
 exports.getMessages = async (req, res) => {
   try {
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    // Audit: BOD đọc hội thoại — ẩn với người dùng nhưng tổ chức truy vết được.
+    if (isBodUser(req.user)) {
+      console.info('[Chat][BOD-AUDIT] read', {
+        bodUserId: String(req.user._id),
+        bodEmail: normalizeEmail(req.user.email),
+        conversationId: String(conversation._id),
+        conversationType: conversation.type,
+        at: new Date().toISOString(),
+      });
+    }
     const page = Math.max(parseInt(req.query.page || '1', 10), 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit || '30', 10), 1), 100);
     const skip = (page - 1) * limit;
@@ -1697,6 +1777,7 @@ exports.getMessages = async (req, res) => {
 
 exports.uploadAttachments = async (req, res) => {
   try {
+    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat năm học cũ chỉ cho xem lại lịch sử' });
@@ -1721,6 +1802,7 @@ exports.uploadAttachments = async (req, res) => {
 
 exports.sendMessage = async (req, res) => {
   try {
+    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
 
     const content = String(req.body.content || '').trim();
@@ -1755,6 +1837,8 @@ exports.sendMessage = async (req, res) => {
 
 exports.markRead = async (req, res) => {
   try {
+    // BOD tuyệt đối không markRead: readBy trả về mọi client + socket chat:read sẽ lộ việc BOD đang xem.
+    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
     const key = participantKey(req.user);
     conversation.unreadCounts = conversation.unreadCounts || new Map();
@@ -1788,6 +1872,7 @@ exports.markRead = async (req, res) => {
  */
 exports.hideConversationFromList = async (req, res) => {
   try {
+    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
     const key = participantKey(req.user);
     if (!key || !mongoose.Types.ObjectId.isValid(key)) {
@@ -1818,6 +1903,7 @@ exports.hideConversationFromList = async (req, res) => {
 /** Bật/tắt reaction emoji trên tin (1 user / 1 emoji; emoji lặp ⇒ gỡ). */
 exports.toggleReaction = async (req, res) => {
   try {
+    if (rejectBodWrite(req, res)) return;
     const emoji = String(req.body.emoji || '').trim();
     if (!CHAT_REACTION_EMOJIS.has(emoji)) {
       return res.status(400).json({ success: false, message: 'Emoji không hợp lệ' });
@@ -1900,6 +1986,7 @@ exports.toggleReaction = async (req, res) => {
 /** Ghim 1 tin vào conversation (ghi đè ghim cũ). */
 exports.pinMessage = async (req, res) => {
   try {
+    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
@@ -1958,6 +2045,7 @@ exports.pinMessage = async (req, res) => {
 /** Bỏ ghim. */
 exports.unpinMessage = async (req, res) => {
   try {
+    if (rejectBodWrite(req, res)) return;
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
@@ -1990,6 +2078,7 @@ exports.unpinMessage = async (req, res) => {
 /** Thu hồi tin: chỉ người gửi, trong RECALL_WINDOW_MS. */
 exports.recallMessage = async (req, res) => {
   try {
+    if (rejectBodWrite(req, res)) return;
     const { message, conversation } = await loadMessageWithAccess(req.params.messageId, req.user);
     if (message.recalledAt) {
       return res.status(400).json({ success: false, message: 'Tin nhắn đã được thu hồi trước đó' });
@@ -2083,3 +2172,15 @@ exports.recallMessage = async (req, res) => {
 
 exports.canAccessConversation = canAccessConversation;
 exports.buildParticipantMatchOr = buildParticipantMatchOr;
+exports.isBodUser = isBodUser;
+exports.isActiveParticipant = isActiveParticipant;
+// Dùng bởi services/chatMembershipSync.js (flow sync/revoke membership theo roster).
+exports.collectScopeTeachers = collectScopeTeachers;
+exports.buildConversationPayload = buildConversationPayload;
+exports.upsertMergedConversationFromPayload = upsertMergedConversationFromPayload;
+exports.invalidateConversationParticipantsListCaches = invalidateConversationParticipantsListCaches;
+exports.participantIdentityKey = participantIdentityKey;
+exports.teacherSnapshotKey = teacherSnapshotKey;
+exports.guardianSnapshotKey = guardianSnapshotKey;
+exports.parentPortalEmailFromGuardianId = parentPortalEmailFromGuardianId;
+exports.portalGuardianIdFromEmail = portalGuardianIdFromEmail;
