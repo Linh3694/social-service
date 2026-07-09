@@ -144,6 +144,14 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
   const activeBefore = before ? (before.participants || []).filter((p) => !p.removedAt) : [];
   const removedBefore = before ? (before.participants || []).filter((p) => Boolean(p.removedAt)) : [];
 
+  // Chỉ TẠO MỚI nhóm cho lớp chính quy — lớp mixed/club không auto-tạo (khớp isRegularScope
+  // ở read-path). Nhóm đã tồn tại thì vẫn reconcile bình thường.
+  const classType = String(scope?.classType || scope?.class_type || '').trim().toLowerCase();
+  if (!before && classType !== 'regular') {
+    stats.guard = 'CLASS_TYPE_NOT_REGULAR';
+    return stats;
+  }
+
   // ===== BƯỚC 1: ADD/MERGE — payload dùng teachers ∪ subject_teachers (GVBM vào nhóm luôn,
   // fix luôn gap "GV mới được phân công chưa thấy nhóm"). Merge tự reactivate người quay lại roster.
   const scopeForPayload = { ...scope, teachers: collectScopeTeachers(scope) };
