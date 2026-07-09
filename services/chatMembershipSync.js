@@ -13,7 +13,6 @@
 const ChatConversation = require('../models/ChatConversation');
 const frappeService = require('./frappeService');
 const {
-  collectScopeTeachers,
   buildConversationPayload,
   upsertMergedConversationFromPayload,
   invalidateConversationParticipantsListCaches,
@@ -37,11 +36,11 @@ function normalizeId(value) {
   return value ? String(value).trim() : '';
 }
 
-/** Tập khóa nhận diện GV còn trong roster (email + teacherId, GVCN ∪ GVBM). */
-function buildTeacherKeySets(scope) {
+/** Tập khóa nhận diện GV (email + teacherId) từ một danh sách teacher scope. */
+function buildTeacherKeySets(teachers) {
   const emails = new Set();
   const teacherIds = new Set();
-  for (const t of collectScopeTeachers(scope)) {
+  for (const t of teachers || []) {
     const email = normalizeEmail(t.email);
     if (email) emails.add(email);
     const tid = normalizeId(t.teacherId || t.name).toLowerCase();
@@ -152,10 +151,10 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
     return stats;
   }
 
-  // ===== BƯỚC 1: ADD/MERGE — payload dùng teachers ∪ subject_teachers (GVBM vào nhóm luôn,
-  // fix luôn gap "GV mới được phân công chưa thấy nhóm"). Merge tự reactivate người quay lại roster.
-  const scopeForPayload = { ...scope, teachers: collectScopeTeachers(scope) };
-  const payload = await buildConversationPayload(scopeForPayload, 'class_general', null);
+  // ===== BƯỚC 1: ADD/MERGE — payload CHỈ gồm GVCN/phó (scope.teachers) + PHHS.
+  // GVBM KHÔNG auto-add: chỉ vào nhóm khi GVCN/phó add thủ công (participant.manualAdd).
+  // Merge tự reactivate CN/phó/PH quay lại roster.
+  const payload = await buildConversationPayload(scope, 'class_general', null);
   let conversation = before;
   if (!dryRun) {
     conversation = await upsertMergedConversationFromPayload(payload);
@@ -166,16 +165,20 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
     return stats;
   }
 
-  // ===== BƯỚC 2: diff — active participant không còn trong scope ⇒ candidate revoke.
-  const teacherKeys = buildTeacherKeySets(scope);
+  // ===== BƯỚC 2: diff — active participant không còn hợp lệ ⇒ candidate revoke.
+  // GV giữ lại khi: là GVCN/phó theo roster, HOẶC là GVBM được add thủ công (manualAdd)
+  // và VẪN còn phân công giảng dạy. GVBM không manualAdd (legacy auto-add) ⇒ gỡ.
+  const homeroomKeys = buildTeacherKeySets(scope.teachers);
+  const subjectKeys = buildTeacherKeySets(scope.subject_teachers);
   const guardianKeys = buildGuardianKeySets(scope);
 
   const activeNow = (conversation.participants || []).filter((p) => !p.removedAt);
-  const toRemove = activeNow.filter((p) => (
-    p.role === 'teacher'
-      ? !teacherStillInScope(p, teacherKeys)
-      : !guardianStillInScope(p, guardianKeys)
-  ));
+  const toRemove = activeNow.filter((p) => {
+    if (p.role !== 'teacher') return !guardianStillInScope(p, guardianKeys);
+    if (teacherStillInScope(p, homeroomKeys)) return false;
+    if (p.manualAdd && teacherStillInScope(p, subjectKeys)) return false;
+    return true;
+  });
 
   stats.added = Math.max(0, activeNow.length - activeBefore.length);
   stats.reactivated = Math.max(
@@ -190,10 +193,11 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
   }
 
   // ===== BƯỚC 3: GUARDS — fail bất kỳ ⇒ chỉ ADD (đã làm ở bước 1), KHÔNG revoke.
-  const scopeTeachers = collectScopeTeachers(scope);
+  // ZERO_TEACHERS xét theo GVCN/phó (scope.teachers) — lớp thật luôn có CN;
+  // lớp không CN mà chỉ có GVBM cũng không được revoke (dữ liệu bất thường).
   if (scope.scopeComplete !== true) {
     stats.guard = 'SCOPE_NOT_AUTHORITATIVE';
-  } else if (!scopeTeachers.length) {
+  } else if (!(scope.teachers || []).length) {
     stats.guard = 'SCOPE_ZERO_TEACHERS';
   } else if (!(scope.students || []).length && !(scope.guardians || []).length) {
     stats.guard = 'SCOPE_EMPTY_ROSTER';

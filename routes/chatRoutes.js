@@ -99,5 +99,21 @@ router.post(
 );
 router.post('/conversations/:conversationId/pin', authenticate, chatController.pinMessage);
 router.delete('/conversations/:conversationId/pin', authenticate, chatController.unpinMessage);
+// Quản lý GVBM trong nhóm lớp — chỉ GVCN/Phó GVCN (check trong controller theo scope Frappe).
+router.get(
+  '/conversations/:conversationId/members/addable',
+  authenticate,
+  chatController.listAddableTeachers,
+);
+router.post(
+  '/conversations/:conversationId/members',
+  authenticate,
+  chatController.addConversationTeacher,
+);
+router.delete(
+  '/conversations/:conversationId/members/:teacherId',
+  authenticate,
+  chatController.removeConversationTeacher,
+);
 
 module.exports = router;

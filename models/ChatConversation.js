@@ -15,6 +15,12 @@ const participantSchema = new mongoose.Schema({
    */
   removedAt: { type: Date, default: null },
   removedReason: { type: String, trim: true }, // 'roster_sync' | 'manual'
+  /**
+   * GVBM được GVCN/phó add thủ công vào nhóm lớp (GVBM không auto-join).
+   * Sync giữ participant này chừng nào còn phân công giảng dạy với lớp.
+   */
+  manualAdd: { type: Boolean, default: false },
+  addedBy: { type: String, trim: true, lowercase: true }, // email GVCN/phó đã add
 }, { _id: false });
 
 const memberSnapshotSchema = new mongoose.Schema({
@@ -33,6 +39,8 @@ const memberSnapshotSchema = new mongoose.Schema({
   avatarUrl: { type: String, default: '' },
   /** Soft-remove khi rời roster — đồng bộ với participant tương ứng. */
   removedAt: { type: Date, default: null },
+  /** GVBM add thủ công (đồng bộ với participant.manualAdd) — FE phân biệt với CN/phó. */
+  manualAdd: { type: Boolean, default: false },
 }, { _id: false });
 
 /** Snapshot tin ghim (1 conversation tối đa 1 tin) — hiển thị banner, đồng bộ socket. */

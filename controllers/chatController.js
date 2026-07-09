@@ -6,6 +6,7 @@ const frappeService = require('../services/frappeService');
 const {
   getChatBroadcastRooms,
   ioEmitToEachRoom,
+  participantRooms,
 } = require('../utils/chatBroadcastRooms');
 const {
   cacheGetJSON,
@@ -603,7 +604,17 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
       avatarUrl: teacher.avatarUrl || userAvatar(user),
     };
   });
-  const currentTeacherParticipant = buildCurrentTeacherParticipant(requestUser);
+  // Nhóm lớp: GVBM KHÔNG auto-join — chỉ force-add caller khi là GVCN/phó GVCN của lớp
+  // (GVBM chỉ vào nhóm khi được GVCN/phó add thủ công qua API members).
+  const callerTid = resolveCallerTeacherIdFromScope(requestUser, scope);
+  const callerEmailNorm = normalizeEmail(requestUser?.email);
+  const callerIsHomeroom = (scope.teachers || []).some((t) => (
+    (callerTid && normalizeId(t.teacherId || t.name) === callerTid)
+    || (callerEmailNorm && normalizeEmail(t.email) === callerEmailNorm)
+  ));
+  const currentTeacherParticipant = callerIsHomeroom
+    ? buildCurrentTeacherParticipant(requestUser)
+    : null;
   if (currentTeacherParticipant) {
     const hasCurrentTeacher = teacherParticipants.some((participant) => (
       (participant.user && String(participant.user) === String(currentTeacherParticipant.user)) ||
@@ -2182,6 +2193,253 @@ exports.recallMessage = async (req, res) => {
   } catch (error) {
     console.error('[Chat] recallMessage error:', error);
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể thu hồi tin nhắn' });
+  }
+};
+
+// ===== Quản lý GVBM trong nhóm lớp (GVCN/phó add/gỡ; GVBM không auto-join) =====
+
+/** Match participant GV với (email chuẩn hoá, teacherId lowercase). */
+function teacherParticipantMatches(participant, { email, teacherId }) {
+  const pEmail = normalizeEmail(participant.email);
+  const pTid = normalizeId(participant.teacherId).toLowerCase();
+  return Boolean((email && pEmail === email) || (teacherId && pTid === teacherId));
+}
+
+/**
+ * Caller phải là GVCN/Phó GVCN của lớp (theo scope Frappe qua token caller) — điều kiện
+ * quản lý GVBM trong nhóm. Trả scope; throw 403 nếu không phải.
+ */
+async function requireHomeroomCaller(conversation, req) {
+  const token = getBearerToken(req);
+  const scope = await frappeService.getClassChatScope(
+    conversation.classId,
+    conversation.schoolYearId,
+    token,
+  );
+  if (!scope) {
+    const err = new Error('Không tải được thông tin lớp');
+    err.statusCode = 502;
+    throw err;
+  }
+  const callerTid = resolveCallerTeacherIdFromScope(req.user, scope);
+  const callerEmail = normalizeEmail(req.user?.email);
+  const isHomeroom = (scope.teachers || []).some((t) => (
+    (callerTid && normalizeId(t.teacherId || t.name) === callerTid)
+    || (callerEmail && normalizeEmail(t.email) === callerEmail)
+  ));
+  if (!isHomeroom) {
+    const err = new Error('Chỉ GVCN/Phó GVCN được quản lý GV bộ môn trong nhóm');
+    err.statusCode = 403;
+    throw err;
+  }
+  return scope;
+}
+
+/** GET /conversations/:conversationId/members/addable — GVBM của lớp chưa trong nhóm. */
+exports.listAddableTeachers = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (conversation.type !== 'class_general') {
+      return res.status(400).json({ success: false, message: 'Chỉ áp dụng cho nhóm lớp' });
+    }
+    const scope = await requireHomeroomCaller(conversation, req);
+
+    const active = (conversation.participants || []).filter(isActiveParticipant);
+    const addable = (scope.subject_teachers || [])
+      .map((t) => normalizeTeacherSnapshot(t))
+      .filter(Boolean)
+      .filter((t) => {
+        const email = normalizeEmail(t.email);
+        const tid = normalizeId(t.teacherId).toLowerCase();
+        return !active.some((p) => p.role === 'teacher' && teacherParticipantMatches(p, { email, teacherId: tid }));
+      })
+      .map((t) => ({
+        teacherId: t.teacherId,
+        name: t.name,
+        email: t.email,
+        avatarUrl: t.avatarUrl || '',
+        subjects: compactSubjectSnapshots(t.subjects),
+      }));
+
+    res.json({ success: true, data: addable });
+  } catch (error) {
+    console.error('[Chat] listAddableTeachers error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải danh sách GV bộ môn' });
+  }
+};
+
+/** POST /conversations/:conversationId/members { teacherId } — GVCN/phó add GVBM vào nhóm. */
+exports.addConversationTeacher = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (conversation.type !== 'class_general') {
+      return res.status(400).json({ success: false, message: 'Chỉ áp dụng cho nhóm lớp' });
+    }
+    const scope = await requireHomeroomCaller(conversation, req);
+
+    const teacherId = normalizeId(req.body.teacherId);
+    if (!teacherId) {
+      return res.status(400).json({ success: false, message: 'Thiếu teacherId' });
+    }
+    const target = (scope.subject_teachers || []).find(
+      (t) => normalizeId(t.teacherId || t.name) === teacherId,
+    );
+    if (!target) {
+      return res.status(400).json({
+        success: false,
+        message: 'Chỉ thêm được GV bộ môn đang có phân công giảng dạy với lớp',
+      });
+    }
+
+    const snap = normalizeTeacherSnapshot(target);
+    const email = normalizeEmail(snap.email);
+    const tidLower = normalizeId(snap.teacherId).toLowerCase();
+    const { byEmail } = await attachMongoUsers({ teachers: [target], guardians: [] });
+    const mongoUser = email ? byEmail.get(email) : undefined;
+    const addedBy = normalizeEmail(req.user.email);
+
+    const existing = (conversation.participants || []).find(
+      (p) => p.role === 'teacher' && teacherParticipantMatches(p, { email, teacherId: tidLower }),
+    );
+    if (existing) {
+      existing.removedAt = null;
+      existing.removedReason = undefined;
+      existing.manualAdd = true;
+      existing.addedBy = addedBy;
+      if (!existing.user && mongoUser) existing.user = mongoUser._id;
+    } else {
+      conversation.participants.push({
+        user: mongoUser?._id,
+        email,
+        name: snap.name,
+        role: 'teacher',
+        teacherId: snap.teacherId,
+        avatarUrl: snap.avatarUrl || userAvatar(mongoUser),
+        manualAdd: true,
+        addedBy,
+      });
+    }
+
+    const existSnap = (conversation.teachers || []).find((s) => (
+      (email && normalizeEmail(s.email) === email)
+      || (s.teacherId && normalizeId(s.teacherId).toLowerCase() === tidLower)
+    ));
+    const subjects = compactSubjectSnapshots(target.subjects);
+    if (existSnap) {
+      existSnap.removedAt = null;
+      existSnap.manualAdd = true;
+      if (subjects.length) existSnap.subjects = subjects;
+    } else {
+      conversation.teachers.push({
+        email,
+        name: snap.name,
+        teacherId: snap.teacherId,
+        avatarUrl: snap.avatarUrl || '',
+        subjects,
+        manualAdd: true,
+      });
+    }
+
+    conversation.markModified('participants');
+    conversation.markModified('teachers');
+    await conversation.save();
+
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+    if (mongoUser) cacheDelByPattern(`chat:conv:${String(mongoUser._id)}:*`).catch(() => {});
+
+    console.info('[Chat] GVBM added to class group', {
+      conversationId: String(conversation._id),
+      teacherId: snap.teacherId,
+      email,
+      by: addedBy,
+    });
+
+    res.json({ success: true, data: serializeConversation(conversation, req.user) });
+  } catch (error) {
+    console.error('[Chat] addConversationTeacher error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể thêm GV bộ môn' });
+  }
+};
+
+/** DELETE /conversations/:conversationId/members/:teacherId — GVCN/phó gỡ GVBM khỏi nhóm. */
+exports.removeConversationTeacher = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (conversation.type !== 'class_general') {
+      return res.status(400).json({ success: false, message: 'Chỉ áp dụng cho nhóm lớp' });
+    }
+    const scope = await requireHomeroomCaller(conversation, req);
+
+    const key = normalizeId(req.params.teacherId).toLowerCase();
+    const target = (conversation.participants || []).find((p) => (
+      p.role === 'teacher'
+      && !p.removedAt
+      && teacherParticipantMatches(p, { email: normalizeEmail(key), teacherId: key })
+    ));
+    if (!target) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy GV trong nhóm' });
+    }
+
+    // Không gỡ GVCN/phó — họ thuộc nhóm theo roster.
+    const targetIsHomeroom = (scope.teachers || []).some((t) => teacherParticipantMatches(target, {
+      email: normalizeEmail(t.email),
+      teacherId: normalizeId(t.teacherId || t.name).toLowerCase(),
+    }));
+    if (targetIsHomeroom) {
+      return res.status(400).json({ success: false, message: 'Không thể gỡ GVCN/Phó GVCN khỏi nhóm' });
+    }
+
+    const now = new Date();
+    target.removedAt = now;
+    target.removedReason = 'manual';
+    if (target.user) {
+      const uid = String(target.user);
+      if (conversation.unreadCounts instanceof Map && conversation.unreadCounts.has(uid)) {
+        conversation.unreadCounts.delete(uid);
+        conversation.markModified('unreadCounts');
+      }
+      if (conversation.hiddenFromListAtByUserId instanceof Map && conversation.hiddenFromListAtByUserId.has(uid)) {
+        conversation.hiddenFromListAtByUserId.delete(uid);
+        conversation.markModified('hiddenFromListAtByUserId');
+      }
+    }
+    for (const snapItem of conversation.teachers || []) {
+      if (!snapItem.removedAt && teacherParticipantMatches(
+        { email: snapItem.email, teacherId: snapItem.teacherId },
+        { email: normalizeEmail(target.email), teacherId: normalizeId(target.teacherId).toLowerCase() },
+      )) {
+        snapItem.removedAt = now;
+      }
+    }
+    conversation.markModified('participants');
+    conversation.markModified('teachers');
+    await conversation.save();
+
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+    if (target.user) cacheDelByPattern(`chat:conv:${String(target.user)}:*`).catch(() => {});
+    if (global.io) {
+      const rooms = participantRooms(target);
+      if (rooms.length) {
+        global.io.to(rooms).emit('chat:conversation_removed', {
+          conversationId: String(conversation._id),
+        });
+        for (const room of rooms) {
+          global.io.in(room).socketsLeave(`chat_${String(conversation._id)}`);
+        }
+      }
+    }
+
+    console.info('[Chat] GVBM removed from class group', {
+      conversationId: String(conversation._id),
+      teacherId: target.teacherId || '',
+      email: target.email || '',
+      by: normalizeEmail(req.user.email),
+    });
+
+    res.json({ success: true, data: serializeConversation(conversation, req.user) });
+  } catch (error) {
+    console.error('[Chat] removeConversationTeacher error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể gỡ GV bộ môn' });
   }
 };
 
