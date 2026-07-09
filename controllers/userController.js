@@ -140,7 +140,14 @@ const syncUsersManual = async (req, res) => {
         batch.map(async (frappeUser) => {
           const userEmail = frappeUser.email || frappeUser.name;
           const userData = formatFrappeUser(frappeUser);
-          
+
+          // Phòng thủ: payload không mang roles (endpoint cũ/thiếu) ⇒ GIỮ roles hiện có
+          // trong Mongo thay vì ghi đè thành [] (sẽ làm mất quyền như SIS BOD).
+          if (!userData.roles || userData.roles.length === 0) {
+            delete userData.roles;
+            delete userData.role;
+          }
+
           await User.findOneAndUpdate(
             { email: userEmail.toLowerCase() },
             { $set: userData },

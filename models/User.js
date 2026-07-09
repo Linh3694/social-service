@@ -107,6 +107,7 @@ userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser
     employeeCode: frappeUser.employee_code || frappeUser.employeeCode || frappeUser.employee,
     department: frappeUser.department || frappeUser.location || '',
     jobTitle: frappeUser.job_title || frappeUser.designation || 'User',
+    // roles rỗng (payload thiếu child table) → gán bên dưới sẽ bỏ qua, giữ roles cũ.
     role: roles.length > 0 ? roles[0].toLowerCase() : 'user',
     roles: roles,
     active: isEnabled,
@@ -126,6 +127,13 @@ userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser
   if (!fullName || !fullName.trim()) {
     delete update.fullname;
     delete update.fullName;
+  }
+
+  // Payload không mang roles (nguồn gọi thiếu child table Has Role) ⇒ giữ roles hiện có,
+  // không ghi đè thành [] làm mất quyền (vd SIS BOD).
+  if (!roles.length) {
+    delete update.roles;
+    delete update.role;
   }
 
   const query = { email: email.toLowerCase() };
