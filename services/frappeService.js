@@ -578,6 +578,8 @@ class FrappeService {
     if (message && message.success === false) {
       const err = new Error(message.message || 'get_class_chat_scope_for_sync failed');
       err.response = response;
+      // Mã lỗi nghiệp vụ từ error_response (vd CLASS_NOT_FOUND — lớp đã xoá trong SIS).
+      err.frappeCode = message.code || '';
       throw err;
     }
     const payload = message?.data ?? message;

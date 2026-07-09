@@ -390,14 +390,44 @@ async function runFullMembershipSync({ classId, schoolYearId, dryRun = false } =
           Object.assign(line, stats);
         }
       } catch (e) {
-        line.guard = 'SCOPE_FETCH_ERROR';
-        line.error = e?.response?.status || e.message;
-        summary.scopeErrors += 1;
-        console.warn('[ChatMembershipSync] scope fetch failed — skip lớp', {
-          classId: target.classId,
-          schoolYearId: target.schoolYearId,
-          error: line.error,
-        });
+        if (e?.frappeCode === 'CLASS_NOT_FOUND') {
+          // Lớp đã bị xoá trong SIS nhưng nhóm chat còn trong Mongo (nhóm mồ côi):
+          // KHOÁ nhóm để giữ lịch sử xem lại, không cho hoạt động tiếp. Không revoke ai.
+          line.guard = 'CLASS_NOT_FOUND';
+          if (!dryRun && target._id) {
+            try {
+              await ChatConversation.updateOne(
+                { _id: target._id, status: { $ne: 'locked' } },
+                {
+                  $set: {
+                    status: 'locked',
+                    lockedReason: 'Lớp không còn tồn tại trong SIS — chỉ xem lại lịch sử',
+                  },
+                },
+              );
+              line.locked = true;
+            } catch (lockErr) {
+              console.warn('[ChatMembershipSync] lock orphan conversation failed', {
+                classId: target.classId,
+                error: lockErr.message,
+              });
+            }
+          }
+          console.warn('[ChatMembershipSync] lớp không còn trong SIS — khoá nhóm mồ côi', {
+            classId: target.classId,
+            schoolYearId: target.schoolYearId,
+            dryRun,
+          });
+        } else {
+          line.guard = 'SCOPE_FETCH_ERROR';
+          line.error = e?.frappeCode || e?.response?.status || e.message;
+          summary.scopeErrors += 1;
+          console.warn('[ChatMembershipSync] scope fetch failed — skip lớp', {
+            classId: target.classId,
+            schoolYearId: target.schoolYearId,
+            error: line.error,
+          });
+        }
       }
       summary.processed += 1;
       summary.added += line.added;
