@@ -43,11 +43,39 @@ function chatFileFilter(_req, file, cb) {
   cb(new Error('Loại tệp không được phép trong chat'));
 }
 
+// SIS-125: 25MB quá nhỏ cho video điện thoại ⇒ video bị multer chặn (LIMIT_FILE_SIZE) và app hiện
+// lỗi chung "Không thể gửi tin nhắn". Nâng lên 100MB làm lưới an toàn (client đã nén video trước khi gửi).
+const CHAT_UPLOAD_MAX_BYTES = 100 * 1024 * 1024; // 100MB
+const CHAT_UPLOAD_MAX_MB = Math.round(CHAT_UPLOAD_MAX_BYTES / (1024 * 1024));
+
 const chatUpload = multer({
   storage: chatStorage,
-  limits: { fileSize: 25 * 1024 * 1024 },
+  limits: { fileSize: CHAT_UPLOAD_MAX_BYTES },
   fileFilter: chatFileFilter,
 });
+
+// Bọc chatUpload.array để trả JSON lỗi rõ ràng. Lỗi multer (quá dung lượng / sai loại) phát sinh ở
+// middleware — KHÔNG đi vào try/catch của controller — nên nếu không bắt ở đây client chỉ nhận lỗi chung.
+function chatUploadArray(req, res, next) {
+  chatUpload.array('files', 10)(req, res, (err) => {
+    if (!err) return next();
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({
+          success: false,
+          code: 'FILE_TOO_LARGE',
+          message: `Tệp/video quá lớn (tối đa ${CHAT_UPLOAD_MAX_MB}MB)`,
+        });
+      }
+      return res.status(400).json({ success: false, code: err.code, message: 'Không thể tải tệp lên' });
+    }
+    return res.status(415).json({
+      success: false,
+      code: 'UNSUPPORTED_FILE_TYPE',
+      message: err.message || 'Loại tệp không được phép trong chat',
+    });
+  });
+}
 
 const router = express.Router();
 
@@ -64,7 +92,7 @@ router.post(
 router.post(
   '/conversations/teacher-guardian/attachments',
   authenticate,
-  chatUpload.array('files', 10),
+  chatUploadArray,
   chatController.uploadTeacherGuardianAttachments,
 );
 // Endpoint cũ (group GV + tất cả guardian của HS) đã được thay bằng chat 1-1 GV<->guardian.
@@ -87,7 +115,7 @@ router.get('/conversations/:conversationId/messages', authenticate, chatControll
 router.post(
   '/conversations/:conversationId/attachments',
   authenticate,
-  chatUpload.array('files', 10),
+  chatUploadArray,
   chatController.uploadAttachments,
 );
 router.post('/conversations/:conversationId/messages', authenticate, chatController.sendMessage);
