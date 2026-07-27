@@ -31,8 +31,19 @@ const memberSnapshotSchema = new mongoose.Schema({
   studentIds: [{ type: String, trim: true }],
   /** Tên HS gắn PH — phục vụ subtitle "Phụ huynh của …" (workspace GV). */
   studentNames: [{ type: String, trim: true }],
-  /** SĐT PH (CRM Guardian.phone_number) — subtitle "PH <tên HS> • <SĐT>" (workspace GV). */
+  /** SĐT thành viên (CRM Guardian.phone_number / User.mobile_no) — panel thành viên chat. */
   phoneNumber: { type: String, trim: true, default: '' },
+  /**
+   * Liên kết HS↔PH của riêng PH này. Quan hệ và "PH chính" là thuộc tính của LIÊN KẾT,
+   * không phải của người: cùng một PH có thể là PH chính của HS này và PH phụ của HS khác.
+   */
+  studentLinks: [{
+    studentId: { type: String, trim: true },
+    studentName: { type: String, trim: true },
+    /** CRM Family Relationship.relationship_type — free text đã là tiếng Việt (Mẹ / Bố / Mẹ kế…). */
+    relationship: { type: String, trim: true, default: '' },
+    keyPerson: { type: Boolean, default: false },
+  }],
   /** Môn dạy (GVBM) — app PH hiển thị "Giáo viên môn …". */
   subjects: [{
     id: { type: String, trim: true },

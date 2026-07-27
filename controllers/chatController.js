@@ -389,9 +389,33 @@ function studentNamesFromScopeGuardian(guardian) {
   return out;
 }
 
-/** SĐT PH từ scope Frappe (CRM Guardian.phone_number) — dùng cho subtitle thành viên. */
+/** SĐT thành viên từ scope Frappe (guardian.phone_number / teacher.phone_number). */
 function guardianPhoneFromScope(guardian) {
   return String(guardian?.phone_number || guardian?.phoneNumber || '').trim();
+}
+
+/**
+ * Liên kết HS↔PH từ scope Frappe: quan hệ + cờ PH chính gắn theo TỪNG học sinh.
+ * `onlyStudentId` (chat 1-1 theo HS) ⇒ chỉ giữ liên kết của HS đó.
+ */
+function studentLinksFromScopeGuardian(guardian, onlyStudentId) {
+  const students = guardian?.students || [];
+  const out = [];
+  const seen = new Set();
+  for (const st of students) {
+    const sid = String(getStudentId(st) || '').trim();
+    if (onlyStudentId && String(onlyStudentId) !== sid) continue;
+    const key = sid || String(getStudentName(st) || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      studentId: sid,
+      studentName: String(getStudentName(st) || '').trim(),
+      relationship: String(st?.relationship_type || st?.relationship || '').trim(),
+      keyPerson: Boolean(st?.key_person),
+    });
+  }
+  return out;
 }
 
 function studentConversationType(studentId) {
@@ -473,6 +497,7 @@ async function buildSubsetConversationPayload(scope, type, requestUser, {
       name: norm.name || teacher.name || teacher.email || teacher.teacherId,
       teacherId: norm.teacherId || normalizeId(teacher.teacherId || teacher.name),
       avatarUrl: norm.avatarUrl || teacher.avatarUrl || '',
+      phoneNumber: guardianPhoneFromScope(teacher),
       subjects: compactSubjectSnapshots(norm.subjects || teacher.subjects),
     };
   });
@@ -483,6 +508,7 @@ async function buildSubsetConversationPayload(scope, type, requestUser, {
     guardianId: guardian.guardian_id || guardian.name,
     studentIds: (guardian.students || []).map((student) => getStudentId(student)).filter(Boolean),
     studentNames: studentNamesFromScopeGuardian(guardian),
+    studentLinks: studentLinksFromScopeGuardian(guardian),
     phoneNumber: guardianPhoneFromScope(guardian),
     avatarUrl: guardian.guardian_image || '',
   }));
@@ -573,6 +599,7 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
       name: norm.name || teacher.name || teacher.email || teacher.teacherId,
       teacherId: norm.teacherId || normalizeId(teacher.teacherId || teacher.name),
       avatarUrl: norm.avatarUrl || teacher.avatarUrl || '',
+      phoneNumber: guardianPhoneFromScope(teacher),
       subjects: compactSubjectSnapshots(norm.subjects || teacher.subjects),
     };
   });
@@ -595,6 +622,7 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
       guardianId: guardian.guardian_id || guardian.name,
       studentIds: studentIdsResolved,
       studentNames: studentNamesResolved,
+      studentLinks: studentLinksFromScopeGuardian(guardian, targetStudentId),
       phoneNumber: guardianPhoneFromScope(guardian),
       avatarUrl: guardian.guardian_image || '',
     };
@@ -787,6 +815,9 @@ function mergeSnapshotFields(oldS, newS) {
       ...((newS.studentNames || []).map(String)),
     ])).map((s) => String(s).trim()).filter(Boolean),
     phoneNumber: String(newS.phoneNumber || oldS.phoneNumber || '').trim(),
+    // Liên kết HS↔PH thay thế nguyên khối theo scope mới (quan hệ/PH chính có thể đổi);
+    // scope không trả gì thì giữ bản cũ.
+    studentLinks: (newS.studentLinks || []).length ? newS.studentLinks : (oldS.studentLinks || []),
     subjects: mergedSubjects,
     removedAt: null,
   };
