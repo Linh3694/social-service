@@ -389,6 +389,11 @@ function studentNamesFromScopeGuardian(guardian) {
   return out;
 }
 
+/** SĐT PH từ scope Frappe (CRM Guardian.phone_number) — dùng cho subtitle thành viên. */
+function guardianPhoneFromScope(guardian) {
+  return String(guardian?.phone_number || guardian?.phoneNumber || '').trim();
+}
+
 function studentConversationType(studentId) {
   return `student_guardians:${studentId}`;
 }
@@ -478,6 +483,7 @@ async function buildSubsetConversationPayload(scope, type, requestUser, {
     guardianId: guardian.guardian_id || guardian.name,
     studentIds: (guardian.students || []).map((student) => getStudentId(student)).filter(Boolean),
     studentNames: studentNamesFromScopeGuardian(guardian),
+    phoneNumber: guardianPhoneFromScope(guardian),
     avatarUrl: guardian.guardian_image || '',
   }));
 
@@ -589,6 +595,7 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
       guardianId: guardian.guardian_id || guardian.name,
       studentIds: studentIdsResolved,
       studentNames: studentNamesResolved,
+      phoneNumber: guardianPhoneFromScope(guardian),
       avatarUrl: guardian.guardian_image || '',
     };
   });
@@ -779,6 +786,7 @@ function mergeSnapshotFields(oldS, newS) {
       ...((oldS.studentNames || []).map(String)),
       ...((newS.studentNames || []).map(String)),
     ])).map((s) => String(s).trim()).filter(Boolean),
+    phoneNumber: String(newS.phoneNumber || oldS.phoneNumber || '').trim(),
     subjects: mergedSubjects,
     removedAt: null,
   };

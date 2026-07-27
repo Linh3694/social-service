@@ -31,6 +31,8 @@ const memberSnapshotSchema = new mongoose.Schema({
   studentIds: [{ type: String, trim: true }],
   /** Tên HS gắn PH — phục vụ subtitle "Phụ huynh của …" (workspace GV). */
   studentNames: [{ type: String, trim: true }],
+  /** SĐT PH (CRM Guardian.phone_number) — subtitle "PH <tên HS> • <SĐT>" (workspace GV). */
+  phoneNumber: { type: String, trim: true, default: '' },
   /** Môn dạy (GVBM) — app PH hiển thị "Giáo viên môn …". */
   subjects: [{
     id: { type: String, trim: true },
