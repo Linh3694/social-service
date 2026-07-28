@@ -1487,7 +1487,13 @@ async function broadcastPollUpdate(conversation, message) {
   });
 }
 
-/** Gate chung cho mọi thao tác ghi trên poll. Trả { message, conversation } hoặc ném lỗi. */
+/**
+ * Gate chung cho mọi thao tác ghi trên poll. Trả { message, conversation } hoặc null (đã trả lỗi).
+ *
+ * CỐ Ý KHÔNG chặn theo `writeMode === 'teachers_only'`: bỏ phiếu là tương tác của thành viên,
+ * không phải gửi tin — khóa nhóm "chỉ GV được nhắn" vẫn cho PH bình chọn (giống toggleReaction).
+ * `status === 'locked'` (nhóm năm học cũ) thì vẫn chặn tất cả, kể cả GV.
+ */
 async function loadPollForWrite(req, res) {
   const { message, conversation } = await loadMessageWithAccess(req.params.messageId, req.user);
   if (rejectObserverWrite(conversation, req, res)) return null;
@@ -1503,7 +1509,6 @@ async function loadPollForWrite(req, res) {
     res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
     return null;
   }
-  if (rejectGuardianWriteWhenTeachersOnly(conversation, req, res)) return null;
   return { message, conversation };
 }
 
@@ -2297,7 +2302,8 @@ exports.toggleReaction = async (req, res) => {
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
     }
-    if (rejectGuardianWriteWhenTeachersOnly(conversation, req, res)) return;
+    // CỐ Ý không chặn theo `writeMode === 'teachers_only'`: thả cảm xúc là tương tác của thành
+    // viên, không phải gửi tin — khóa nhóm "chỉ GV được nhắn" vẫn cho PH react (giống bình chọn).
 
     const uid = String(req.user._id);
     const others = (message.reactions || []).filter((r) => String(r.user) !== uid);
