@@ -70,6 +70,17 @@ const pollSchema = new mongoose.Schema({
   closesAt: { type: Date, default: null },
   closedAt: { type: Date, default: null },
   closedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  /** Số phút nhắc trước hạn (vd 10). null = không nhắc. Chỉ đặt được khi có `closesAt`. */
+  remindBeforeMinutes: { type: Number, default: null },
+  /**
+   * Mốc bắn nhắc = `closesAt - remindBeforeMinutes` phút, tính sẵn lúc tạo để scheduler quét
+   * bằng range query có index (thay vì $expr không dùng được index).
+   */
+  remindAt: { type: Date, default: null },
+  /** Đã bắn nhắc chưa — scheduler set bằng update nguyên tử để không bắn trùng. */
+  remindedAt: { type: Date, default: null },
+  /** Đã bắn thông báo kết thúc chưa (kết thúc sớm hoặc hết hạn). */
+  closeNotifiedAt: { type: Date, default: null },
   votes: { type: [pollVoteSchema], default: [] },
   /** Tăng mỗi lần bỏ phiếu/kết thúc — client dùng để bỏ broadcast đến trễ. */
   rev: { type: Number, default: 0 },
@@ -108,5 +119,17 @@ chatMessageSchema.index({ conversation: 1, isDeleted: 1, createdAt: -1 });
 chatMessageSchema.index({ conversation: 1, 'readBy.user': 1 });
 /** Tìm reaction theo user trong một tin (toggle nhanh). */
 chatMessageSchema.index({ 'reactions.user': 1 });
+/**
+ * Hàng đợi job của bình chọn — partial index nên CHỈ chứa tin poll có hạn, không đụng tới
+ * hàng chục nghìn tin thường. Scheduler quét mỗi phút bằng range query trên hai index này.
+ */
+chatMessageSchema.index(
+  { 'poll.remindAt': 1 },
+  { partialFilterExpression: { 'poll.remindAt': { $type: 'date' } } },
+);
+chatMessageSchema.index(
+  { 'poll.closesAt': 1 },
+  { partialFilterExpression: { 'poll.closesAt': { $type: 'date' } } },
+);
 
 module.exports = mongoose.model('ChatMessage', chatMessageSchema);

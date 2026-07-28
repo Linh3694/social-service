@@ -158,7 +158,13 @@ app.use('/api/social/user', userRoutes);
 const PORT = process.env.PORT || 5010;
 server.listen(PORT, () => console.log(`🚀 [Social Service] Running on port ${PORT}`));
 
-database.connect().catch((e) => { console.error('DB connect error:', e.message); process.exit(1); });
+const { startPollScheduler } = require('./services/pollScheduler');
+
+database.connect()
+  // Lịch bình chọn (nhắc trước hạn + báo hết hạn) chạy in-process vì cần global.io để
+  // broadcast socket — PM2 cron ở ecosystem-cron.config.js không có io.
+  .then(() => startPollScheduler())
+  .catch((e) => { console.error('DB connect error:', e.message); process.exit(1); });
 
 module.exports = { app, io, server };
 

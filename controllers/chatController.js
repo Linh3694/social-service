@@ -1369,6 +1369,8 @@ function serializeReactionsForApi(reactions) {
 const POLL_MIN_OPTIONS = 2;
 const POLL_MAX_OPTIONS = 10;
 const POLL_MAX_DEADLINE_DAYS = 90;
+/** Trần cho "nhắc trước N phút" — 7 ngày, đủ rộng mà không cho đặt vô lý. */
+const POLL_MAX_REMIND_MINUTES = 7 * 24 * 60;
 /** Tiền tố giữ trong `content` để client cũ / preview / push vẫn đọc được tin bình chọn. */
 const POLL_CONTENT_PREFIX = '[Bình chọn]';
 
@@ -1468,6 +1470,46 @@ function pollTeacherOnlyRooms(conversation) {
   return [...rooms];
 }
 
+/** Email thành viên active CHƯA bỏ phiếu — dùng cho nhắc trước hạn. */
+function pollPendingVoterEmails(conversation, poll) {
+  const voted = new Set((poll?.votes || []).map((v) => String(v.user)));
+  const seen = new Set();
+  const emails = [];
+  for (const p of conversation?.participants || []) {
+    if (!isActiveParticipant(p)) continue;
+    if (p.user && voted.has(String(p.user))) continue;
+    const raw = p.email;
+    if (!raw) continue;
+    const n = normalizeEmail(raw);
+    if (!n || seen.has(n)) continue;
+    seen.add(n);
+    emails.push(String(raw).trim());
+  }
+  return emails;
+}
+
+/**
+ * Gửi notify vòng đời bình chọn (nhắc trước hạn / đã kết thúc) qua đúng đường của new_message
+ * ⇒ được cả in-app (ERP Notification + realtime) lẫn push.
+ * Không có "người gửi": tiêu đề/nội dung dựng từ câu hỏi ở phía consumer.
+ */
+function firePollLifecycleNotify(eventType, conversation, message, { recipientEmails }) {
+  const emails = (recipientEmails || []).filter(Boolean);
+  if (!emails.length) return;
+  fireChatToFrappe(eventType, {
+    conversationId: String(conversation._id),
+    conversationType: conversation.type,
+    messageId: String(message._id),
+    senderEmail: '',
+    senderName: '',
+    recipientEmails: emails,
+    messagePreview: String(message.poll?.question || '').slice(0, 100),
+    hasAttachment: false,
+    messageKind: 'poll',
+    timestamp: new Date().toISOString(),
+  });
+}
+
 /** Phát cập nhật poll: aggregate cho tất cả, danh tính cho riêng GV khi poll ẩn danh. */
 async function broadcastPollUpdate(conversation, message) {
   const poll = message.poll;
@@ -1542,6 +1584,20 @@ function buildPollFromRequestBody(body) {
     throw err;
   }
 
+  const remindRaw = body?.remindBeforeMinutes;
+  const remindBeforeMinutes = remindRaw == null || remindRaw === '' ? null : Number(remindRaw);
+  if (remindBeforeMinutes != null
+    && (!Number.isFinite(remindBeforeMinutes) || remindBeforeMinutes <= 0 || remindBeforeMinutes > POLL_MAX_REMIND_MINUTES)) {
+    const err = new Error(`Thời điểm nhắc phải trong khoảng 1–${POLL_MAX_REMIND_MINUTES} phút trước hạn`);
+    err.statusCode = 400;
+    throw err;
+  }
+  if (remindBeforeMinutes != null && !body?.closesAt) {
+    const err = new Error('Muốn nhắc trước thì phải đặt thời hạn cho bình chọn');
+    err.statusCode = 400;
+    throw err;
+  }
+
   let closesAt = null;
   if (body?.closesAt) {
     const at = new Date(body.closesAt);
@@ -1564,6 +1620,14 @@ function buildPollFromRequestBody(body) {
     closesAt = at;
   }
 
+  // Mốc nhắc tính sẵn để scheduler quét bằng index. Nếu mốc đã ở quá khứ (hạn quá gần) thì
+  // bỏ nhắc luôn thay vì bắn ngay lập tức — bắn cùng lúc tạo poll chỉ gây nhiễu.
+  let remindAt = null;
+  if (remindBeforeMinutes != null && closesAt) {
+    const at = new Date(closesAt.getTime() - remindBeforeMinutes * 60 * 1000);
+    if (at.getTime() > Date.now()) remindAt = at;
+  }
+
   return {
     question,
     options: texts.map((text, i) => ({ id: `o${i + 1}`, text })),
@@ -1572,6 +1636,10 @@ function buildPollFromRequestBody(body) {
     closesAt,
     closedAt: null,
     closedBy: null,
+    remindBeforeMinutes: remindAt ? remindBeforeMinutes : null,
+    remindAt,
+    remindedAt: null,
+    closeNotifiedAt: null,
     votes: [],
     rev: 0,
   };
@@ -2498,10 +2566,16 @@ exports.closePoll = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Bình chọn đã kết thúc' });
     }
 
+    const now = new Date();
     const updated = await ChatMessage.findOneAndUpdate(
       { _id: message._id },
       {
-        $set: { 'poll.closedAt': new Date(), 'poll.closedBy': req.user._id },
+        // closeNotifiedAt set ngay tại đây để scheduler không bắn thêm lần nữa khi tới hạn.
+        $set: {
+          'poll.closedAt': now,
+          'poll.closedBy': req.user._id,
+          'poll.closeNotifiedAt': now,
+        },
         $inc: { 'poll.rev': 1 },
       },
       { new: true },
@@ -2511,6 +2585,10 @@ exports.closePoll = async (req, res) => {
     }
 
     await broadcastPollUpdate(conversation, updated);
+    firePollLifecycleNotify('poll_closed', conversation, updated, {
+      // Người vừa bấm kết thúc thì khỏi tự nhận thông báo.
+      recipientEmails: chatRecipientEmails(conversation, req.user.email),
+    });
 
     res.json({
       success: true,
@@ -3077,6 +3155,11 @@ exports.portalGuardianIdFromEmail = portalGuardianIdFromEmail;
 // Bình chọn — export để kiểm thử quy tắc ẩn danh (room GV không được lẫn PH) và serialize theo người xem.
 exports.pollTeacherOnlyRooms = pollTeacherOnlyRooms;
 exports.pollPayloadForViewer = pollPayloadForViewer;
+// Dùng bởi services/pollScheduler.js (nhắc trước hạn + báo hết hạn).
+exports.pollPendingVoterEmails = pollPendingVoterEmails;
+exports.firePollLifecycleNotify = firePollLifecycleNotify;
+exports.broadcastPollUpdate = broadcastPollUpdate;
+exports.chatRecipientEmails = chatRecipientEmails;
 exports.canSeePollVoters = canSeePollVoters;
 exports.pollEffectiveClosedAt = pollEffectiveClosedAt;
 exports.buildPollFromRequestBody = buildPollFromRequestBody;

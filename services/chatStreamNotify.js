@@ -75,6 +75,42 @@ function buildChatParts(eventType, eventData) {
         },
       };
     }
+    case 'poll_reminder': {
+      const question = String(d.messagePreview || '').trim().slice(0, 100);
+      return {
+        recipients: emails,
+        title: 'Bình chọn',
+        body: question
+          ? `Sắp hết hạn: "${question}" — bạn chưa bình chọn`
+          : 'Một bình chọn sắp hết hạn — bạn chưa bình chọn',
+        data: {
+          type: 'chat_poll_reminder',
+          action: 'open_chat',
+          conversationId,
+          conversationType,
+          messageId,
+          messageKind: 'poll',
+          timestamp: d.timestamp,
+        },
+      };
+    }
+    case 'poll_closed': {
+      const question = String(d.messagePreview || '').trim().slice(0, 100);
+      return {
+        recipients: emails,
+        title: 'Bình chọn',
+        body: question ? `Đã kết thúc: "${question}"` : 'Một bình chọn đã kết thúc',
+        data: {
+          type: 'chat_poll_closed',
+          action: 'open_chat',
+          conversationId,
+          conversationType,
+          messageId,
+          messageKind: 'poll',
+          timestamp: d.timestamp,
+        },
+      };
+    }
     case 'message_recalled': {
       const body = `${senderName} đã thu hồi một tin nhắn`;
       return {
