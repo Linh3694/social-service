@@ -19,8 +19,12 @@ const {
 
 const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
 
-/** Chuẩn hoá tin trả API/socket: không populate User — client dùng senderSnapshot (+ _id sender). */
-function messagePayloadForApi(doc) {
+/**
+ * Chuẩn hoá tin trả API/socket: không populate User — client dùng senderSnapshot (+ _id sender).
+ * `viewer` = null nghĩa là payload BROADCAST (một payload cho mọi người xem) ⇒ poll bị lược
+ * `myVote` và chỉ kèm `voters` khi bình chọn không ẩn danh. Xem pollPayloadForViewer.
+ */
+function messagePayloadForApi(doc, viewer) {
   const m = doc?.toObject ? doc.toObject() : { ...doc };
   const uid = m.sender;
   const snap = m.senderSnapshot || {};
@@ -31,6 +35,8 @@ function messagePayloadForApi(doc) {
     email: snap.email || '',
     avatarUrl: snap.avatarUrl || '',
   };
+  if (m.poll) m.poll = pollPayloadForViewer(m.poll, viewer);
+  else delete m.poll;
   return m;
 }
 
@@ -117,15 +123,19 @@ function normalizeId(value) {
   return value ? String(value).trim() : '';
 }
 
+/** Đuôi email tài khoản PHHS đăng nhập parent portal. */
+const PARENT_PORTAL_EMAIL_SUFFIX = '@parent.wellspring.edu.vn';
+
 function parentPortalEmailFromGuardianId(guardianId) {
   const normalized = normalizeId(guardianId).toLowerCase();
-  return normalized ? `${normalized}@parent.wellspring.edu.vn` : '';
+  return normalized ? `${normalized}${PARENT_PORTAL_EMAIL_SUFFIX}` : '';
 }
 
 function portalGuardianIdFromEmail(email) {
   const normalized = normalizeEmail(email);
-  const suffix = '@parent.wellspring.edu.vn';
-  return normalized.endsWith(suffix) ? normalized.slice(0, -suffix.length) : '';
+  return normalized.endsWith(PARENT_PORTAL_EMAIL_SUFFIX)
+    ? normalized.slice(0, -PARENT_PORTAL_EMAIL_SUFFIX.length)
+    : '';
 }
 
 /**
@@ -1120,6 +1130,30 @@ const TEACHERS_ONLY_MESSAGE = 'Nhóm đang khóa — chỉ giáo viên được 
 const CONVERSATION_WRITE_MODES = new Set(['all', 'teachers_only']);
 
 /**
+ * Năm học nhỏ nhất còn hiện trong danh sách chat, tính theo NĂM BẮT ĐẦU
+ * (2026 = năm học "2026-2027"). Hội thoại năm cũ hơn bị ẩn khỏi list —
+ * dữ liệu vẫn nguyên trong Mongo, chỉ không liệt kê nữa.
+ * Đổi mốc không cần sửa code: đặt env `CHAT_MIN_SCHOOL_YEAR`.
+ */
+const CHAT_MIN_SCHOOL_YEAR = Number(process.env.CHAT_MIN_SCHOOL_YEAR || 2026);
+
+/** Năm bắt đầu từ tên năm học ("2026-2027", "Năm học 2026-2027") — null nếu không đọc được. */
+function schoolYearStartFromName(name) {
+  const m = String(name || '').match(/(20\d{2})/);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Hội thoại có thuộc năm học còn hiển thị không.
+ * Không đọc được tên năm ⇒ GIỮ LẠI (thà hiện thừa còn hơn giấu nhầm chat đang dùng).
+ */
+function isVisibleSchoolYear(conversation) {
+  const start = schoolYearStartFromName(conversation?.schoolYearName);
+  if (start === null) return true;
+  return start >= CHAT_MIN_SCHOOL_YEAR;
+}
+
+/**
  * Nhóm đang ở chế độ "chỉ GV được nhắn" VÀ người dùng là PH ⇒ chặn mọi thao tác GHI.
  * Khác `status === 'locked'` (khóa cứng cả GV cho lớp/năm học cũ): GV vẫn ghi bình thường.
  */
@@ -1330,6 +1364,214 @@ function serializeReactionsForApi(reactions) {
   }));
 }
 
+// ===== Bình chọn (poll) =====
+
+const POLL_MIN_OPTIONS = 2;
+const POLL_MAX_OPTIONS = 10;
+const POLL_MAX_DEADLINE_DAYS = 90;
+/** Tiền tố giữ trong `content` để client cũ / preview / push vẫn đọc được tin bình chọn. */
+const POLL_CONTENT_PREFIX = '[Bình chọn]';
+
+/** Thời điểm đóng thực tế: đóng tay, hoặc đã quá hạn (tính lười — không cron). */
+function pollEffectiveClosedAt(poll) {
+  if (!poll) return null;
+  if (poll.closedAt) return new Date(poll.closedAt);
+  if (poll.closesAt && Date.now() >= new Date(poll.closesAt).getTime()) return new Date(poll.closesAt);
+  return null;
+}
+
+/** Ẩn danh chỉ ẩn với PHỤ HUYNH — giáo viên (và BOD, vốn userRole='teacher') luôn thấy danh tính. */
+function canSeePollVoters(poll, viewer) {
+  if (!poll?.anonymous) return true;
+  return userRole(viewer) === 'teacher';
+}
+
+function serializePollVoter(v) {
+  return {
+    userId: v.user ? String(v.user) : '',
+    name: v.name || '',
+    email: v.email || '',
+    avatarUrl: v.avatarUrl || '',
+    role: v.role || 'guardian',
+    votedAt: (v.votedAt ? new Date(v.votedAt) : new Date()).toISOString(),
+  };
+}
+
+/** Số NGƯỜI đã bỏ phiếu (không phải số phiếu) — mẫu số cho % khi cho chọn nhiều. */
+function pollDistinctVoterCount(poll) {
+  return new Set((poll?.votes || []).map((v) => String(v.user))).size;
+}
+
+/** Danh sách người bầu theo từng phương án — chỉ dùng cho payload được phép lộ danh tính. */
+function pollVotersByOption(poll) {
+  return (poll?.options || []).map((o) => ({
+    id: o.id,
+    voters: (poll.votes || []).filter((v) => v.optionId === o.id).map(serializePollVoter),
+  }));
+}
+
+/**
+ * Serialize poll theo người xem.
+ * `viewer = null` ⇒ payload BROADCAST: KHÔNG kèm `myVote` (một payload cho mọi người xem) và
+ * chỉ kèm `voters` khi bình chọn không ẩn danh.
+ */
+function pollPayloadForViewer(poll, viewer) {
+  const plain = poll?.toObject ? poll.toObject() : poll;
+  if (!plain) return null;
+  const votes = plain.votes || [];
+  const showVoters = viewer ? canSeePollVoters(plain, viewer) : !plain.anonymous;
+  const closedAt = plain.closedAt ? new Date(plain.closedAt) : null;
+
+  const options = (plain.options || []).map((o) => {
+    const optionVotes = votes.filter((v) => v.optionId === o.id);
+    const row = { id: o.id, text: o.text, voteCount: optionVotes.length };
+    if (showVoters) row.voters = optionVotes.map(serializePollVoter);
+    return row;
+  });
+
+  const payload = {
+    question: plain.question,
+    options,
+    allowMultiple: Boolean(plain.allowMultiple),
+    anonymous: Boolean(plain.anonymous),
+    closesAt: plain.closesAt ? new Date(plain.closesAt).toISOString() : null,
+    closedAt: closedAt ? closedAt.toISOString() : null,
+    isClosed: Boolean(pollEffectiveClosedAt(plain)),
+    totalVoters: pollDistinctVoterCount(plain),
+    canSeeVoters: showVoters,
+    rev: plain.rev || 0,
+  };
+
+  if (viewer) {
+    const uid = String(viewer._id);
+    payload.myVote = votes.filter((v) => String(v.user) === uid).map((v) => v.optionId);
+  }
+  return payload;
+}
+
+/**
+ * Room của GIÁO VIÊN trong hội thoại — dùng cho payload lộ danh tính của poll ẩn danh.
+ * TUYỆT ĐỐI không gồm `chat_<id>` (PH và BOD cùng ở room đó) và cố tình KHÔNG dùng
+ * participantRooms() vì hàm đó tự thêm room `guardian_*`/email portal.
+ */
+function pollTeacherOnlyRooms(conversation) {
+  const rooms = new Set();
+  for (const p of conversation?.participants || []) {
+    if (!isActiveParticipant(p)) continue;
+    if (p.role !== 'teacher') continue;
+    if (p.guardianId) continue;
+    const email = normalizeEmail(p.email);
+    if (email.endsWith(PARENT_PORTAL_EMAIL_SUFFIX)) continue;
+    if (p.user) rooms.add(`user_${String(p.user)}`);
+    if (email) rooms.add(`email_${email}`);
+  }
+  return [...rooms];
+}
+
+/** Phát cập nhật poll: aggregate cho tất cả, danh tính cho riêng GV khi poll ẩn danh. */
+async function broadcastPollUpdate(conversation, message) {
+  const poll = message.poll;
+  if (!poll) return;
+  await emitToConversation(conversation, 'chat:message:poll', {
+    conversationId: String(conversation._id),
+    messageId: String(message._id),
+    poll: pollPayloadForViewer(poll, null),
+  });
+  if (!poll.anonymous || !global.io) return;
+  ioEmitToEachRoom(global.io, pollTeacherOnlyRooms(conversation), 'chat:message:poll:voters', {
+    conversationId: String(conversation._id),
+    messageId: String(message._id),
+    rev: poll.rev || 0,
+    totalVoters: pollDistinctVoterCount(poll),
+    options: pollVotersByOption(poll),
+  });
+}
+
+/** Gate chung cho mọi thao tác ghi trên poll. Trả { message, conversation } hoặc ném lỗi. */
+async function loadPollForWrite(req, res) {
+  const { message, conversation } = await loadMessageWithAccess(req.params.messageId, req.user);
+  if (rejectObserverWrite(conversation, req, res)) return null;
+  if (!message.poll) {
+    res.status(400).json({ success: false, message: 'Tin nhắn không phải bình chọn' });
+    return null;
+  }
+  if (message.recalledAt) {
+    res.status(400).json({ success: false, message: 'Tin nhắn đã thu hồi' });
+    return null;
+  }
+  if (conversation.status === 'locked') {
+    res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
+    return null;
+  }
+  if (rejectGuardianWriteWhenTeachersOnly(conversation, req, res)) return null;
+  return { message, conversation };
+}
+
+/** Chuẩn hoá + kiểm tra body tạo bình chọn. Ném Error kèm statusCode khi sai. */
+function buildPollFromRequestBody(body) {
+  const question = String(body?.question || '').trim();
+  if (!question) {
+    const err = new Error('Câu hỏi bình chọn là bắt buộc');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (question.length > 500) {
+    const err = new Error('Câu hỏi tối đa 500 ký tự');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const seen = new Set();
+  const texts = [];
+  for (const raw of Array.isArray(body?.options) ? body.options : []) {
+    const text = String(raw || '').trim().slice(0, 200);
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    texts.push(text);
+  }
+  if (texts.length < POLL_MIN_OPTIONS || texts.length > POLL_MAX_OPTIONS) {
+    const err = new Error(`Bình chọn cần ${POLL_MIN_OPTIONS}–${POLL_MAX_OPTIONS} phương án khác nhau`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  let closesAt = null;
+  if (body?.closesAt) {
+    const at = new Date(body.closesAt);
+    if (Number.isNaN(at.getTime())) {
+      const err = new Error('Thời hạn không hợp lệ');
+      err.statusCode = 400;
+      throw err;
+    }
+    const maxAt = Date.now() + POLL_MAX_DEADLINE_DAYS * 24 * 60 * 60 * 1000;
+    if (at.getTime() <= Date.now()) {
+      const err = new Error('Thời hạn phải ở tương lai');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (at.getTime() > maxAt) {
+      const err = new Error(`Thời hạn tối đa ${POLL_MAX_DEADLINE_DAYS} ngày`);
+      err.statusCode = 400;
+      throw err;
+    }
+    closesAt = at;
+  }
+
+  return {
+    question,
+    options: texts.map((text, i) => ({ id: `o${i + 1}`, text })),
+    allowMultiple: Boolean(body?.allowMultiple),
+    anonymous: Boolean(body?.anonymous),
+    closesAt,
+    closedAt: null,
+    closedBy: null,
+    votes: [],
+    rev: 0,
+  };
+}
+
 async function loadMessageWithAccess(messageId, user) {
   const id = String(messageId || '').trim();
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -1470,6 +1712,7 @@ async function appendMessageToConversation(conversation, req, {
   content,
   attachments = [],
   replyToId,
+  poll = null,
 }) {
   if (conversation.status === 'locked') {
     const err = new Error('Nhóm chat năm học cũ chỉ cho xem lại lịch sử');
@@ -1519,6 +1762,7 @@ async function appendMessageToConversation(conversation, req, {
     content: c || '',
     attachments: att,
     replyTo,
+    poll: poll || null,
     readBy: [{ user: req.user._id, readAt: new Date() }],
   });
 
@@ -1550,10 +1794,11 @@ async function appendMessageToConversation(conversation, req, {
   cacheDel(messageCountRedisKey(conversation._id)).catch(() => {});
   invalidateConversationParticipantsListCaches(conversation).catch(() => {});
 
-  const payloadMsg = messagePayloadForApi(message);
+  // Hai payload khác nhau: broadcast KHÔNG được mang gì gắn với người xem (myVote/voters ẩn danh).
+  const payloadMsg = messagePayloadForApi(message, req.user);
   await emitToConversation(conversation, 'chat:message', {
     conversation: serializeConversation(conversation, req.user),
-    message: payloadMsg,
+    message: messagePayloadForApi(message, null),
   });
 
   fireChatToFrappe('new_message', {
@@ -1566,6 +1811,7 @@ async function appendMessageToConversation(conversation, req, {
     recipientEmails: chatRecipientEmails(conversation, req.user.email),
     messagePreview: (lastPreview || c || '').slice(0, 100),
     hasAttachment: att.length > 0,
+    messageKind: poll ? 'poll' : 'text',
     timestamp: new Date().toISOString(),
   });
 
@@ -1604,6 +1850,7 @@ exports.listConversations = async (req, res) => {
         .sort({ 'lastMessage.createdAt': -1, updatedAt: -1 })
         .limit(200);
       const visibleForBod = rows.filter((c) => {
+        if (!isVisibleSchoolYear(c)) return false;
         // 1-1 chưa có tin thì bỏ (như list thường) — BOD chỉ cần chat có nội dung.
         if (String(c.type || '').startsWith('teacher_guardian:')) {
           return Boolean(c.lastMessage && c.lastMessage.messageId);
@@ -1673,6 +1920,8 @@ exports.listConversations = async (req, res) => {
     const filtered = uniqueConversations
       .filter((conversation) => canAccessConversation(conversation, req.user))
       .filter((c) => {
+        // Ẩn hội thoại của năm học cũ (trước CHAT_MIN_SCHOOL_YEAR).
+        if (!isVisibleSchoolYear(c)) return false;
         const t = String(c.type || '');
         // Ẩn legacy: nhóm tự sinh GVCN-PH cũ (`student_guardians:*`)
         // và nhóm GV+toàn bộ guardian theo HS (`teacher_student_guardians:*`) — đã thay bằng chat 1-1.
@@ -1886,7 +2135,7 @@ exports.getMessages = async (req, res) => {
     res.json({
       success: true,
       data: {
-        messages: messages.reverse().map((m) => messagePayloadForApi(m)),
+        messages: messages.reverse().map((m) => messagePayloadForApi(m, req.user)),
         pagination: {
           currentPage: page,
           totalPages: Math.ceil(total / limit),
@@ -2114,6 +2363,193 @@ exports.toggleReaction = async (req, res) => {
   } catch (error) {
     console.error('[Chat] toggleReaction error:', error);
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể cập nhật reaction' });
+  }
+};
+
+/**
+ * POST /conversations/:conversationId/polls — tạo bình chọn.
+ * Chỉ GVCN/Phó GVCN, chỉ nhóm lớp. Đi qua appendMessageToConversation để thừa hưởng
+ * unread / lastMessage / cache / socket chat:message / push.
+ */
+exports.createPoll = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (rejectObserverWrite(conversation, req, res)) return;
+    if (conversation.type !== 'class_general') {
+      return res.status(400).json({ success: false, message: 'Chỉ tạo bình chọn trong nhóm lớp' });
+    }
+    await requireHomeroomCaller(conversation, req);
+
+    const poll = buildPollFromRequestBody(req.body);
+    const data = await appendMessageToConversation(conversation, req, {
+      // Giữ nguyên tiền tố trong `content`: mọi chỗ preview (lastMessage, reply quote, ghim,
+      // body push) và client bản cũ chưa biết `poll` đều dựa vào chuỗi này. Đừng đổi thành ''.
+      content: `${POLL_CONTENT_PREFIX} ${poll.question}`,
+      attachments: [],
+      poll,
+    });
+
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    console.error('[Chat] createPoll error:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code,
+      message: error.message || 'Không thể tạo bình chọn',
+    });
+  }
+};
+
+/**
+ * POST /messages/:messageId/poll/vote — bỏ/đổi/rút phiếu. `optionIds: []` = rút phiếu.
+ * KHÔNG đụng unreadCounts / lastMessage / notify (tránh spam push mỗi lần bấm).
+ */
+exports.votePoll = async (req, res) => {
+  try {
+    const loaded = await loadPollForWrite(req, res);
+    if (!loaded) return;
+    const { message, conversation } = loaded;
+
+    if (pollEffectiveClosedAt(message.poll)) {
+      return res.status(423).json({
+        success: false,
+        code: 'POLL_CLOSED',
+        message: 'Bình chọn đã kết thúc',
+        data: { messageId: String(message._id), poll: pollPayloadForViewer(message.poll, req.user) },
+      });
+    }
+
+    if (!Array.isArray(req.body?.optionIds)) {
+      return res.status(400).json({ success: false, message: 'optionIds là bắt buộc' });
+    }
+    const validIds = new Set((message.poll.options || []).map((o) => o.id));
+    const requested = [];
+    for (const raw of req.body.optionIds) {
+      const id = String(raw || '').trim();
+      if (!validIds.has(id) || requested.includes(id)) continue;
+      requested.push(id);
+    }
+    if (requested.length > 1 && !message.poll.allowMultiple) {
+      return res.status(400).json({ success: false, message: 'Bình chọn này chỉ được chọn một phương án' });
+    }
+
+    const votedAt = new Date();
+    const newVotes = requested.map((optionId) => ({
+      optionId,
+      user: req.user._id,
+      email: normalizeEmail(req.user.email),
+      name: userDisplayName(req.user),
+      role: userRole(req.user),
+      avatarUrl: userAvatar(req.user),
+      votedAt,
+    }));
+
+    // Hai bước vì Mongo cấm $pull và $push xung đột cùng path trong một update.
+    // Chỉ $inc một lần ở bước sau ⇒ rev tăng đúng 1 cho mỗi lượt bỏ phiếu.
+    await ChatMessage.updateOne(
+      { _id: message._id },
+      { $pull: { 'poll.votes': { user: req.user._id } } },
+    );
+    const updated = await ChatMessage.findOneAndUpdate(
+      { _id: message._id },
+      {
+        ...(newVotes.length ? { $push: { 'poll.votes': { $each: newVotes } } } : {}),
+        $inc: { 'poll.rev': 1 },
+      },
+      { new: true },
+    );
+    if (!updated?.poll) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bình chọn' });
+    }
+
+    await broadcastPollUpdate(conversation, updated);
+
+    res.json({
+      success: true,
+      data: { messageId: String(updated._id), poll: pollPayloadForViewer(updated.poll, req.user) },
+    });
+  } catch (error) {
+    console.error('[Chat] votePoll error:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code,
+      message: error.message || 'Không thể bỏ phiếu',
+    });
+  }
+};
+
+/** POST /messages/:messageId/poll/close — kết thúc sớm; người tạo hoặc GVCN/Phó. */
+exports.closePoll = async (req, res) => {
+  try {
+    const loaded = await loadPollForWrite(req, res);
+    if (!loaded) return;
+    const { message, conversation } = loaded;
+
+    if (String(message.sender) !== String(req.user._id)) {
+      await requireHomeroomCaller(conversation, req);
+    }
+    if (pollEffectiveClosedAt(message.poll)) {
+      return res.status(400).json({ success: false, message: 'Bình chọn đã kết thúc' });
+    }
+
+    const updated = await ChatMessage.findOneAndUpdate(
+      { _id: message._id },
+      {
+        $set: { 'poll.closedAt': new Date(), 'poll.closedBy': req.user._id },
+        $inc: { 'poll.rev': 1 },
+      },
+      { new: true },
+    );
+    if (!updated?.poll) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bình chọn' });
+    }
+
+    await broadcastPollUpdate(conversation, updated);
+
+    res.json({
+      success: true,
+      data: { messageId: String(updated._id), poll: pollPayloadForViewer(updated.poll, req.user) },
+    });
+  } catch (error) {
+    console.error('[Chat] closePoll error:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code,
+      message: error.message || 'Không thể kết thúc bình chọn',
+    });
+  }
+};
+
+/** GET /messages/:messageId/poll/voters — danh sách người bầu; 403 với PH khi bình chọn ẩn danh. */
+exports.getPollVoters = async (req, res) => {
+  try {
+    const { message } = await loadMessageWithAccess(req.params.messageId, req.user);
+    if (!message.poll) {
+      return res.status(400).json({ success: false, message: 'Tin nhắn không phải bình chọn' });
+    }
+    if (!canSeePollVoters(message.poll, req.user)) {
+      return res.status(403).json({
+        success: false,
+        code: 'POLL_ANONYMOUS',
+        message: 'Bình chọn ẩn danh — không xem được danh sách người bầu',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        messageId: String(message._id),
+        rev: message.poll.rev || 0,
+        totalVoters: pollDistinctVoterCount(message.poll),
+        options: pollVotersByOption(message.poll),
+      },
+    });
+  } catch (error) {
+    console.error('[Chat] getPollVoters error:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Không thể tải danh sách người bình chọn',
+    });
   }
 };
 
@@ -2619,6 +3055,7 @@ exports.isBodUser = isBodUser;
 exports.isActiveParticipant = isActiveParticipant;
 // Dùng bởi utils/chatSocket.js (chặn typing của PH khi nhóm ở chế độ "chỉ GV được nhắn").
 exports.isTeachersOnlyBlocked = isTeachersOnlyBlocked;
+exports.isVisibleSchoolYear = isVisibleSchoolYear;
 // Dùng bởi services/chatMembershipSync.js (flow sync/revoke membership theo roster).
 exports.collectScopeTeachers = collectScopeTeachers;
 exports.buildConversationPayload = buildConversationPayload;
@@ -2631,3 +3068,9 @@ exports.mergeSnapshotFields = mergeSnapshotFields;
 exports.unionByKey = unionByKey;
 exports.parentPortalEmailFromGuardianId = parentPortalEmailFromGuardianId;
 exports.portalGuardianIdFromEmail = portalGuardianIdFromEmail;
+// Bình chọn — export để kiểm thử quy tắc ẩn danh (room GV không được lẫn PH) và serialize theo người xem.
+exports.pollTeacherOnlyRooms = pollTeacherOnlyRooms;
+exports.pollPayloadForViewer = pollPayloadForViewer;
+exports.canSeePollVoters = canSeePollVoters;
+exports.pollEffectiveClosedAt = pollEffectiveClosedAt;
+exports.buildPollFromRequestBody = buildPollFromRequestBody;

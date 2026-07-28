@@ -38,6 +38,43 @@ const attachmentSchema = new mongoose.Schema({
   height: { type: Number },
 }, { _id: false });
 
+/** Một phương án của bình chọn. `id` do server sinh ('o1','o2'…) và ổn định suốt đời poll. */
+const pollOptionSchema = new mongoose.Schema({
+  id: { type: String, required: true },
+  text: { type: String, required: true, trim: true, maxlength: 200 },
+}, { _id: false });
+
+/** Một lá phiếu — mỗi (user, optionId) một bản ghi; chọn nhiều ⇒ nhiều bản ghi cùng user. */
+const pollVoteSchema = new mongoose.Schema({
+  optionId: { type: String, required: true },
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  email: { type: String, trim: true, lowercase: true, default: '' },
+  name: { type: String, trim: true, default: '' },
+  role: { type: String, enum: ['teacher', 'guardian'], default: 'guardian' },
+  avatarUrl: { type: String, default: '' },
+  votedAt: { type: Date, default: Date.now },
+}, { _id: false });
+
+/**
+ * Bình chọn kiểu Zalo, nhúng trong tin nhắn nhóm lớp.
+ * `votes` LUÔN lưu đủ danh tính — `anonymous` chỉ là quy tắc SERIALIZE (ẩn với phụ huynh,
+ * giáo viên vẫn xem được ai bầu gì). Xem pollPayloadForViewer trong chatController.
+ * `closedAt` chỉ ghi khi kết thúc sớm thủ công; hết `closesAt` được tính lười lúc đọc/bỏ phiếu.
+ */
+const pollSchema = new mongoose.Schema({
+  question: { type: String, required: true, trim: true, maxlength: 500 },
+  options: { type: [pollOptionSchema], required: true },
+  allowMultiple: { type: Boolean, default: false },
+  anonymous: { type: Boolean, default: false },
+  /** null = mở tới khi người tạo/GVCN bấm kết thúc. */
+  closesAt: { type: Date, default: null },
+  closedAt: { type: Date, default: null },
+  closedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  votes: { type: [pollVoteSchema], default: [] },
+  /** Tăng mỗi lần bỏ phiếu/kết thúc — client dùng để bỏ broadcast đến trễ. */
+  rev: { type: Number, default: 0 },
+}, { _id: false });
+
 const chatMessageSchema = new mongoose.Schema({
   conversation: {
     type: mongoose.Schema.Types.ObjectId,
@@ -56,6 +93,8 @@ const chatMessageSchema = new mongoose.Schema({
   replyTo: replySnapshotSchema,
   readBy: [readReceiptSchema],
   reactions: [reactionSchema],
+  /** Tin bình chọn — null với tin thường. `content` vẫn giữ "[Bình chọn] <câu hỏi>" để suy biến. */
+  poll: { type: pollSchema, default: null },
   /** Tin đã thu hồi — FE hiển thị placeholder; `content` giữ nguyên để audit. */
   recalledAt: { type: Date, default: null },
   recalledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

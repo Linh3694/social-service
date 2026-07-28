@@ -1,5 +1,5 @@
 /**
- * Chat / Trao đổi → Redis Stream `notify.send` (notification-service).
+ * Chat / Trò chuyện → Redis Stream `notify.send` (notification-service).
  */
 const { publishEnvelope } = require('../utils/eventBus');
 
@@ -39,7 +39,7 @@ function buildChatParts(eventType, eventData) {
       const body = preview ? `${senderName}: ${preview}` : `${senderName} đã gửi tin nhắn`;
       return {
         recipients: emails,
-        title: 'Trao đổi',
+        title: 'Trò chuyện',
         body,
         data: {
           type: 'chat_new_message',
@@ -50,6 +50,9 @@ function buildChatParts(eventType, eventData) {
           senderName,
           senderRole: d.senderRole,
           hasAttachment: Boolean(d.hasAttachment),
+          // 'text' | 'poll' — client phân biệt tin bình chọn. Giữ nguyên `type` để không
+          // rơi khỏi kênh Android "chat" (map ở erp/api/erp_sis/mobile_push_notification.py).
+          messageKind: d.messageKind || 'text',
           timestamp: d.timestamp,
         },
       };
@@ -58,7 +61,7 @@ function buildChatParts(eventType, eventData) {
       const body = `${senderName} đã thả cảm xúc về tin nhắn`;
       return {
         recipients: emails,
-        title: 'Trao đổi',
+        title: 'Trò chuyện',
         body,
         data: {
           type: 'chat_reaction',
@@ -76,7 +79,7 @@ function buildChatParts(eventType, eventData) {
       const body = `${senderName} đã thu hồi một tin nhắn`;
       return {
         recipients: emails,
-        title: 'Trao đổi',
+        title: 'Trò chuyện',
         body,
         data: {
           type: 'chat_message_recalled',

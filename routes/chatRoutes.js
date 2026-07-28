@@ -111,6 +111,10 @@ router.post('/sync/memberships', chatSyncController.syncChatMemberships);
 router.get('/conversations', authenticate, chatController.listConversations);
 router.post('/messages/:messageId/reactions', authenticate, chatController.toggleReaction);
 router.post('/messages/:messageId/recall', authenticate, chatController.recallMessage);
+// Bình chọn — đặt cùng khối /messages/... (trước /conversations/:conversationId/* để không bị nuốt param).
+router.post('/messages/:messageId/poll/vote', authenticate, chatController.votePoll);
+router.post('/messages/:messageId/poll/close', authenticate, chatController.closePoll);
+router.get('/messages/:messageId/poll/voters', authenticate, chatController.getPollVoters);
 router.get('/conversations/:conversationId/messages', authenticate, chatController.getMessages);
 router.post(
   '/conversations/:conversationId/attachments',
@@ -119,6 +123,8 @@ router.post(
   chatController.uploadAttachments,
 );
 router.post('/conversations/:conversationId/messages', authenticate, chatController.sendMessage);
+// Tạo bình chọn — chỉ GVCN/Phó GVCN của nhóm lớp (check trong controller theo scope Frappe).
+router.post('/conversations/:conversationId/polls', authenticate, chatController.createPoll);
 router.post('/conversations/:conversationId/read', authenticate, chatController.markRead);
 router.post(
   '/conversations/:conversationId/hide-from-list',
