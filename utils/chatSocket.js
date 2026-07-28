@@ -3,6 +3,7 @@ const {
   canAccessConversation,
   isConversationParticipant,
   buildParticipantMatchOr,
+  isTeachersOnlyBlocked,
 } = require('../controllers/chatController');
 const {
   getChatBroadcastRooms,
@@ -131,6 +132,14 @@ class ChatSocket {
           if (conversation.status === 'locked') {
             console.warn('[ChatSocket][typing] skip — conversation locked', {
               conversationId: String(conversation._id),
+            });
+            return;
+          }
+          // Nhóm "chỉ GV được nhắn": PH không phát typing (GV vẫn phát bình thường).
+          if (isTeachersOnlyBlocked(conversation, socket.user)) {
+            console.warn('[ChatSocket][typing] skip — teachers_only, caller là PH', {
+              conversationId: String(conversation._id),
+              email: socket.user?.email,
             });
             return;
           }

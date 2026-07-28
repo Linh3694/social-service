@@ -24,7 +24,14 @@ const participantSchema = new mongoose.Schema({
 }, { _id: false });
 
 const memberSnapshotSchema = new mongoose.Schema({
+  /** Email ĐỊNH DANH (khớp participant / user Mongo) — có thể là địa chỉ portal sinh tự động. */
   email: { type: String, trim: true, lowercase: true },
+  /**
+   * Email LIÊN LẠC hiển thị cho người dùng — `CRM Guardian Email` (bảng con, ưu tiên is_primary).
+   * Tách khỏi `email` vì PH tạo từ CRM Lead không khai email sẽ có `email` sinh tự động
+   * (`no-id-crm-lead-…@parent.wellspring.edu.vn`) — không được đem hiển thị.
+   */
+  contactEmail: { type: String, trim: true, lowercase: true, default: '' },
   name: { type: String, trim: true },
   guardianId: { type: String, trim: true },
   teacherId: { type: String, trim: true },
@@ -81,6 +88,14 @@ const chatConversationSchema = new mongoose.Schema({
   schoolYearName: { type: String, trim: true },
   status: { type: String, enum: ['active', 'locked'], default: 'active', index: true },
   lockedReason: { type: String, trim: true },
+  /**
+   * Chế độ ghi do GVCN/phó bật trên nhóm lớp: `teachers_only` = chỉ GV được nhắn,
+   * PH chỉ đọc. Khác `status='locked'` (khóa cứng CẢ GV cho lớp/năm học cũ).
+   * KHÔNG nằm trong `$set` của `upsertMergedConversationFromPayload` ⇒ sống sót qua sync roster.
+   */
+  writeMode: { type: String, enum: ['all', 'teachers_only'], default: 'all' },
+  writeModeBy: { type: String, trim: true, lowercase: true },
+  writeModeAt: { type: Date },
   participants: [participantSchema],
   studentIds: [{ type: String, trim: true, index: true }],
   guardians: [memberSnapshotSchema],

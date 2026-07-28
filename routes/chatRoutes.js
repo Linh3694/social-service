@@ -127,6 +127,12 @@ router.post(
 );
 router.post('/conversations/:conversationId/pin', authenticate, chatController.pinMessage);
 router.delete('/conversations/:conversationId/pin', authenticate, chatController.unpinMessage);
+// Chế độ ghi của nhóm lớp ("chỉ GV được nhắn") — chỉ GVCN/Phó GVCN (check trong controller).
+router.patch(
+  '/conversations/:conversationId/write-mode',
+  authenticate,
+  chatController.setConversationWriteMode,
+);
 // Quản lý GVBM trong nhóm lớp — chỉ GVCN/Phó GVCN (check trong controller theo scope Frappe).
 router.get(
   '/conversations/:conversationId/members/addable',

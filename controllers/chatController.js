@@ -395,6 +395,15 @@ function guardianPhoneFromScope(guardian) {
 }
 
 /**
+ * Email LIÊN LẠC của PH từ scope Frappe — `contact_email` (bảng con `CRM Guardian Email`).
+ * KHÔNG fallback sang `guardian.email`: field đó là email định danh, PH tạo từ CRM Lead
+ * không khai email sẽ mang địa chỉ sinh tự động (`no-id-crm-lead-…@parent.wellspring.edu.vn`).
+ */
+function guardianContactEmailFromScope(guardian) {
+  return normalizeEmail(guardian?.contact_email || guardian?.contactEmail || '');
+}
+
+/**
  * Liên kết HS↔PH từ scope Frappe: quan hệ + cờ PH chính gắn theo TỪNG học sinh.
  * `onlyStudentId` (chat 1-1 theo HS) ⇒ chỉ giữ liên kết của HS đó.
  */
@@ -504,6 +513,7 @@ async function buildSubsetConversationPayload(scope, type, requestUser, {
 
   const guardianSnapshots = guardians.map((guardian) => ({
     email: normalizeEmail(guardian.email || guardian.portalEmail),
+    contactEmail: guardianContactEmailFromScope(guardian),
     name: guardian.guardian_name || guardian.name || guardian.email || guardian.portalEmail,
     guardianId: guardian.guardian_id || guardian.name,
     studentIds: (guardian.students || []).map((student) => getStudentId(student)).filter(Boolean),
@@ -618,6 +628,7 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
     }
     return {
       email: normalizeEmail(guardian.email || guardian.portalEmail),
+      contactEmail: guardianContactEmailFromScope(guardian),
       name: guardian.guardian_name || guardian.name || guardian.email || guardian.portalEmail,
       guardianId: guardian.guardian_id || guardian.name,
       studentIds: studentIdsResolved,
@@ -802,6 +813,7 @@ function mergeSnapshotFields(oldS, newS) {
     ...oldS,
     ...newS,
     email: normalizeEmail(newS.email) || normalizeEmail(oldS.email),
+    contactEmail: normalizeEmail(newS.contactEmail) || normalizeEmail(oldS.contactEmail),
     name: newS.name || oldS.name,
     teacherId: newS.teacherId || oldS.teacherId,
     guardianId: newS.guardianId || oldS.guardianId,
@@ -1075,6 +1087,24 @@ async function getConversationForUser(conversationId, user) {
 function rejectObserverWrite(conversation, req, res) {
   if (isConversationParticipant(conversation, req.user)) return false;
   res.status(403).json({ success: false, message: 'Tài khoản chỉ có quyền xem' });
+  return true;
+}
+
+const TEACHERS_ONLY_MESSAGE = 'Nhóm đang khóa — chỉ giáo viên được nhắn';
+const CONVERSATION_WRITE_MODES = new Set(['all', 'teachers_only']);
+
+/**
+ * Nhóm đang ở chế độ "chỉ GV được nhắn" VÀ người dùng là PH ⇒ chặn mọi thao tác GHI.
+ * Khác `status === 'locked'` (khóa cứng cả GV cho lớp/năm học cũ): GV vẫn ghi bình thường.
+ */
+function isTeachersOnlyBlocked(conversation, user) {
+  return conversation.writeMode === 'teachers_only' && userRole(user) === 'guardian';
+}
+
+/** Bản trả-response của `isTeachersOnlyBlocked` (khuôn `rejectObserverWrite`). Trả true nếu đã chặn. */
+function rejectGuardianWriteWhenTeachersOnly(conversation, req, res) {
+  if (!isTeachersOnlyBlocked(conversation, req.user)) return false;
+  res.status(423).json({ success: false, code: 'TEACHERS_ONLY', message: TEACHERS_ONLY_MESSAGE });
   return true;
 }
 
@@ -1420,6 +1450,12 @@ async function appendMessageToConversation(conversation, req, {
     err.statusCode = 423;
     throw err;
   }
+  if (isTeachersOnlyBlocked(conversation, req.user)) {
+    const err = new Error(TEACHERS_ONLY_MESSAGE);
+    err.statusCode = 423;
+    err.code = 'TEACHERS_ONLY';
+    throw err;
+  }
 
   const att = sanitizeIncomingAttachments(attachments);
   const c = String(content || '').trim();
@@ -1736,6 +1772,7 @@ exports.sendTeacherGuardianMessage = async (req, res) => {
     console.error('[Chat] sendTeacherGuardianMessage error:', error);
     res.status(error.statusCode || 500).json({
       success: false,
+      code: error.code,
       message: error.message || 'Không thể gửi tin nhắn',
     });
   }
@@ -1846,6 +1883,7 @@ exports.uploadAttachments = async (req, res) => {
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat năm học cũ chỉ cho xem lại lịch sử' });
     }
+    if (rejectGuardianWriteWhenTeachersOnly(conversation, req, res)) return;
     const files = req.files || [];
     if (!files.length) {
       return res.status(400).json({ success: false, message: 'Không có tệp tải lên' });
@@ -1895,7 +1933,11 @@ exports.sendMessage = async (req, res) => {
     res.status(201).json({ success: true, data });
   } catch (error) {
     console.error('[Chat] sendMessage error:', error);
-    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể gửi tin nhắn' });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code,
+      message: error.message || 'Không thể gửi tin nhắn',
+    });
   }
 };
 
@@ -1980,6 +2022,7 @@ exports.toggleReaction = async (req, res) => {
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
     }
+    if (rejectGuardianWriteWhenTeachersOnly(conversation, req, res)) return;
 
     const uid = String(req.user._id);
     const others = (message.reactions || []).filter((r) => String(r.user) !== uid);
@@ -2056,6 +2099,7 @@ exports.pinMessage = async (req, res) => {
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
     }
+    if (rejectGuardianWriteWhenTeachersOnly(conversation, req, res)) return;
     const messageId = String(req.body.messageId || '').trim();
     if (!mongoose.Types.ObjectId.isValid(messageId)) {
       return res.status(400).json({ success: false, message: 'Tin nhắn không hợp lệ' });
@@ -2115,6 +2159,7 @@ exports.unpinMessage = async (req, res) => {
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
     }
+    if (rejectGuardianWriteWhenTeachersOnly(conversation, req, res)) return;
     conversation.pinnedMessage = null;
     conversation.markModified('pinnedMessage');
     await conversation.save();
@@ -2151,6 +2196,7 @@ exports.recallMessage = async (req, res) => {
     if (conversation.status === 'locked') {
       return res.status(423).json({ success: false, message: 'Nhóm chat chỉ cho xem lại lịch sử' });
     }
+    if (rejectGuardianWriteWhenTeachersOnly(conversation, req, res)) return;
     if (String(message.sender) !== String(req.user._id)) {
       return res.status(403).json({ success: false, message: 'Chỉ người gửi mới thu hồi được tin nhắn' });
     }
@@ -2482,11 +2528,71 @@ exports.removeConversationTeacher = async (req, res) => {
   }
 };
 
+// ===== Chế độ ghi của nhóm lớp (GVCN/phó bật "chỉ GV được nhắn") =====
+
+/**
+ * PATCH /conversations/:conversationId/write-mode { writeMode }
+ * Chỉ GVCN/Phó GVCN của lớp (cùng khuôn quyền với quản lý GVBM) và chỉ với nhóm lớp.
+ */
+exports.setConversationWriteMode = async (req, res) => {
+  try {
+    const writeMode = String((req.body || {}).writeMode || '').trim();
+    if (!CONVERSATION_WRITE_MODES.has(writeMode)) {
+      return res.status(400).json({ success: false, message: 'writeMode không hợp lệ' });
+    }
+    // Chặn sớm PH: `requireHomeroomCaller` cũng loại, nhưng tránh gọi Frappe bằng token PH.
+    if (userRole(req.user) !== 'teacher') {
+      return res.status(403).json({ success: false, message: 'Chỉ GVCN/Phó GVCN được khóa nhóm' });
+    }
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (conversation.type !== 'class_general') {
+      return res.status(400).json({ success: false, message: 'Chỉ áp dụng cho nhóm lớp' });
+    }
+    // Nhóm lớp/năm học cũ đã khóa cứng cả GV — đổi chế độ ghi không còn ý nghĩa.
+    if (conversation.status === 'locked') {
+      return res.status(423).json({ success: false, message: 'Nhóm chat năm học cũ chỉ cho xem lại lịch sử' });
+    }
+    await requireHomeroomCaller(conversation, req);
+
+    const by = normalizeEmail(req.user.email);
+    const changedAt = new Date();
+    conversation.writeMode = writeMode;
+    conversation.writeModeBy = by;
+    conversation.writeModeAt = changedAt;
+    await conversation.save();
+
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+
+    await emitToConversation(conversation, 'chat:conversation:write_mode', {
+      conversationId: String(conversation._id),
+      writeMode,
+      writeModeBy: by,
+      writeModeAt: changedAt.toISOString(),
+    });
+
+    console.info('[Chat] conversation writeMode changed', {
+      conversationId: String(conversation._id),
+      writeMode,
+      by,
+    });
+
+    res.json({ success: true, data: serializeConversation(conversation, req.user) });
+  } catch (error) {
+    console.error('[Chat] setConversationWriteMode error:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Không thể đổi chế độ nhắn tin của nhóm',
+    });
+  }
+};
+
 exports.canAccessConversation = canAccessConversation;
 exports.isConversationParticipant = isConversationParticipant;
 exports.buildParticipantMatchOr = buildParticipantMatchOr;
 exports.isBodUser = isBodUser;
 exports.isActiveParticipant = isActiveParticipant;
+// Dùng bởi utils/chatSocket.js (chặn typing của PH khi nhóm ở chế độ "chỉ GV được nhắn").
+exports.isTeachersOnlyBlocked = isTeachersOnlyBlocked;
 // Dùng bởi services/chatMembershipSync.js (flow sync/revoke membership theo roster).
 exports.collectScopeTeachers = collectScopeTeachers;
 exports.buildConversationPayload = buildConversationPayload;
