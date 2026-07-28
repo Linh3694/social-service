@@ -805,12 +805,24 @@ class FrappeService {
         guardian_id: guardian.guardian_id,
         guardian_name: guardian.guardian_name || guardian.full_name || guardian.name,
         email,
+        // Email LIÊN LẠC (bảng con CRM Guardian Email). Chỉ có khi guardian đến từ
+        // `get_guardians_by_students` (build_guardians_by_student_ids); nhánh đọc thẳng
+        // Resource `CRM Guardian` không lấy được child table nên để rỗng.
+        contact_email: guardian.contact_email || guardian.contactEmail || '',
         portalEmail,
         guardian_image: guardian.guardian_image || guardian.user_image || guardian.avatar_url || '',
         phone_number: guardian.phone_number,
         students: [],
         matchKeys: [],
       };
+      // Cùng một PH có thể được add nhiều lần từ nhiều nguồn (per-student, per-family,
+      // get_all_families). Nguồn nào có email liên lạc thì lấy — nguồn đầu tiên có thể thiếu.
+      if (!existing.contact_email) {
+        existing.contact_email = guardian.contact_email || guardian.contactEmail || '';
+      }
+      if (!existing.phone_number && guardian.phone_number) {
+        existing.phone_number = guardian.phone_number;
+      }
 
       const student = studentMap.get(studentId) || { name: studentId };
       if (studentId && !existing.students.some((item) => item.student_id === studentId)) {
