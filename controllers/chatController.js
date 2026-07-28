@@ -718,6 +718,9 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
       : (scope.students || []).map((student) => getStudentId(student)).filter(Boolean),
     guardians: guardianSnapshots,
     teachers: teacherSnapshots,
+    // Roster đầy đủ (chỉ get_class_chat_scope_for_sync set `scopeComplete`) ⇒ merge được
+    // phép xoá field hiển thị. Không persist — không nằm trong $set của upsert.
+    authoritative: scope.scopeComplete === true,
   };
 }
 
@@ -762,10 +765,11 @@ function guardianSnapshotKey(g) {
 }
 
 /**
- * Union 2 array theo key. Entry trùng key được merge bằng `mergeFn(oldEntry, newEntry)` —
+ * Union 2 array theo key. Entry trùng key được merge bằng `mergeFn(oldEntry, newEntry, opts)` —
  * mặc định: incoming ghi đè field truthy, fallback giữ field cũ; KHÔNG xoá entry cũ.
+ * `opts` chuyển thẳng xuống mergeFn (dùng cho cờ `authoritative`).
  */
-function unionByKey(existing, incoming, getKey, mergeFn) {
+function unionByKey(existing, incoming, getKey, mergeFn, opts) {
   const map = new Map();
   for (const item of existing || []) {
     const key = getKey(item);
@@ -775,7 +779,7 @@ function unionByKey(existing, incoming, getKey, mergeFn) {
     const key = getKey(item);
     if (!key) continue;
     const prev = map.get(key);
-    map.set(key, prev ? mergeFn(prev, item) : item);
+    map.set(key, prev ? mergeFn(prev, item, opts) : item);
   }
   return Array.from(map.values());
 }
@@ -802,8 +806,27 @@ function mergeParticipantFields(oldP, newP) {
   };
 }
 
-/** Merge field-by-field cho snapshot teacher/guardian. */
-function mergeSnapshotFields(oldS, newS) {
+/**
+ * Merge field-by-field cho snapshot teacher/guardian.
+ *
+ * `opts.authoritative` = payload dựng từ scope ĐẦY ĐỦ (`scopeComplete`, chỉ có ở
+ * `get_class_chat_scope_for_sync`). Khi đó các field CHỈ-HIỂN-THỊ được phép ghi đè bằng
+ * chuỗi rỗng — nếu không, xoá SĐT/email/ảnh PH bên Frappe sẽ không bao giờ xoá được trong
+ * chat vì `newS.X || oldS.X` luôn rơi về giá trị cũ.
+ *
+ * Scope KHÔNG authoritative (read-path, fallback Resource-API) giữ nguyên hành vi `||`:
+ * fallback đó dựng snapshot nghèo hơn hẳn (không có contactEmail, teacher không có
+ * phoneNumber — xem frappeService.js:675-680), cho nó xoá là mất dữ liệu thật.
+ *
+ * Field ĐỊNH DANH (`email`, `guardianId`, `teacherId`, `name`) luôn giữ `||` kể cả khi
+ * authoritative — mất là hỏng matching participant.
+ */
+function mergeSnapshotFields(oldS, newS, opts) {
+  const authoritative = opts?.authoritative === true;
+  /** Field hiển thị: authoritative ⇒ lấy giá trị mới kể cả rỗng; ngược lại fallback bản cũ. */
+  const displayField = (nextValue, prevValue) => (
+    authoritative ? String(nextValue || '').trim() : String(nextValue || prevValue || '').trim()
+  );
   const mergedSubjects = (() => {
     const next = compactSubjectSnapshots(newS?.subjects);
     if (next.length) return next;
@@ -813,11 +836,11 @@ function mergeSnapshotFields(oldS, newS) {
     ...oldS,
     ...newS,
     email: normalizeEmail(newS.email) || normalizeEmail(oldS.email),
-    contactEmail: normalizeEmail(newS.contactEmail) || normalizeEmail(oldS.contactEmail),
+    contactEmail: normalizeEmail(displayField(newS.contactEmail, oldS.contactEmail)),
     name: newS.name || oldS.name,
     teacherId: newS.teacherId || oldS.teacherId,
     guardianId: newS.guardianId || oldS.guardianId,
-    avatarUrl: newS.avatarUrl || oldS.avatarUrl,
+    avatarUrl: displayField(newS.avatarUrl, oldS.avatarUrl),
     studentIds: Array.from(new Set([
       ...((oldS.studentIds || []).map(String)),
       ...((newS.studentIds || []).map(String)),
@@ -826,7 +849,7 @@ function mergeSnapshotFields(oldS, newS) {
       ...((oldS.studentNames || []).map(String)),
       ...((newS.studentNames || []).map(String)),
     ])).map((s) => String(s).trim()).filter(Boolean),
-    phoneNumber: String(newS.phoneNumber || oldS.phoneNumber || '').trim(),
+    phoneNumber: displayField(newS.phoneNumber, oldS.phoneNumber),
     // Liên kết HS↔PH thay thế nguyên khối theo scope mới (quan hệ/PH chính có thể đổi);
     // scope không trả gì thì giữ bản cũ.
     studentLinks: (newS.studentLinks || []).length ? newS.studentLinks : (oldS.studentLinks || []),
@@ -870,17 +893,20 @@ async function upsertMergedConversationFromPayload(payload) {
     participantIdentityKey,
     mergeParticipantFields,
   );
+  const snapshotMergeOpts = { authoritative: payload.authoritative === true };
   const mergedTeachers = unionByKey(
     existing?.teachers,
     payload.teachers,
     teacherSnapshotKey,
     mergeSnapshotFields,
+    snapshotMergeOpts,
   );
   const mergedGuardians = unionByKey(
     existing?.guardians,
     payload.guardians,
     guardianSnapshotKey,
     mergeSnapshotFields,
+    snapshotMergeOpts,
   );
   const mergedStudentIds = Array.from(new Set([
     ...((existing?.studentIds || []).map(String)),
@@ -2601,5 +2627,7 @@ exports.invalidateConversationParticipantsListCaches = invalidateConversationPar
 exports.participantIdentityKey = participantIdentityKey;
 exports.teacherSnapshotKey = teacherSnapshotKey;
 exports.guardianSnapshotKey = guardianSnapshotKey;
+exports.mergeSnapshotFields = mergeSnapshotFields;
+exports.unionByKey = unionByKey;
 exports.parentPortalEmailFromGuardianId = parentPortalEmailFromGuardianId;
 exports.portalGuardianIdFromEmail = portalGuardianIdFromEmail;
