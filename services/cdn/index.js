@@ -19,6 +19,7 @@ const { signPath, signStored, CDN_SCHEME } = require('./sign');
 const { signMediaDeep } = require('./signDeep');
 const { toObjectPath } = require('./resolve');
 const { processImage } = require('./imagePipeline');
+const { processVideo } = require('./videoPipeline');
 const s3 = require('./s3');
 
 /** kind → bucket vật lý */
@@ -79,6 +80,8 @@ async function storeUpload(file, { kind }) {
   let height;
   let variantParts = [];
 
+  const video = !image && isVideo(file.mimetype, file.originalname);
+
   if (image) {
     const result = await processImage(original);
     if (result.ok) {
@@ -91,6 +94,23 @@ async function storeUpload(file, { kind }) {
     }
     // result.ok === false ⇒ giữ nguyên bản gốc (HEIC thiếu libheif, ảnh hỏng…).
     // Đã log trong imagePipeline; không throw để bài đăng vẫn tạo được.
+  } else if (video) {
+    // Remux `+faststart` để video phát ngay thay vì phải tải gần hết (§7.3).
+    // Poster đi kèm dưới dạng variant `_poster.webp` — cùng hash nên client
+    // suy ra được đường dẫn từ URL video mà không cần thêm field trong DB.
+    const result = await processVideo(file.path, ext);
+    if (result.remuxed && result.buffer) {
+      body = result.buffer;
+      if (result.poster) {
+        variantParts = [{
+          suffix: '_poster',
+          buffer: result.poster,
+          ext: 'webp',
+          contentType: 'image/webp',
+        }];
+      }
+    }
+    // remuxed === false ⇒ dùng nguyên bản gốc; đã log trong videoPipeline.
   }
 
   // Hash tính trên NỘI DUNG CUỐI đã lưu, không phải file gốc: nhờ vậy
