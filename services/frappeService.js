@@ -12,6 +12,14 @@ const {
 } = require('../utils/cache');
 
 /**
+ * Cờ "Xem thông tin" (`CRM Family Relationship.access`) — Frappe trả 0/1, một số payload
+ * đi qua JSON/string nên nhận cả '1'/true. Thiếu cờ ⇒ coi như CHƯA cấp quyền.
+ */
+function isAccessGranted(value) {
+  return value === 1 || value === true || value === '1' || value === 'true';
+}
+
+/**
  * 🔗 Frappe Service - Social Service
  * Service để tương tác với Frappe ERP API
  * Pattern tương tự ticket-service và inventory-service
@@ -655,11 +663,14 @@ class FrappeService {
     if (!cls) return null;
 
     const metadata = await this.getClassMetadata(classId, hdr);
+    // Nhánh fallback dựng scope nhóm chat (2 method scope của ERP đều fail) — phải cùng luật
+    // với chat_scope/journal bên ERP: chỉ PH có cờ "Xem thông tin". Không lọc ở đây thì
+    // read-path UNION sẽ add lại đúng những PH mà luồng sync vừa revoke.
     const directory = await this.getClassGuardianDirectory(
       classId,
       schoolYearId || cls.school_year_id,
       hdr,
-      opts
+      { ...opts, accessOnly: true }
     );
     const teacherIds = [cls.homeroom_teacher, cls.vice_homeroom_teacher].filter(Boolean);
     const teachers = [];
@@ -746,21 +757,25 @@ class FrappeService {
 
   async getClassGuardianDirectory(classId, schoolYearId, hdr, opts = {}) {
     const bypassCache = Boolean(opts.bypassCache);
+    // accessOnly: chỉ PH có cờ "Xem thông tin" — bật cho roster nhóm chat, TẮT cho danh bạ
+    // PH của lớp (postRoutes /class-guardian-directory): GV vẫn cần liên hệ mọi PH.
+    // Phải nằm trong cacheKey, nếu không hai luồng dùng chung một entry Redis.
+    const accessOnly = Boolean(opts.accessOnly);
     const fid = this.authHdrFingerprint(hdr);
     const sy = schoolYearId != null ? String(schoolYearId) : '_';
-    const cacheKey = `frappe:guardian-dir:${encodeURIComponent(classId)}:${encodeURIComponent(sy)}:${fid}`;
+    const cacheKey = `frappe:guardian-dir:${encodeURIComponent(classId)}:${encodeURIComponent(sy)}:${fid}:${accessOnly ? 'acl' : 'all'}`;
     if (!bypassCache) {
       const cached = await cacheGetJSON(cacheKey);
       if (cached) return cached;
     }
-    const out = await this._computeClassGuardianDirectory(classId, schoolYearId, hdr);
+    const out = await this._computeClassGuardianDirectory(classId, schoolYearId, hdr, accessOnly);
     if (!bypassCache) {
       await cacheSetJSON(cacheKey, out, TTL_GUARDIAN_DIRECTORY_SEC);
     }
     return out;
   }
 
-  async _computeClassGuardianDirectory(classId, schoolYearId, hdr) {
+  async _computeClassGuardianDirectory(classId, schoolYearId, hdr, accessOnly = false) {
     if (!classId) return { guardians: [], students: [] };
 
     const classRowsPayload = await this.callFrappeGetMethod(
@@ -792,6 +807,11 @@ class FrappeService {
     const guardianMap = new Map();
     const addGuardian = (guardian, relationship, studentId, familyCode) => {
       if (!guardian) return;
+      // Chốt cờ "Xem thông tin" đúng một chỗ: mọi nguồn dựng directory (get_guardians_by_students,
+      // CRM Family Relationship, get_family_details/get_all_families) đều đổ về đây.
+      // Fail-closed khi payload thiếu cờ — read-path chỉ UNION membership nên bỏ sót cùng lắm
+      // là không add thêm, không gỡ nhầm ai.
+      if (accessOnly && !isAccessGranted(relationship?.access)) return;
       const guardianId = guardian.guardian_id || guardian.name || relationship?.guardian;
       const email = guardian.email || guardian.user || '';
       const key = guardianId || email;
@@ -854,7 +874,14 @@ class FrappeService {
         const guardians = Array.isArray(payload) ? payload : payload?.guardians || [];
         guardians.forEach((guardian) => {
           (guardian.students || []).forEach((student) => {
-            addGuardian(guardian, { guardian: guardian.name }, student.student_id, student.family_code);
+            // `access` nằm trên từng quan hệ HS↔PH (build_guardians_by_student_ids trả kèm),
+            // phải chuyển tiếp thì bộ lọc accessOnly trong addGuardian mới có gì để đọc.
+            addGuardian(
+              guardian,
+              { guardian: guardian.name, access: student.access },
+              student.student_id,
+              student.family_code,
+            );
           });
         });
       } catch (error) {

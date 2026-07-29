@@ -161,9 +161,17 @@ server.listen(PORT, () => console.log(`🚀 [Social Service] Running on port ${P
 const { startPollScheduler } = require('./services/pollScheduler');
 
 database.connect()
-  // Lịch bình chọn (nhắc trước hạn + báo hết hạn) chạy in-process vì cần global.io để
-  // broadcast socket — PM2 cron ở ecosystem-cron.config.js không có io.
-  .then(() => startPollScheduler())
+  .then(() => {
+    // Lịch bình chọn (nhắc trước hạn + báo hết hạn) chạy in-process vì cần global.io để
+    // broadcast socket — PM2 cron ở ecosystem-cron.config.js không có io.
+    // try/catch riêng: lỗi ở scheduler KHÔNG được rơi vào catch của connect bên dưới,
+    // nếu không sẽ process.exit(1) và giết cả service chỉ vì một job phụ.
+    try {
+      startPollScheduler();
+    } catch (e) {
+      console.error('[PollScheduler] không khởi động được:', e.message);
+    }
+  })
   .catch((e) => { console.error('DB connect error:', e.message); process.exit(1); });
 
 module.exports = { app, io, server };

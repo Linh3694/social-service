@@ -22,10 +22,6 @@ const {
 const { participantRooms } = require('../utils/chatBroadcastRooms');
 const { cacheDelByPattern } = require('../utils/cache');
 
-const MAX_REMOVAL_RATIO = Math.min(
-  Math.max(parseFloat(process.env.CHAT_SYNC_MAX_REMOVAL_RATIO || '0.5') || 0.5, 0),
-  1,
-);
 const SYNC_CONCURRENCY = Math.max(parseInt(process.env.CHAT_SYNC_CONCURRENCY || '2', 10) || 2, 1);
 
 function normalizeEmail(value) {
@@ -204,9 +200,11 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
   } else if (conversation.status === 'locked' || scope.isActive === false) {
     // Lớp/năm học cũ: giữ nguyên membership để xem lại lịch sử.
     stats.guard = 'CLASS_LOCKED';
-  } else if (activeNow.length && toRemove.length / activeNow.length > MAX_REMOVAL_RATIO) {
-    stats.guard = 'REMOVAL_RATIO_EXCEEDED';
   } else {
+    // Đã bỏ chốt tỉ lệ gỡ (CHAT_SYNC_MAX_REMOVAL_RATIO, mặc định 0.5): siết cờ "Xem thông
+    // tin" khiến nhiều lớp phải gỡ quá nửa số PH ngay trong một nhịp sync, chốt cũ sẽ nuốt
+    // trọn đợt revoke đó. Đổi lại, một lần scope trả thiếu PH cũng quét sạch nhóm — các
+    // guard còn lại chỉ chặn được scope RỖNG, không chặn scope thiếu một phần.
     const teachersLeft = activeNow.filter(
       (p) => p.role === 'teacher' && !toRemove.includes(p),
     );

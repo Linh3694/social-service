@@ -1289,7 +1289,9 @@ async function emitToConversation(conversation, event, payload) {
 }
 
 /** Emoji reaction cố định — đồng bộ journal Wislife (parent-portal) / class feed. */
-const CHAT_REACTION_EMOJIS = new Set(['like', 'love', 'haha', 'wow', 'sad', 'angry']);
+// 'angry' (phẫn nộ) đã gỡ khỏi bộ reaction chat — không nhận thả mới nữa.
+// Reaction cũ đã lưu trong DB vẫn giữ nguyên và client vẫn render được (map hiển thị chưa bỏ mã này).
+const CHAT_REACTION_EMOJIS = new Set(['like', 'love', 'haha', 'wow', 'sad']);
 
 function attachmentKindFromMime(mime) {
   const m = String(mime || '').toLowerCase();

@@ -28,6 +28,12 @@ const {
 const DEFAULT_INTERVAL_MS = 60 * 1000;
 /** Trần mỗi lượt quét — tránh một tick ôm quá nhiều việc. Vượt trần thì log rõ, không nuốt. */
 const BATCH_LIMIT = 200;
+/**
+ * Bình chọn hết hạn quá lâu thì chỉ đánh dấu, KHÔNG bắn thông báo.
+ * Chặn kịch bản deploy lần đầu (hoặc service chết vài ngày) rồi dội một loạt "đã kết thúc"
+ * cho những bình chọn ai cũng quên từ đời nào.
+ */
+const CLOSE_NOTIFY_GRACE_MS = 24 * 60 * 60 * 1000;
 
 let timer = null;
 /** Chặn hai tick chồng nhau khi Mongo/Frappe chậm. */
@@ -108,6 +114,7 @@ async function runCloseJob(now) {
 
   const conversations = await loadConversationsFor(due);
   let sent = 0;
+  let stale = 0;
 
   for (const message of due) {
     // Giành job + tăng rev: broadcast mang cùng rev sẽ bị client bỏ qua (applyPollUpdate),
@@ -123,6 +130,14 @@ async function runCloseJob(now) {
     const conversation = conversations.get(String(claimed.conversation));
     if (!conversation) continue;
 
+    // Hết hạn quá lâu ⇒ chỉ đánh dấu cho khỏi quét lại, không dội thông báo.
+    const closedLongAgo =
+      now.getTime() - new Date(claimed.poll.closesAt).getTime() > CLOSE_NOTIFY_GRACE_MS;
+    if (closedLongAgo) {
+      stale += 1;
+      continue;
+    }
+
     await broadcastPollUpdate(conversation, claimed);
     if (conversation.status !== 'locked') {
       firePollLifecycleNotify('poll_closed', conversation, claimed, {
@@ -134,6 +149,7 @@ async function runCloseJob(now) {
   }
 
   if (sent) log(`hết hạn: đã xử lý ${sent} bình chọn`);
+  if (stale) log(`hết hạn: bỏ qua ${stale} bình chọn quá hạn > 24h (chỉ đánh dấu, không báo)`);
   return sent;
 }
 
