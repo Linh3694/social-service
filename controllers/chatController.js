@@ -3,6 +3,7 @@ const ChatConversation = require('../models/ChatConversation');
 const ChatMessage = require('../models/ChatMessage');
 const User = require('../models/User');
 const frappeService = require('../services/frappeService');
+const cdn = require('../services/cdn');
 const {
   getChatBroadcastRooms,
   ioEmitToEachRoom,
@@ -1298,13 +1299,84 @@ function attachmentKindFromMime(mime) {
   return 'file';
 }
 
-/** Chỉ chấp nhận URL đã upload qua /uploads/chat/ (chống URL tùy ý). */
+/**
+ * Dựng danh sách đính kèm từ file multer — dùng chung cho cả hai endpoint upload.
+ *
+ * Bật CDN: đẩy lên MinIO, trả về khoá `cdn://social-chat/…`. Middleware
+ * cdnSignResponse sẽ ký khoá này thành URL đầy đủ trước khi tới client.
+ * Tắt CDN: giữ nguyên hành vi cũ (đường dẫn /uploads/chat/).
+ */
+async function buildChatAttachments(files) {
+  if (!cdn.config.enabled) {
+    return files.map((file) => ({
+      kind: attachmentKindFromMime(file.mimetype),
+      url: `/uploads/chat/${file.filename}`,
+      name: String(file.originalname || file.filename || 'file').slice(0, 220),
+      mimeType: file.mimetype || '',
+      size: file.size || 0,
+    }));
+  }
+
+  try {
+    const results = await Promise.all(
+      files.map((file) => cdn.storeUpload(file, { kind: 'chat' }))
+    );
+    return results.map((r, i) => ({
+      kind: r.kind,
+      url: r.stored,
+      name: String(files[i].originalname || 'file').slice(0, 220),
+      mimeType: r.contentType,
+      size: r.size,
+      width: r.width,
+      height: r.height,
+    }));
+  } finally {
+    await cdn.cleanupTempFiles(files);
+  }
+}
+
+/**
+ * Chuẩn hoá URL đính kèm do client gửi lên về giá trị lưu DB.
+ *
+ * Client upload xong nhận về URL ĐÃ KÝ (middleware cdnSignResponse ký response
+ * của uploadAttachments), rồi echo đúng URL đó khi gửi tin. Vì vậy ở đây phải
+ * chấp nhận cả dạng đã ký và quy về `cdn://social-chat/…` — nếu không, mọi tin
+ * nhắn có đính kèm sẽ bị loại sạch.
+ *
+ * Chữ ký trong URL echo về không cần kiểm: nó chỉ là thứ ta vừa tự phát ra.
+ * Điều thực sự chặn URL tuỳ ý là ràng buộc tiền tố dưới đây.
+ *
+ * @returns {string|null} giá trị lưu DB, hoặc null nếu không hợp lệ
+ */
+function normalizeAttachmentUrl(rawUrl) {
+  const url = String(rawUrl || '').trim();
+  if (!url) return null;
+
+  // Dữ liệu cũ / khi CDN tắt — giữ nguyên
+  if (url.startsWith('/uploads/chat/')) return url;
+
+  // Khoá CDN thô
+  if (url.startsWith(`${cdn.CDN_SCHEME}social-chat/`)) return url.split('?')[0];
+
+  // URL đã ký mà chính ta phát ra
+  const base = cdn.config.publicUrl;
+  if (base && url.startsWith(`${base}/social-chat/`)) {
+    const objectPath = url.slice(base.length).split('?')[0];
+    // Chặn path traversal trước khi đưa vào khoá lưu DB
+    if (objectPath.includes('..')) return null;
+    return `${cdn.CDN_SCHEME}${objectPath.replace(/^\/+/, '')}`;
+  }
+
+  return null;
+}
+
+/** Chỉ chấp nhận đính kèm do chính service này phát ra (chống URL tùy ý). */
 function sanitizeIncomingAttachments(raw) {
   if (!Array.isArray(raw) || !raw.length) return [];
   const out = [];
   for (const a of raw.slice(0, 10)) {
-    const url = String(a.url || '').trim();
-    if (!url.startsWith('/uploads/chat/')) continue;
+    const url = normalizeAttachmentUrl(a.url);
+    if (!url) continue;
     let kind = a.kind;
     if (kind !== 'image' && kind !== 'file' && kind !== 'video') {
       kind = attachmentKindFromMime(a.mimeType);
@@ -2136,13 +2208,7 @@ exports.uploadTeacherGuardianAttachments = async (req, res) => {
     if (!files.length) {
       return res.status(400).json({ success: false, message: 'Không có tệp tải lên' });
     }
-    const attachments = files.map((file) => ({
-      kind: attachmentKindFromMime(file.mimetype),
-      url: `/uploads/chat/${file.filename}`,
-      name: String(file.originalname || file.filename || 'file').slice(0, 220),
-      mimeType: file.mimetype || '',
-      size: file.size || 0,
-    }));
+    const attachments = await buildChatAttachments(files);
     res.json({ success: true, data: { attachments } });
   } catch (error) {
     console.error('[Chat] uploadTeacherGuardianAttachments error:', error);
@@ -2236,13 +2302,7 @@ exports.uploadAttachments = async (req, res) => {
     if (!files.length) {
       return res.status(400).json({ success: false, message: 'Không có tệp tải lên' });
     }
-    const attachments = files.map((file) => ({
-      kind: attachmentKindFromMime(file.mimetype),
-      url: `/uploads/chat/${file.filename}`,
-      name: String(file.originalname || file.filename || 'file').slice(0, 220),
-      mimeType: file.mimetype || '',
-      size: file.size || 0,
-    }));
+    const attachments = await buildChatAttachments(files);
     res.json({ success: true, data: { attachments } });
   } catch (error) {
     console.error('[Chat] uploadAttachments error:', error);

@@ -6,12 +6,19 @@ const chatController = require('../controllers/chatController');
 const chatSyncController = require('../controllers/chatSyncController');
 const { authenticate } = require('../middleware/authMiddleware');
 
+const os = require('os');
+const { config: cdnConfig } = require('../services/cdn/config');
+
 const chatUploadDir = path.join(__dirname, '../uploads/chat');
 if (!fs.existsSync(chatUploadDir)) fs.mkdirSync(chatUploadDir, { recursive: true });
 
+// Bật CDN ⇒ ghi tạm rồi đẩy lên MinIO; tắt ⇒ giữ nguyên hành vi cũ.
+const chatTmpDir = path.join(os.tmpdir(), 'social-uploads', 'chat');
+if (cdnConfig.enabled && !fs.existsSync(chatTmpDir)) fs.mkdirSync(chatTmpDir, { recursive: true });
+
 const chatStorage = multer.diskStorage({
   destination(_req, _file, cb) {
-    cb(null, 'uploads/chat/');
+    cb(null, cdnConfig.enabled ? chatTmpDir : 'uploads/chat/');
   },
   filename(_req, file, cb) {
     const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
