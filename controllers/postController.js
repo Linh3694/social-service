@@ -8,6 +8,7 @@ const PostService = require('../services/postService');
 const redisClient = require('../config/redis');
 const frappeService = require('../services/frappeService');
 const { resolveMentions, getMentionedUserEmails } = require('../utils/mentionUtils');
+const cdn = require('../services/cdn');
 
 const POST_AUTHOR_SELECT = 'name username guardian_id fullname fullName avatarUrl user_image sis_photo guardian_image email department jobTitle';
 const POST_USER_SELECT = 'name username guardian_id fullname fullName avatarUrl user_image sis_photo guardian_image email';
@@ -477,6 +478,8 @@ async function buildClassPostMetadata({ audienceType, classId, schoolYearId, aut
 }
 
 exports.createPost = async (req, res) => {
+  // Khai báo ngoài try để nhánh catch xoá được object đã lên MinIO
+  let uploadedKeys = [];
   try {
     const {
       content,
@@ -510,14 +513,27 @@ exports.createPost = async (req, res) => {
 
     let images = [], videos = [];
     if (req.files?.length) {
-      req.files.forEach(file => {
-        const relative = `/uploads/posts/${file.filename}`;
-        const filePath = `/api/social${relative}`;
-        // Một số thiết bị iOS có thể gửi mimetype rỗng; fallback theo đuôi file
-        const mime = file.mimetype || (file.originalname?.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
-        if (mime.startsWith('image/')) images.push(filePath);
-        else if (mime.startsWith('video/')) videos.push(filePath);
-      });
+      if (cdn.config.enabled) {
+        // Đẩy song song lên MinIO VM3; DB lưu object key `cdn://…`, không lưu URL (§5.3)
+        const results = await Promise.all(
+          req.files.map((file) => cdn.storeUpload(file, { kind: 'posts' }))
+        );
+        uploadedKeys = results.map((r) => r.stored);
+        results.forEach((r) => {
+          if (r.kind === 'video') videos.push(r.stored);
+          else images.push(r.stored);
+        });
+        await cdn.cleanupTempFiles(req.files);
+      } else {
+        req.files.forEach(file => {
+          const relative = `/uploads/posts/${file.filename}`;
+          const filePath = `/api/social${relative}`;
+          // Một số thiết bị iOS có thể gửi mimetype rỗng; fallback theo đuôi file
+          const mime = file.mimetype || (file.originalname?.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
+          if (mime.startsWith('image/')) images.push(filePath);
+          else if (mime.startsWith('video/')) videos.push(filePath);
+        });
+      }
     }
 
     const audienceType = normalizeAudience(rawAudienceType, classId);
@@ -600,7 +616,11 @@ exports.createPost = async (req, res) => {
     res.status(201).json({ success: true, message: 'Tạo bài viết thành công', data: populatedPost });
   } catch (error) {
     try {
-      if (req.files?.length) {
+      if (cdn.config.enabled) {
+        // Dọn cả file tạm LẪN object đã lên MinIO, nếu không sẽ để lại rác vĩnh viễn
+        await cdn.cleanupTempFiles(req.files);
+        await Promise.all(uploadedKeys.map((k) => cdn.removeStored(k)));
+      } else if (req.files?.length) {
         req.files.forEach(file => { const p = path.join(__dirname, '../uploads/posts/', file.filename); if (fs.existsSync(p)) fs.unlinkSync(p); });
       }
     } catch {}
@@ -925,18 +945,34 @@ exports.updatePost = async (req, res) => {
     let nextImages = normalizeMediaList(images);
     let nextVideos = normalizeMediaList(videos);
     if (req.files?.length) {
-      req.files.forEach(file => {
-        const relative = `/uploads/posts/${file.filename}`;
-        const filePath = `/api/social${relative}`;
-        const mime = file.mimetype || (file.originalname?.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
-        if (mime.startsWith('image/')) {
-          if (!nextImages) nextImages = [...(post.images || [])];
-          nextImages.push(filePath);
-        } else if (mime.startsWith('video/')) {
-          if (!nextVideos) nextVideos = [...(post.videos || [])];
-          nextVideos.push(filePath);
-        }
-      });
+      if (cdn.config.enabled) {
+        const results = await Promise.all(
+          req.files.map((file) => cdn.storeUpload(file, { kind: 'posts' }))
+        );
+        results.forEach((r) => {
+          if (r.kind === 'video') {
+            if (!nextVideos) nextVideos = [...(post.videos || [])];
+            nextVideos.push(r.stored);
+          } else {
+            if (!nextImages) nextImages = [...(post.images || [])];
+            nextImages.push(r.stored);
+          }
+        });
+        await cdn.cleanupTempFiles(req.files);
+      } else {
+        req.files.forEach(file => {
+          const relative = `/uploads/posts/${file.filename}`;
+          const filePath = `/api/social${relative}`;
+          const mime = file.mimetype || (file.originalname?.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
+          if (mime.startsWith('image/')) {
+            if (!nextImages) nextImages = [...(post.images || [])];
+            nextImages.push(filePath);
+          } else if (mime.startsWith('video/')) {
+            if (!nextVideos) nextVideos = [...(post.videos || [])];
+            nextVideos.push(filePath);
+          }
+        });
+      }
     }
 
     const updateData = {};

@@ -111,9 +111,15 @@ const staticUploadsOptions = {
     res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
   },
 };
+// Giữ nguyên trong suốt Phase 1–3 để rollback luôn khả thi: tắt CDN_ENABLED là
+// media cũ phục vụ lại từ đĩa ngay. Chỉ gỡ ở Phase 4 (CDN-Design.md §9 Bước 5).
 const staticUploads = express.static(uploadPath, staticUploadsOptions);
 app.use('/uploads', staticUploads);
 app.use('/api/social/uploads', staticUploads);
+
+// Ký media cho mọi response REST — phải đứng TRƯỚC khi mount routes.
+app.use(require('./middleware/cdnSignResponse'));
+require('./services/cdn').logStartupState();
 
 app.use((req, res, next) => {
   res.setHeader('X-Service', 'social-service');

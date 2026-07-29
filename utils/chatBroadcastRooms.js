@@ -3,6 +3,8 @@
  * Phải khớp phép join khi connection (email_*, guardian_*, user_*, chat_*).
  */
 
+const { signMediaDeep } = require('../services/cdn/signDeep');
+
 function normalizeEmail(value) {
   return value ? String(value).trim().toLowerCase() : '';
 }
@@ -73,7 +75,9 @@ function getChatBroadcastRooms(conversation) {
 function ioEmitToEachRoom(io, rooms, event, payload) {
   if (!io || !rooms.length) return;
   const uniqueRooms = Array.from(new Set(rooms));
-  io.to(uniqueRooms).emit(event, payload);
+  // Payload realtime phải đi qua CÙNG hàm ký với REST, nếu không ảnh trong tin
+  // nhắn mới sẽ vỡ (hiện đúng khi F5, vỡ khi nhận realtime) — CDN-Design.md §6.4.
+  io.to(uniqueRooms).emit(event, signMediaDeep(payload));
 }
 
 /**
@@ -87,7 +91,7 @@ function ioEmitToEachRoom(io, rooms, event, payload) {
 function socketEmitToEachRoomExceptSender(socket, rooms, event, payload) {
   if (!socket || !rooms.length) return;
   const uniqueRooms = Array.from(new Set(rooms));
-  socket.to(uniqueRooms).emit(event, payload);
+  socket.to(uniqueRooms).emit(event, signMediaDeep(payload));
 }
 
 module.exports = {

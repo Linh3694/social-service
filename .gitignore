@@ -4,3 +4,5 @@ uploads/
 config.env
 npm-debug.log*
 .DS_Store
+# log runtime cua pm2
+logs/

@@ -6,11 +6,20 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
+const os = require('os');
+const { config: cdnConfig } = require('../services/cdn/config');
+const cleanupUploads = require('../middleware/cleanupUploads');
+
 const uploadPath = path.join(__dirname, '../uploads/posts');
 if (!fs.existsSync(uploadPath)) fs.mkdirSync(uploadPath, { recursive: true });
 
+// Bật CDN ⇒ ghi vào thư mục TẠM, controller đẩy lên MinIO rồi unlink.
+// Tắt CDN ⇒ giữ nguyên hành vi cũ (ghi ./uploads/posts) để rollback tức thì.
+const postTmpDir = path.join(os.tmpdir(), 'social-uploads', 'posts');
+if (cdnConfig.enabled && !fs.existsSync(postTmpDir)) fs.mkdirSync(postTmpDir, { recursive: true });
+
 const storage = multer.diskStorage({
-  destination: function (req, file, cb) { cb(null, 'uploads/posts/'); },
+  destination: function (req, file, cb) { cb(null, cdnConfig.enabled ? postTmpDir : 'uploads/posts/'); },
   filename: function (req, file, cb) { const unique = Date.now() + '-' + Math.round(Math.random() * 1e9); cb(null, file.fieldname + '-' + unique + path.extname(file.originalname)); },
 });
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 }, fileFilter: (req, file, cb) => {
@@ -38,8 +47,8 @@ router.get('/pinned', authenticate, postController.getPinnedPosts);
 router.get('/contributors/top', postController.getTopContributors || ((req, res)=>res.status(501).json({message:'Not implemented'})));
 
 // Write operations require auth
-router.post('/', authenticate, upload.array('files', 10), postController.createPost);
-router.put('/:postId', authenticate, upload.array('files', 10), postController.updatePost);
+router.post('/', authenticate, upload.array('files', 10), cleanupUploads, postController.createPost);
+router.put('/:postId', authenticate, upload.array('files', 10), cleanupUploads, postController.updatePost);
 router.delete('/:postId', authenticate, postController.deletePost);
 router.post('/:postId/reactions', authenticate, postController.addReaction);
 router.delete('/:postId/reactions', authenticate, postController.removeReaction);
