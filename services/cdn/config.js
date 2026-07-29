@@ -64,6 +64,14 @@ const config = {
   },
 
   legacyFallback: bool('CDN_LEGACY_FALLBACK', true),
+
+  // Avatar do Frappe quản lý (`/files/Avatar/...`), không phải upload của
+  // social-service. Cờ riêng để tắt được độc lập: nếu avatar lỗi thì không
+  // phải tắt cả CDN, ảnh bài đăng và chat vẫn chạy.
+  avatar: {
+    enabled: bool('CDN_AVATAR_ENABLED', false),
+    prefix: process.env.CDN_AVATAR_PREFIX || 'users',
+  },
 };
 
 /**

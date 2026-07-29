@@ -24,8 +24,22 @@ function toObjectPath(stored) {
     return key ? `/${key}` : null;
   }
 
-  // URL tuyệt đối (avatar Frappe, ảnh ngoài) — để nguyên
+  // URL tuyệt đối (ảnh ngoài) — để nguyên
   if (v.startsWith('http://') || v.startsWith('https://')) return null;
+
+  // Avatar của Frappe: `/files/Avatar/<tên>.<ext>` → `<prefix>/<tên>.webp`
+  //
+  // Ánh xạ chỉ đổi phần mở rộng nên là hàm thuần — phủ cả avatar cũ (đã
+  // migrate) lẫn avatar mới (Frappe ghi song song). Nhờ vậy `User.user_image`
+  // giữ nguyên giá trị, không phải migration DB, không phải sửa client.
+  if (config.avatar.enabled && v.startsWith('/files/Avatar/')) {
+    const name = v.slice('/files/Avatar/'.length);
+    if (!name || name.includes('/') || name.includes('..')) return null;
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    if (!stem) return null;
+    return `/social-avatars/${config.avatar.prefix}/${stem}.webp`;
+  }
 
   if (!config.legacyFallback) return null;
 

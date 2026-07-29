@@ -8,6 +8,7 @@ const { authenticate } = require('../middleware/authMiddleware');
 
 const os = require('os');
 const { config: cdnConfig } = require('../services/cdn/config');
+const cleanupUploads = require('../middleware/cleanupUploads');
 
 const chatUploadDir = path.join(__dirname, '../uploads/chat');
 if (!fs.existsSync(chatUploadDir)) fs.mkdirSync(chatUploadDir, { recursive: true });
@@ -100,6 +101,7 @@ router.post(
   '/conversations/teacher-guardian/attachments',
   authenticate,
   chatUploadArray,
+  cleanupUploads,
   chatController.uploadTeacherGuardianAttachments,
 );
 // Endpoint cũ (group GV + tất cả guardian của HS) đã được thay bằng chat 1-1 GV<->guardian.
@@ -127,6 +129,7 @@ router.post(
   '/conversations/:conversationId/attachments',
   authenticate,
   chatUploadArray,
+  cleanupUploads,
   chatController.uploadAttachments,
 );
 router.post('/conversations/:conversationId/messages', authenticate, chatController.sendMessage);
