@@ -19,6 +19,10 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 
+// Phải nạp trước khi require tầng CDN: `services/cdn/config.js` đọc env ngay lúc
+// được require, nạp muộn thì client S3 dựng lên với khoá rỗng.
+require('dotenv').config({ path: path.join(__dirname, '../config.env') });
+
 const cdn = require('../services/cdn');
 const s3 = require('../services/cdn/s3');
 
