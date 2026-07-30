@@ -75,7 +75,16 @@ function userAvatar(user) {
 
 function userRole(user) {
   const roles = user?.roles || [];
-  if (roles.includes('Parent Portal User') || user?.guardian_id) return 'guardian';
+  // Nhận diện PHHS CHỈ qua danh tính parent portal (guardian_id, hoặc email
+  // `{guardian_id}@parent.wellspring.edu.vn`) — KHÔNG suy diễn từ tên role.
+  // Hàng chục GV của trường đồng thời là PHHS, nhưng luôn ở HAI account riêng biệt: ERP tạo
+  // account PH bằng email tổng hợp (erp/api/parent_portal/otp_auth.py) và gán role
+  // 'Parent'/'Guardian' cho account đó. Nếu suy diễn theo tên role, một GV lỡ mang role
+  // Guardian sẽ bị hạ thành PH: mất quyền nhắn ở nhóm mình dạy (writeMode 'teachers_only')
+  // và bị xếp sai participants. `Parent Portal User` thì an toàn — role này chỉ do
+  // frappeService.authenticateParentGuardian tự sinh, không bao giờ có trên account GV.
+  if (roles.includes('Parent Portal User')) return 'guardian';
+  if (effectiveGuardianId(user)) return 'guardian';
   return 'teacher';
 }
 
@@ -140,6 +149,15 @@ function portalGuardianIdFromEmail(email) {
 }
 
 /**
+ * guardian_id dùng được của user: ưu tiên field trong Mongo, thiếu thì suy ra từ email portal
+ * (cùng một value space — ERP tạo email PH là `{guardian_id}@parent.wellspring.edu.vn`).
+ * Cần fallback vì doc Mongo của PH do luồng sync user ghi thường KHÔNG mang guardian_id.
+ */
+function effectiveGuardianId(user) {
+  return normalizeId(user?.guardian_id).toLowerCase() || portalGuardianIdFromEmail(user?.email);
+}
+
+/**
  * Tạo mảng điều kiện $or Mongo để tìm hội thoại mà user là participant
  * (khớp hướng canAccessConversation: user._id, email, guardianId, portal email).
  */
@@ -151,8 +169,7 @@ function buildParticipantMatchOr(user) {
     or.push({ 'participants.user': oid });
   }
   const userEmail = normalizeEmail(user?.email);
-  const userGuardianId =
-    normalizeId(user?.guardian_id).toLowerCase() || portalGuardianIdFromEmail(userEmail);
+  const userGuardianId = effectiveGuardianId(user);
   const emails = new Set();
   if (userEmail) emails.add(userEmail);
   const portalEmailNorm = userGuardianId
@@ -1066,8 +1083,7 @@ function isConversationParticipant(conversation, user) {
   const userEmail = normalizeEmail(user?.email);
   // PHHS đăng nhập portal có email <guardianId>@parent.wellspring.edu.vn nhưng socket.user.guardian_id thường undefined.
   // Suy ra guardianId từ email để khớp với participants được lưu theo guardianId.
-  const userGuardianId =
-    normalizeId(user?.guardian_id).toLowerCase() || portalGuardianIdFromEmail(userEmail);
+  const userGuardianId = effectiveGuardianId(user);
   // Email portal suy ra từ guardian_id (chiều ngược) cho user có guardian_id thật.
   const userPortalEmailFromGuardian = userGuardianId
     ? parentPortalEmailFromGuardianId(userGuardianId)
@@ -2020,7 +2036,12 @@ exports.listConversations = async (req, res) => {
 
     if (classId) {
       conversations = await ensureClassConversations({ classId, schoolYearId, token, user: req.user });
-    } else {
+    } else if (userRole(req.user) === 'guardian') {
+      // Chỉ PH mới quét scope qua parent portal. Trước đây nhánh này chạy cho MỌI role: token
+      // Bearer của GV bị gửi vào endpoint parent-portal-only qua header X-Parent-Portal-Token,
+      // dẫn tới 403 (hoặc trả rỗng) và cả handler 500 khi SIS lỗi. GV không mất gì khi bỏ qua:
+      // endpoint đó resolve theo `sub` của token nên account GV luôn không có guardian record,
+      // scope trả về rỗng — hội thoại của GV lấy từ buildParticipantMatchOr bên dưới.
       const scopes = await frappeService.getGuardianChatScopes(token);
       const uniqueScopes = new Map();
       scopes
