@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { resolveAuthenticatedUser, toReqUserShape } = require('../utils/authResolve');
+const { isServiceKeyAuthorized } = require('../utils/serviceKeyAuth');
 
 // Chuẩn hoá: tách optionalAuth và authenticate để dùng tuỳ route
 const authenticate = async (req, res, next) => {
@@ -70,4 +71,20 @@ const optionalAuth = async (req, res, next) => {
   } catch { req.user = null; return next(); }
 };
 
-module.exports = { authenticate, optionalAuth };
+/**
+ * Cho endpoint admin do cron gọi: chấp nhận service key (`Authorization: token <key>:<secret>`)
+ * HOẶC JWT user thường.
+ *
+ * Cron không có user nào đứng sau nên không có JWT — trước đây route bọc `authenticate` khiến
+ * cron sync user trả 401 'Invalid token' mọi lần chạy suốt nhiều tháng. Đánh dấu
+ * `req.serviceKeyAuth` để controller biết dùng API key khi gọi Frappe thay vì Bearer của user.
+ */
+const authenticateOrServiceKey = async (req, res, next) => {
+  if (isServiceKeyAuthorized(req)) {
+    req.serviceKeyAuth = true;
+    return next();
+  }
+  return authenticate(req, res, next);
+};
+
+module.exports = { authenticate, optionalAuth, authenticateOrServiceKey };

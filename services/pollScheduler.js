@@ -18,6 +18,7 @@
  */
 const ChatConversation = require('../models/ChatConversation');
 const ChatMessage = require('../models/ChatMessage');
+const { describeError } = require('../utils/errorLog');
 const {
   broadcastPollUpdate,
   chatRecipientEmails,
@@ -163,12 +164,12 @@ async function runPollSchedulerTick() {
   try {
     await runReminderJob(now);
   } catch (error) {
-    console.error('[PollScheduler] lỗi job nhắc:', error);
+    console.error('[PollScheduler] lỗi job nhắc:', describeError(error));
   }
   try {
     await runCloseJob(now);
   } catch (error) {
-    console.error('[PollScheduler] lỗi job hết hạn:', error);
+    console.error('[PollScheduler] lỗi job hết hạn:', describeError(error));
   } finally {
     running = false;
   }

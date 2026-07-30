@@ -4,6 +4,7 @@ const ChatMessage = require('../models/ChatMessage');
 const User = require('../models/User');
 const frappeService = require('../services/frappeService');
 const cdn = require('../services/cdn');
+const { describeError } = require('../utils/errorLog');
 const {
   getChatBroadcastRooms,
   ioEmitToEachRoom,
@@ -2299,7 +2300,7 @@ exports.getConversation = async (req, res) => {
     const conversation = await getConversationForUser(conversationId, req.user);
     res.json({ success: true, data: serializeConversation(conversation, req.user) });
   } catch (error) {
-    console.error('[Chat] getConversation error:', error);
+    console.error('[Chat] getConversation error:', describeError(error));
     res.status(error.statusCode || 500).json({
       success: false,
       message: error.message || 'Không thể tải nhóm chat',
@@ -2434,7 +2435,7 @@ exports.listConversations = async (req, res) => {
 
     respondWithConversationPage(res, payloads, opts);
   } catch (error) {
-    console.error('[Chat] listConversations error:', error);
+    console.error('[Chat] listConversations error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải nhóm chat' });
   }
 };
@@ -2459,7 +2460,7 @@ exports.ensureTeacherGuardianConversation = async (req, res) => {
     invalidateConversationParticipantsListCaches(conversation).catch(() => {});
     return res.json({ success: true, data: serializeConversation(conversation, req.user) });
   } catch (error) {
-    console.error('[Chat] ensureTeacherGuardianConversation error:', error);
+    console.error('[Chat] ensureTeacherGuardianConversation error:', describeError(error));
     res.status(error.statusCode || 500).json({
       success: false,
       message: error.message || 'Không thể tạo nhóm chat',
@@ -2507,7 +2508,7 @@ exports.sendTeacherGuardianMessage = async (req, res) => {
 
     res.status(201).json({ success: true, data });
   } catch (error) {
-    console.error('[Chat] sendTeacherGuardianMessage error:', error);
+    console.error('[Chat] sendTeacherGuardianMessage error:', describeError(error));
     res.status(error.statusCode || 500).json({
       success: false,
       code: error.code,
@@ -2529,7 +2530,7 @@ exports.uploadTeacherGuardianAttachments = async (req, res) => {
     const attachments = await buildChatAttachments(files);
     res.json({ success: true, data: { attachments } });
   } catch (error) {
-    console.error('[Chat] uploadTeacherGuardianAttachments error:', error);
+    console.error('[Chat] uploadTeacherGuardianAttachments error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải tệp' });
   }
 };
@@ -2603,7 +2604,7 @@ exports.getMessages = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('[Chat] getMessages error:', error);
+    console.error('[Chat] getMessages error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải tin nhắn' });
   }
 };
@@ -2623,7 +2624,7 @@ exports.uploadAttachments = async (req, res) => {
     const attachments = await buildChatAttachments(files);
     res.json({ success: true, data: { attachments } });
   } catch (error) {
-    console.error('[Chat] uploadAttachments error:', error);
+    console.error('[Chat] uploadAttachments error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải tệp' });
   }
 };
@@ -2658,7 +2659,7 @@ exports.sendMessage = async (req, res) => {
 
     res.status(201).json({ success: true, data });
   } catch (error) {
-    console.error('[Chat] sendMessage error:', error);
+    console.error('[Chat] sendMessage error:', describeError(error));
     res.status(error.statusCode || 500).json({
       success: false,
       code: error.code,
@@ -2695,7 +2696,7 @@ exports.markRead = async (req, res) => {
 
     res.json({ success: true, data: serializeConversation(conversation, req.user) });
   } catch (error) {
-    console.error('[Chat] markRead error:', error);
+    console.error('[Chat] markRead error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể đánh dấu đã đọc' });
   }
 };
@@ -2725,7 +2726,7 @@ exports.hideConversationFromList = async (req, res) => {
 
     res.json({ success: true, message: 'Đã ẩn nhóm khỏi danh sách' });
   } catch (error) {
-    console.error('[Chat] hideConversationFromList error:', error);
+    console.error('[Chat] hideConversationFromList error:', describeError(error));
     res.status(error.statusCode || 500).json({
       success: false,
       message: error.message || 'Không thể ẩn nhóm chat',
@@ -2813,7 +2814,7 @@ exports.toggleReaction = async (req, res) => {
 
     res.json({ success: true, data: { messageId: String(message._id), reactions: serialized } });
   } catch (error) {
-    console.error('[Chat] toggleReaction error:', error);
+    console.error('[Chat] toggleReaction error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể cập nhật reaction' });
   }
 };
@@ -2843,7 +2844,7 @@ exports.createPoll = async (req, res) => {
 
     res.status(201).json({ success: true, data });
   } catch (error) {
-    console.error('[Chat] createPoll error:', error);
+    console.error('[Chat] createPoll error:', describeError(error));
     res.status(error.statusCode || 500).json({
       success: false,
       code: error.code,
@@ -2921,7 +2922,7 @@ exports.votePoll = async (req, res) => {
       data: { messageId: String(updated._id), poll: pollPayloadForViewer(updated.poll, req.user) },
     });
   } catch (error) {
-    console.error('[Chat] votePoll error:', error);
+    console.error('[Chat] votePoll error:', describeError(error));
     res.status(error.statusCode || 500).json({
       success: false,
       code: error.code,
@@ -2973,7 +2974,7 @@ exports.closePoll = async (req, res) => {
       data: { messageId: String(updated._id), poll: pollPayloadForViewer(updated.poll, req.user) },
     });
   } catch (error) {
-    console.error('[Chat] closePoll error:', error);
+    console.error('[Chat] closePoll error:', describeError(error));
     res.status(error.statusCode || 500).json({
       success: false,
       code: error.code,
@@ -3007,7 +3008,7 @@ exports.getPollVoters = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('[Chat] getPollVoters error:', error);
+    console.error('[Chat] getPollVoters error:', describeError(error));
     res.status(error.statusCode || 500).json({
       success: false,
       message: error.message || 'Không thể tải danh sách người bình chọn',
@@ -3070,7 +3071,7 @@ exports.pinMessage = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('[Chat] pinMessage error:', error);
+    console.error('[Chat] pinMessage error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể ghim tin nhắn' });
   }
 };
@@ -3104,7 +3105,7 @@ exports.unpinMessage = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('[Chat] unpinMessage error:', error);
+    console.error('[Chat] unpinMessage error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể bỏ ghim' });
   }
 };
@@ -3200,7 +3201,7 @@ exports.recallMessage = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('[Chat] recallMessage error:', error);
+    console.error('[Chat] recallMessage error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể thu hồi tin nhắn' });
   }
 };
@@ -3272,7 +3273,7 @@ exports.listAddableTeachers = async (req, res) => {
 
     res.json({ success: true, data: addable });
   } catch (error) {
-    console.error('[Chat] listAddableTeachers error:', error);
+    console.error('[Chat] listAddableTeachers error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải danh sách GV bộ môn' });
   }
 };
@@ -3365,7 +3366,7 @@ exports.addConversationTeacher = async (req, res) => {
 
     res.json({ success: true, data: serializeConversation(conversation, req.user) });
   } catch (error) {
-    console.error('[Chat] addConversationTeacher error:', error);
+    console.error('[Chat] addConversationTeacher error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể thêm GV bộ môn' });
   }
 };
@@ -3447,7 +3448,7 @@ exports.removeConversationTeacher = async (req, res) => {
 
     res.json({ success: true, data: serializeConversation(conversation, req.user) });
   } catch (error) {
-    console.error('[Chat] removeConversationTeacher error:', error);
+    console.error('[Chat] removeConversationTeacher error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể gỡ GV bộ môn' });
   }
 };
@@ -3502,7 +3503,7 @@ exports.setConversationWriteMode = async (req, res) => {
 
     res.json({ success: true, data: serializeConversation(conversation, req.user) });
   } catch (error) {
-    console.error('[Chat] setConversationWriteMode error:', error);
+    console.error('[Chat] setConversationWriteMode error:', describeError(error));
     res.status(error.statusCode || 500).json({
       success: false,
       message: error.message || 'Không thể đổi chế độ nhắn tin của nhóm',

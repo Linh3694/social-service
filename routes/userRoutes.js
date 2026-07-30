@@ -1,6 +1,6 @@
 const express = require('express');
 const userController = require('../controllers/userController');
-const { authenticate, optionalAuth } = require('../middleware/authMiddleware');
+const { authenticate, optionalAuth, authenticateOrServiceKey } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
@@ -9,9 +9,9 @@ const router = express.Router();
  * Đồng bộ user từ Frappe ERP về MongoDB
  */
 
-// 📝 ENDPOINT 1: Manual sync tất cả enabled users (AUTHENTICATED)
+// 📝 ENDPOINT 1: Manual sync tất cả enabled users (JWT user HOẶC service key của cron)
 // POST /api/social/user/sync/manual
-router.post('/sync/manual', authenticate, userController.syncUsersManual);
+router.post('/sync/manual', authenticateOrServiceKey, userController.syncUsersManual);
 
 // 📧 ENDPOINT 2: Sync user theo email (AUTHENTICATED)
 // POST /api/social/user/sync/email/:email

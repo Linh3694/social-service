@@ -60,6 +60,7 @@ userSchema.index({ department: 1 });
 // Text index cho search mention - hỗ trợ tìm kiếm theo tên
 userSchema.index({ fullname: 'text', email: 'text' });
 
+/** Đuôi email tài khoản PHHS đăng nhập parent portal. */
 const PARENT_PORTAL_EMAIL_SUFFIX = '@parent.wellspring.edu.vn';
 
 /**
@@ -85,6 +86,38 @@ function isParentPortalAccount(frappeUser, roles) {
 /** Dùng chung cho script sửa tên (scripts/fix-user-names.js) — một nguồn sự thật. */
 userSchema.statics.isParentPortalAccount = function isParentPortalAccountStatic(user, roles) {
   return isParentPortalAccount(user, roles || user?.roles);
+};
+
+/**
+ * Giữ nguyên roles của account PHHS khi payload KHÔNG đến từ luồng parent portal.
+ *
+ * Account PH (`{guardian_id}@parent.wellspring.edu.vn`) phải mang roles ['Parent Portal User']
+ * kèm guardian_id — do frappeService.authenticateParentGuardian dựng. Các luồng đồng bộ user
+ * chung (cron sync toàn bộ user, Redis user_updated, webhook) đọc DocType User của Frappe nên
+ * trả roles ['Parent','Guardian'] và KHÔNG có guardian_id; ghi đè vào sẽ xoá dấu vết parent
+ * portal của doc. Chỉ payload tự mang 'Parent Portal User' hoặc guardian_id mới được ghi roles.
+ *
+ * Các field khác (ảnh, tên, trạng thái enabled) vẫn đồng bộ bình thường.
+ *
+ * @param {Object} update Object update sẽ đưa vào $set — bị sửa trực tiếp.
+ * @param {string} email Email của doc đích.
+ * @returns {Object} chính `update`, cho tiện chaining.
+ */
+function preserveParentPortalRoles(update, email) {
+  if (!update) return update;
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized.endsWith(PARENT_PORTAL_EMAIL_SUFFIX)) return update;
+  const roles = Array.isArray(update.roles) ? update.roles : [];
+  const fromParentPortal = roles.includes('Parent Portal User') || Boolean(update.guardian_id);
+  if (fromParentPortal) return update;
+  delete update.roles;
+  delete update.role;
+  return update;
+}
+
+/** Cho các luồng sync ngoài model dùng cùng một luật (xem controllers/userController.js). */
+userSchema.statics.preserveParentPortalRoles = function (update, email) {
+  return preserveParentPortalRoles(update, email);
 };
 
 /**
@@ -167,6 +200,8 @@ userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser
     delete update.roles;
     delete update.role;
   }
+
+  preserveParentPortalRoles(update, email);
 
   const query = { email: email.toLowerCase() };
   const options = { upsert: true, new: true, setDefaultsOnInsert: true };
