@@ -2,10 +2,16 @@
  * Chat / Trò chuyện → Redis Stream `notify.send` (notification-service).
  */
 const { publishEnvelope } = require('../utils/eventBus');
+const { formatVietnameseName } = require('../utils/nameUtils');
 
+/**
+ * Tên người gửi trong body push — chuẩn hoá Họ Đệm Tên.
+ * Body do đây soạn rồi gửi nguyên văn ra Expo, client KHÔNG sửa được, nên không chuẩn hoá
+ * ở đây là tên đảo hiện thẳng trên thông báo dù trong app vẫn đúng (SIS-170).
+ */
 function normalizeName(name) {
   const s = String(name || '').trim();
-  return s || 'Ai đó';
+  return formatVietnameseName(s) || s || 'Ai đó';
 }
 
 function normalizeEmails(list) {

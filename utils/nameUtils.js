@@ -29,9 +29,6 @@ const VIETNAMESE_SURNAMES_PRIORITY = [
   'hà', 'ha', 'cao', 'la', 'mai', 'lam', 'quang'
 ];
 
-// Flat list để check nhanh
-const VIETNAMESE_SURNAMES = [...VIETNAMESE_SURNAMES_PRIORITY];
-
 // Họ ghép phổ biến
 const COMPOUND_SURNAMES = [
   'nguyễn đình', 'nguyen dinh', 'nguyễn văn', 'nguyen van',
@@ -65,25 +62,39 @@ function removeVietnameseTones(str) {
  * @returns {boolean}
  */
 function isVietnameseSurname(word) {
-  if (!word) return false;
-  const normalized = removeVietnameseTones(word.toLowerCase());
-  return VIETNAMESE_SURNAMES.some(surname => 
-    normalized === removeVietnameseTones(surname)
-  );
+  return getSurnamePriority(word) >= 0;
+}
+
+/**
+ * Từ có mang dấu tiếng Việt (hoặc chữ đ) hay không.
+ * @param {string} word
+ * @returns {boolean}
+ */
+function hasVietnameseDiacritics(word) {
+  return removeVietnameseTones(word) !== String(word).toLowerCase();
 }
 
 /**
  * Lấy độ ưu tiên của họ (số càng nhỏ = càng phổ biến)
- * @param {string} word 
+ * @param {string} word
  * @returns {number} - Index trong mảng priority, -1 nếu không phải họ VN
+ *
+ * So khớp CÓ DẤU trước. Nếu bỏ dấu cả hai vế thì TÊN cũng đụng họ — "Lệ" thành "le"
+ * khớp họ "Lê", "Hạ" thành "ha" khớp họ "Hà" — khiến "Vũ Thị Nhật Lệ" bị coi là tên
+ * kiểu Tây (họ đứng cuối) rồi đảo thành "Lệ Vũ Thị Nhật" trên thông báo (SIS-170).
+ * Chỉ khi người dùng gõ KHÔNG DẤU mới so khớp bỏ dấu (vd "Nguyen", "Vu"); danh sách họ
+ * đã có sẵn cả biến thể không dấu nên nhánh này không mất trường hợp nào.
+ * Đồng bộ với bản client: workspace-mobile/src/utils/nameFormatter.ts.
  */
 function getSurnamePriority(word) {
   if (!word) return -1;
-  const normalized = removeVietnameseTones(word.toLowerCase());
-  const index = VIETNAMESE_SURNAMES_PRIORITY.findIndex(surname => 
-    normalized === removeVietnameseTones(surname)
+  const lower = String(word).toLowerCase();
+  const exact = VIETNAMESE_SURNAMES_PRIORITY.indexOf(lower);
+  if (exact >= 0) return exact;
+  if (hasVietnameseDiacritics(word)) return -1;
+  return VIETNAMESE_SURNAMES_PRIORITY.findIndex(
+    surname => lower === removeVietnameseTones(surname)
   );
-  return index;
 }
 
 /**

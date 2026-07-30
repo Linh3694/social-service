@@ -1,12 +1,13 @@
 /**
  * 🔧 Script fix tên user bị format sai trong MongoDB
- * 
- * Chạy: node scripts/fix-user-names.js
- * 
+ *
+ * Xem trước (KHÔNG ghi DB):  node scripts/fix-user-names.js
+ * Ghi thật vào DB:            node scripts/fix-user-names.js --apply
+ *
  * Script này sẽ:
  * 1. Lấy tất cả users từ DB
  * 2. Kiểm tra và format lại tên theo chuẩn Việt Nam
- * 3. Cập nhật những users cần sửa
+ * 3. Liệt kê những users cần sửa — chỉ ghi DB khi chạy kèm --apply
  */
 
 require('dotenv').config();
@@ -15,6 +16,9 @@ const User = require('../models/User');
 const { formatVietnameseName, detectNameFormat } = require('../utils/nameUtils');
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/wis_social';
+
+/** Mặc định dry-run — tránh ghi đè tên hàng loạt chỉ vì gõ nhầm lệnh. */
+const APPLY = process.argv.includes('--apply');
 
 async function connectDB() {
   try {
@@ -27,8 +31,13 @@ async function connectDB() {
 }
 
 async function fixUserNames() {
-  console.log('\n🔍 Scanning users for name format issues...\n');
-  
+  console.log(
+    APPLY
+      ? '\n✍️  CHẾ ĐỘ GHI (--apply): sẽ cập nhật tên vào DB.\n'
+      : '\n👀 CHẾ ĐỘ XEM TRƯỚC (dry-run): KHÔNG ghi DB. Thêm --apply để ghi thật.\n'
+  );
+  console.log('🔍 Scanning users for name format issues...\n');
+
   // Debug: Đếm tổng số users trong collection
   const totalCount = await User.countDocuments({});
   console.log(`📊 Total users in collection: ${totalCount}`);
@@ -90,19 +99,23 @@ async function fixUserNames() {
         format: format
       });
       
-      // Update in DB - cập nhật CẢ HAI fields
-      await User.updateOne(
-        { _id: user._id },
-        { 
-          $set: { 
-            fullname: formattedName,
-            fullName: formattedName 
-          } 
-        }
-      );
-      
+      if (APPLY) {
+        // Update in DB - cập nhật CẢ HAI fields
+        await User.updateOne(
+          { _id: user._id },
+          {
+            $set: {
+              fullname: formattedName,
+              fullName: formattedName
+            }
+          }
+        );
+      }
+
       fixedCount++;
-      console.log(`✅ Fixed: "${originalName}" → "${formattedName}" (${format})`);
+      console.log(
+        `${APPLY ? '✅ Fixed' : '📋 Sẽ sửa'}: "${originalName}" → "${formattedName}" (${format})`
+      );
     } else {
       skippedCount++;
     }
@@ -111,15 +124,18 @@ async function fixUserNames() {
   console.log('\n' + '='.repeat(60));
   console.log('📊 SUMMARY:');
   console.log(`   - Total users scanned: ${users.length}`);
-  console.log(`   - Users fixed: ${fixedCount}`);
+  console.log(`   - ${APPLY ? 'Users fixed' : 'Users cần sửa (chưa ghi)'}: ${fixedCount}`);
   console.log(`   - Users skipped (already correct): ${skippedCount}`);
   console.log('='.repeat(60) + '\n');
-  
+
   if (fixes.length > 0) {
-    console.log('📝 Fixed users list:');
+    console.log(APPLY ? '📝 Fixed users list:' : '📝 Danh sách sẽ sửa (dry-run):');
     fixes.forEach((fix, i) => {
       console.log(`   ${i + 1}. ${fix.email}: "${fix.original}" → "${fix.fixed}"`);
     });
+    if (!APPLY) {
+      console.log('\n⚠️  Chưa ghi gì vào DB. Chạy lại kèm --apply để cập nhật.');
+    }
   }
   
   return fixes;

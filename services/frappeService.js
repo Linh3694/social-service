@@ -672,10 +672,15 @@ class FrappeService {
       hdr,
       { ...opts, accessOnly: true }
     );
-    const teacherIds = [cls.homeroom_teacher, cls.vice_homeroom_teacher].filter(Boolean);
+    // Vai trò đi KÈM từng teacherId, không suy ra từ vị trí trong `teachers`: dưới đây là
+    // Promise.all + push nên thứ tự phần tử theo thời điểm resolve, không theo thứ tự input.
+    const homeroomTeacherRefs = [
+      { teacherId: cls.homeroom_teacher, homeroomRole: 'homeroom' },
+      { teacherId: cls.vice_homeroom_teacher, homeroomRole: 'vice_homeroom' },
+    ].filter((ref) => Boolean(ref.teacherId));
     const teachers = [];
 
-    await Promise.all(teacherIds.map(async (teacherId) => {
+    await Promise.all(homeroomTeacherRefs.map(async ({ teacherId, homeroomRole }) => {
       try {
         const teacher = await this.getResource('SIS Teacher', teacherId, hdr);
         const userId = teacher?.user_id;
@@ -688,10 +693,11 @@ class FrappeService {
           email: user?.email || userId || '',
           name: user?.full_name || user?.name || teacherId,
           avatarUrl: user?.user_image || '',
+          homeroomRole,
         });
       } catch (error) {
         console.warn(`[FrappeService] Không lấy được giáo viên chủ nhiệm ${teacherId}:`, error.message);
-        teachers.push({ teacherId, name: teacherId, email: '' });
+        teachers.push({ teacherId, name: teacherId, email: '', homeroomRole });
       }
     }));
 

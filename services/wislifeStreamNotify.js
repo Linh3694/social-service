@@ -2,10 +2,14 @@
  * Wislife → Redis Stream `notify.send` (notification-service Phase 3) + HTTP fallback qua notificationDispatcher.
  */
 const { publishEnvelope } = require('../utils/eventBus');
+const { formatVietnameseName } = require('../utils/nameUtils');
 
+/**
+ * Tên người trong body push — chuẩn hoá Họ Đệm Tên (xem chatStreamNotify, SIS-170).
+ */
 function normalizeName(name) {
   const s = String(name || '').trim();
-  return s || 'Ai đó';
+  return formatVietnameseName(s) || s || 'Ai đó';
 }
 
 /** classId/studentIds — đồng bộ với ERP _wislife_extra_fields. */

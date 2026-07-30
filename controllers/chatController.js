@@ -17,6 +17,7 @@ const {
   TTL_CHAT_LIST_SEC,
   TTL_MSG_COUNT_SEC,
 } = require('../utils/cache');
+const { decodeMultipartFilename } = require('../utils/uploadFilename');
 
 const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
 
@@ -458,6 +459,12 @@ function teacherIdAllowedInScope(scope, teacherId) {
   return collectScopeTeachers(scope).some((t) => normalizeId(t.teacherId) === normalizeId(teacherId));
 }
 
+/** Vai trò chủ nhiệm hợp lệ từ scope Frappe (`homeroom_role`); giá trị lạ ⇒ rỗng. */
+function normalizeHomeroomRole(value) {
+  const raw = String(value || '').trim();
+  return raw === 'homeroom' || raw === 'vice_homeroom' ? raw : '';
+}
+
 function normalizeTeacherSnapshot(t) {
   if (!t) return null;
   return {
@@ -467,6 +474,8 @@ function normalizeTeacherSnapshot(t) {
     avatarUrl: t.avatarUrl || '',
     userId: t.userId || '',
     userName: t.userName || '',
+    // Frappe trả `homeroom_role`; nhánh fallback frappeService dựng sẵn `homeroomRole`.
+    homeroomRole: normalizeHomeroomRole(t.homeroom_role || t.homeroomRole),
     subjects: Array.isArray(t.subjects) ? t.subjects : [],
   };
 }
@@ -518,6 +527,7 @@ async function buildSubsetConversationPayload(scope, type, requestUser, {
       teacherId: norm.teacherId || normalizeId(teacher.teacherId || teacher.name),
       avatarUrl: norm.avatarUrl || teacher.avatarUrl || '',
       phoneNumber: guardianPhoneFromScope(teacher),
+      homeroomRole: norm.homeroomRole,
       subjects: compactSubjectSnapshots(norm.subjects || teacher.subjects),
     };
   });
@@ -621,6 +631,7 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
       teacherId: norm.teacherId || normalizeId(teacher.teacherId || teacher.name),
       avatarUrl: norm.avatarUrl || teacher.avatarUrl || '',
       phoneNumber: guardianPhoneFromScope(teacher),
+      homeroomRole: norm.homeroomRole,
       subjects: compactSubjectSnapshots(norm.subjects || teacher.subjects),
     };
   });
@@ -851,6 +862,11 @@ function mergeSnapshotFields(oldS, newS, opts) {
     name: newS.name || oldS.name,
     teacherId: newS.teacherId || oldS.teacherId,
     guardianId: newS.guardianId || oldS.guardianId,
+    // Vai trò CN/phó giữ `||` kể cả khi authoritative — KHÔNG dùng displayField. Scope
+    // read-path/fallback không luôn trả field này, để nó ghi rỗng thì Phó GVCN tụt lại
+    // thành "GVCN" đúng như bug ban đầu. GV rời hẳn vai trò thì sync soft-remove cả
+    // participant nên không sợ giữ giá trị cũ.
+    homeroomRole: normalizeHomeroomRole(newS.homeroomRole) || normalizeHomeroomRole(oldS.homeroomRole),
     avatarUrl: displayField(newS.avatarUrl, oldS.avatarUrl),
     studentIds: Array.from(new Set([
       ...((oldS.studentIds || []).map(String)),
@@ -1154,6 +1170,193 @@ function isVisibleSchoolYear(conversation) {
   return start >= CHAT_MIN_SCHOOL_YEAR;
 }
 
+/** Năm học còn hiển thị đổi cỡ một lần mỗi năm ⇒ cache dài hơn TTL danh sách chat. */
+const VISIBLE_SCHOOL_YEARS_CACHE_KEY = 'chat:visible-school-years';
+const TTL_VISIBLE_SCHOOL_YEARS_SEC = 300;
+
+/**
+ * Tên năm học còn hiển thị, để lọc NGAY TRONG QUERY thay vì lọc sau khi đã limit.
+ *
+ * Không dựng regex năm học trong Mongo vì `CHAT_MIN_SCHOOL_YEAR` cấu hình được bằng env và
+ * luật "lấy số 20xx ĐẦU TIÊN" rất dễ viết sai ("2025-2026" phải bị ẩn dù có chứa 2026).
+ * Số năm học phân biệt chỉ vài giá trị nên `distinct` rẻ, và lọc lại bằng chính
+ * `isVisibleSchoolYear` giữ được MỘT nguồn sự thật cho luật hiển thị.
+ *
+ * `null` luôn có trong danh sách để khớp doc thiếu `schoolYearName` (Mongo `$in: [null]` khớp
+ * cả null lẫn field vắng mặt) — đúng ngữ nghĩa "không đọc được tên năm ⇒ GIỮ LẠI".
+ */
+async function visibleSchoolYearNames() {
+  const cached = await cacheGetJSON(VISIBLE_SCHOOL_YEARS_CACHE_KEY);
+  if (Array.isArray(cached?.names)) return cached.names;
+
+  const all = await ChatConversation.distinct('schoolYearName');
+  const names = all.filter((name) => isVisibleSchoolYear({ schoolYearName: name }));
+  if (!names.includes(null)) names.push(null);
+  cacheSetJSON(
+    VISIBLE_SCHOOL_YEARS_CACHE_KEY,
+    { names },
+    TTL_VISIBLE_SCHOOL_YEARS_SEC,
+  ).catch(() => {});
+  return names;
+}
+
+/**
+ * Nhóm ký tự tiếng Việt cùng gốc — dựng regex tìm kiếm BỎ DẤU ngay trên Mongo.
+ * Mongo không áp collation cho `$regex` và collection chưa có field chuẩn hoá sẵn, nên cách rẻ
+ * nhất là nở từng chữ cái của từ khoá thành lớp ký tự có dấu tương ứng. Từ khoá được bỏ dấu
+ * trước khi nở nên khớp hai chiều: gõ "lop 5a6" ra "Lớp 5A6", gõ "Lớp 5A6" cũng ra "Lop 5A6".
+ */
+const ACCENT_CHAR_CLASSES = {
+  a: 'aàáảãạăằắẳẵặâầấẩẫậ',
+  d: 'dđ',
+  e: 'eèéẻẽẹêềếểễệ',
+  i: 'iìíỉĩị',
+  o: 'oòóỏõọôồốổỗộơờớởỡợ',
+  u: 'uùúủũụưừứửữự',
+  y: 'yỳýỷỹỵ',
+};
+
+/** Bỏ dấu + hạ chữ thường (khớp `normalizeForSearch` phía client). */
+function stripAccents(value) {
+  return String(value || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+}
+
+/** RegExp bỏ dấu cho từ khoá tự do; `null` nếu từ khoá rỗng. Dùng chung cho cả Mongo lẫn in-memory. */
+function buildAccentInsensitiveRegex(raw) {
+  const needle = stripAccents(raw).trim();
+  if (!needle) return null;
+  const pattern = [...needle]
+    .map((ch) => {
+      const cls = ACCENT_CHAR_CLASSES[ch];
+      if (cls) return `[${cls}${cls.toUpperCase()}]`;
+      return ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    })
+    .join('');
+  return new RegExp(pattern, 'i');
+}
+
+/**
+ * Giá trị chuẩn của pill lọc danh sách.
+ * `parent` (SIS web / workspace-mobile) và `teacher` (parent-portal) cùng trỏ chat 1-1 — chỉ khác
+ * góc nhìn của người dùng — nên nhận cả hai làm alias để client khỏi phải đổi nhãn nội bộ.
+ */
+const CONVERSATION_FILTERS = new Set(['all', 'group', 'direct', 'unread']);
+
+function normalizeConversationFilter(value) {
+  const raw = String(value || 'all').trim().toLowerCase();
+  if (raw === 'parent' || raw === 'teacher') return 'direct';
+  return CONVERSATION_FILTERS.has(raw) ? raw : 'all';
+}
+
+const CONVERSATION_PAGE_SIZE_DEFAULT = 50;
+const CONVERSATION_PAGE_SIZE_MAX = 200;
+
+/**
+ * Đọc tham số phân trang/tìm kiếm của `listConversations`.
+ * `paginated = false` (client không gửi `page` lẫn `limit`) ⇒ GIỮ hành vi cũ: trả full list.
+ * Bốn client đang chạy đều gọi kiểu này nên không cái nào vỡ khi service lên bản mới.
+ */
+function parseConversationListQuery(query) {
+  const rawPage = query?.page;
+  const rawLimit = query?.limit;
+  return {
+    paginated: rawPage !== undefined || rawLimit !== undefined,
+    page: Math.max(1, parseInt(rawPage, 10) || 1),
+    limit: Math.min(
+      CONVERSATION_PAGE_SIZE_MAX,
+      Math.max(1, parseInt(rawLimit, 10) || CONVERSATION_PAGE_SIZE_DEFAULT),
+    ),
+    countOnly: ['1', 'true', 'yes'].includes(String(query?.countOnly || '').toLowerCase()),
+    q: String(query?.q || '').trim(),
+    filter: normalizeConversationFilter(query?.filter),
+  };
+}
+
+/** Điều kiện Mongo cho từ khoá: tên nhóm/lớp + tên PH/GV (đúng như placeholder "Tìm đoạn chat, tên PH…"). */
+function conversationSearchCondition(regex) {
+  if (!regex) return null;
+  return {
+    $or: [
+      { title: regex },
+      { className: regex },
+      { 'guardians.name': regex },
+      { 'teachers.name': regex },
+    ],
+  };
+}
+
+/** Bản in-memory của `conversationSearchCondition` — dùng chung RegExp nên hai nhánh cùng ngữ nghĩa. */
+function conversationMatchesSearch(payload, regex) {
+  if (!regex) return true;
+  if (regex.test(payload?.title || '') || regex.test(payload?.className || '')) return true;
+  return [...(payload?.guardians || []), ...(payload?.teachers || [])]
+    .some((member) => regex.test(member?.name || ''));
+}
+
+/** Bản in-memory của map pill lọc → `type` / unread. */
+function conversationMatchesFilter(payload, filter) {
+  const type = String(payload?.type || '');
+  if (filter === 'group') return type === 'class_general';
+  if (filter === 'direct') return type.startsWith('teacher_guardian:');
+  if (filter === 'unread') return Number(payload?.unreadCount || 0) > 0;
+  return true;
+}
+
+/** Điều kiện unread theo user (Map `unreadCounts` khoá bằng Mongo `_id`); null nếu không xác định được user. */
+function conversationUnreadCondition(user) {
+  const key = participantKey(user);
+  if (!key) return null;
+  return { [`unreadCounts.${key}`]: { $gt: 0 } };
+}
+
+/**
+ * So sánh giống hệt sort Mongo `{lastMessage.createdAt: -1, updatedAt: -1, _id: -1}`.
+ * Thiếu `lastMessage.createdAt` (nhóm chưa có tin) ⇒ xuống cuối, khớp thứ tự BSON của Mongo.
+ */
+function compareConversationRecency(a, b) {
+  const at = a?.lastMessage?.createdAt ? new Date(a.lastMessage.createdAt).getTime() : -Infinity;
+  const bt = b?.lastMessage?.createdAt ? new Date(b.lastMessage.createdAt).getTime() : -Infinity;
+  if (at !== bt) return bt - at;
+  const au = a?.updatedAt ? new Date(a.updatedAt).getTime() : -Infinity;
+  const bu = b?.updatedAt ? new Date(b.updatedAt).getTime() : -Infinity;
+  if (au !== bu) return bu - au;
+  return String(b?._id || '').localeCompare(String(a?._id || ''));
+}
+
+/**
+ * Trả danh sách hội thoại ĐÃ serialize theo hợp đồng phân trang, áp `q`/`filter` trong bộ nhớ.
+ * Dùng cho nhánh non-BOD (danh sách của GV/PH nhỏ, lại còn đi qua cache Redis nên lọc tại chỗ là rẻ nhất).
+ *
+ * `data` LUÔN là mảng phẳng, thông tin trang nằm ở `meta` bên cạnh — nhờ vậy 4 client cũ
+ * (không gửi `page`) đọc `body.data` như trước mà không phải sửa gì.
+ */
+function respondWithConversationPage(res, payloads, opts) {
+  const regex = buildAccentInsensitiveRegex(opts.q);
+  const matched = payloads.filter(
+    (p) => conversationMatchesFilter(p, opts.filter) && conversationMatchesSearch(p, regex),
+  );
+  const total = matched.length;
+
+  if (opts.countOnly) {
+    return res.json({ success: true, data: [], meta: { page: 1, limit: 0, hasMore: false, total } });
+  }
+  if (!opts.paginated) {
+    return res.json({
+      success: true,
+      data: matched,
+      meta: { page: 1, limit: total, hasMore: false, total },
+    });
+  }
+
+  const start = (opts.page - 1) * opts.limit;
+  const items = matched.slice(start, start + opts.limit);
+  return res.json({
+    success: true,
+    data: items,
+    meta: { page: opts.page, limit: opts.limit, hasMore: start + items.length < total, total },
+  });
+}
+
 /**
  * Nhóm đang ở chế độ "chỉ GV được nhắn" VÀ người dùng là PH ⇒ chặn mọi thao tác GHI.
  * Khác `status === 'locked'` (khóa cứng cả GV cho lớp/năm học cũ): GV vẫn ghi bình thường.
@@ -1307,13 +1510,16 @@ function attachmentKindFromMime(mime) {
  * Bật CDN: đẩy lên MinIO, trả về khoá `cdn://social-chat/…`. Middleware
  * cdnSignResponse sẽ ký khoá này thành URL đầy đủ trước khi tới client.
  * Tắt CDN: giữ nguyên hành vi cũ (đường dẫn /uploads/chat/).
+ *
+ * Tên file LUÔN phải đi qua decodeMultipartFilename: multer trả `originalname` đã bị
+ * decode sai thành latin1 nên tên tiếng Việt vào DB thành ký tự lỗi (SIS-169).
  */
 async function buildChatAttachments(files) {
   if (!cdn.config.enabled) {
     return files.map((file) => ({
       kind: attachmentKindFromMime(file.mimetype),
       url: `/uploads/chat/${file.filename}`,
-      name: String(file.originalname || file.filename || 'file').slice(0, 220),
+      name: decodeMultipartFilename(file.originalname || file.filename || 'file').slice(0, 220),
       mimeType: file.mimetype || '',
       size: file.size || 0,
     }));
@@ -1326,7 +1532,7 @@ async function buildChatAttachments(files) {
     return results.map((r, i) => ({
       kind: r.kind,
       url: r.stored,
-      name: String(files[i].originalname || 'file').slice(0, 220),
+      name: decodeMultipartFilename(files[i].originalname || 'file').slice(0, 220),
       mimeType: r.contentType,
       size: r.size,
       width: r.width,
@@ -1965,55 +2171,144 @@ async function appendMessageToConversation(conversation, req, {
   return { message: payloadMsg, conversation: serializeConversation(conversation, req.user) };
 }
 
+/** Trần an toàn cho nhánh BOD khi client CHƯA gửi `page` — chỉ để chặn truy vấn hỏng. */
+const BOD_FULL_LIST_GROUP_CAP = 2000;
+const BOD_FULL_LIST_DIRECT_CAP = 500;
+
+/**
+ * Danh sách hội thoại cho BOD — query thẳng Mongo trên TOÀN BỘ collection, không ensure/scope,
+ * không match participant, không cache Redis (ít user, query lại có tìm kiếm).
+ *
+ * Bản cũ `find(...).limit(200)` rồi mới lọc năm học / 1-1 rỗng bằng JS. Hai hệ quả: doc bị loại
+ * vẫn ăn slot của 200, và nhóm lớp CHƯA CÓ TIN NHẮN (thiếu `lastMessage.createdAt` ⇒ BSON xếp
+ * cuối ở chiều desc) rơi qua mốc là biến mất — client lại lọc tìm kiếm trên mảng đã tải nên
+ * không cách nào tìm lại được (SIS-166). Vì vậy MỌI điều kiện lọc phải nằm trong query.
+ */
+async function listConversationsForBod(req, res, opts) {
+  const { classId, schoolYearId } = req.query;
+
+  const groupArm = { type: 'class_general' };
+  // 1-1 chưa có tin thì không liệt kê (giống list thường) — điều kiện nằm TRONG query.
+  const directArm = {
+    type: { $regex: /^teacher_guardian:/ },
+    'lastMessage.messageId': { $exists: true, $ne: null },
+  };
+
+  const baseConditions = [{ schoolYearName: { $in: await visibleSchoolYearNames() } }];
+  if (classId) baseConditions.push({ classId: String(classId).trim() });
+  if (schoolYearId) baseConditions.push({ schoolYearId: String(schoolYearId).trim() });
+
+  const search = conversationSearchCondition(buildAccentInsensitiveRegex(opts.q));
+  if (search) baseConditions.push(search);
+
+  if (opts.filter === 'unread') {
+    // BOD thuần không bao giờ là participant nên không có khoá trong `unreadCounts`; user lai
+    // BOD + SIS Teacher thì CÓ ở lớp mình dạy, nên vẫn query bình thường thay vì trả rỗng.
+    const unread = conversationUnreadCondition(req.user);
+    if (!unread) {
+      return res.json({
+        success: true,
+        data: [],
+        meta: { page: opts.page, limit: opts.paginated ? opts.limit : 0, hasMore: false, total: 0 },
+      });
+    }
+    baseConditions.push(unread);
+  }
+
+  const typeArm = opts.filter === 'group'
+    ? groupArm
+    : opts.filter === 'direct'
+      ? directArm
+      : { $or: [groupArm, directArm] };
+
+  const filter = { $and: [typeArm, ...baseConditions] };
+  const total = await ChatConversation.countDocuments(filter);
+
+  if (opts.countOnly) {
+    return res.json({ success: true, data: [], meta: { page: 1, limit: 0, hasMore: false, total } });
+  }
+
+  // `_id` làm tie-break để hai trang liên tiếp không trả trùng/sót dòng.
+  const sort = { 'lastMessage.createdAt': -1, updatedAt: -1, _id: -1 };
+
+  if (opts.paginated) {
+    const rows = await ChatConversation.find(filter)
+      .sort(sort)
+      .skip((opts.page - 1) * opts.limit)
+      .limit(opts.limit + 1);
+    const hasMore = rows.length > opts.limit;
+    const pageRows = hasMore ? rows.slice(0, opts.limit) : rows;
+    return res.json({
+      success: true,
+      data: pageRows.map((c) => serializeConversation(c, req.user)),
+      meta: { page: opts.page, limit: opts.limit, hasMore, total },
+    });
+  }
+
+  // Client chưa hỗ trợ phân trang: trả full list như hợp đồng cũ. Tách HAI truy vấn để trần của
+  // chat 1-1 không bao giờ cắt vào nhóm lớp — đúng thứ đã hỏng ở bản trước.
+  const [groups, directs] = await Promise.all([
+    opts.filter === 'direct'
+      ? []
+      : ChatConversation.find({ $and: [groupArm, ...baseConditions] }).sort(sort).limit(BOD_FULL_LIST_GROUP_CAP),
+    opts.filter === 'group'
+      ? []
+      : ChatConversation.find({ $and: [directArm, ...baseConditions] }).sort(sort).limit(BOD_FULL_LIST_DIRECT_CAP),
+  ]);
+  if (groups.length >= BOD_FULL_LIST_GROUP_CAP || directs.length >= BOD_FULL_LIST_DIRECT_CAP) {
+    console.warn(
+      `[Chat] listConversations BOD chạm trần full-list (groups=${groups.length}, directs=${directs.length})`
+      + ' — client cần chuyển sang phân trang (?page=1&limit=50).',
+    );
+  }
+  const rows = [...groups, ...directs].sort(compareConversationRecency);
+  return res.json({
+    success: true,
+    data: rows.map((c) => serializeConversation(c, req.user)),
+    meta: { page: 1, limit: rows.length, hasMore: false, total },
+  });
+}
+
+/**
+ * Một hội thoại theo id — cần từ khi danh sách chuyển sang phân trang: mở link `?c=<id>` trỏ tới
+ * hội thoại nằm ngoài trang đầu thì client không còn tự tìm thấy trong mảng đã tải.
+ * ACL dùng chung `getConversationForUser` (participant, hoặc BOD xem toàn bộ).
+ */
+exports.getConversation = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(String(conversationId || ''))) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy nhóm chat' });
+    }
+    const conversation = await getConversationForUser(conversationId, req.user);
+    res.json({ success: true, data: serializeConversation(conversation, req.user) });
+  } catch (error) {
+    console.error('[Chat] getConversation error:', error);
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Không thể tải nhóm chat',
+    });
+  }
+};
+
 exports.listConversations = async (req, res) => {
   try {
     const token = getBearerToken(req);
     const { classId, schoolYearId } = req.query;
+    const opts = parseConversationListQuery(req.query);
 
-    // BOD: xem TOÀN BỘ hội thoại (nhóm lớp + 1-1) ngay trong trang Nhắn tin — không
-    // ensure/scope, không match participant, không cache Redis (ít user, query có search).
     // Quyền NHẮN vẫn xét theo thành viên từng hội thoại (rejectObserverWrite) — user lai
     // GV+BOD nhắn được ở lớp mình, chỉ-xem ở hội thoại khác.
     if (isBodUser(req.user)) {
-      const q = String(req.query.q || '').trim();
-      const filter = {
-        $or: [
-          { type: 'class_general' },
-          { type: { $regex: /^teacher_guardian:/ } },
-        ],
-      };
-      if (classId) filter.classId = String(classId).trim();
-      if (schoolYearId) filter.schoolYearId = String(schoolYearId).trim();
-      if (q) {
-        const safe = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        filter.$and = [{
-          $or: [
-            { title: { $regex: safe, $options: 'i' } },
-            { className: { $regex: safe, $options: 'i' } },
-          ],
-        }];
-      }
-      const rows = await ChatConversation.find(filter)
-        .sort({ 'lastMessage.createdAt': -1, updatedAt: -1 })
-        .limit(200);
-      const visibleForBod = rows.filter((c) => {
-        if (!isVisibleSchoolYear(c)) return false;
-        // 1-1 chưa có tin thì bỏ (như list thường) — BOD chỉ cần chat có nội dung.
-        if (String(c.type || '').startsWith('teacher_guardian:')) {
-          return Boolean(c.lastMessage && c.lastMessage.messageId);
-        }
-        return true;
-      });
-      return res.json({
-        success: true,
-        data: visibleForBod.map((c) => serializeConversation(c, req.user)),
-      });
+      return await listConversationsForBod(req, res, opts);
     }
 
+    // Cache giữ FULL list (khoá không kèm q/filter/page) — `q`/`filter`/phân trang áp sau khi đọc
+    // cache, nên đổi từ khoá hay lật pill không làm hỏng cache lẫn nhau.
     const listCacheKey = chatConversationListCacheKey(req.user._id, classId, schoolYearId);
     const cachedList = await cacheGetJSON(listCacheKey);
     if (cachedList?.payloads) {
-      return res.json({ success: true, data: cachedList.payloads });
+      return respondWithConversationPage(res, cachedList.payloads, opts);
     }
 
     let conversations = [];
@@ -2116,7 +2411,7 @@ exports.listConversations = async (req, res) => {
     const payloads = visible.map((conversation) => serializeConversation(conversation, req.user));
     cacheSetJSON(listCacheKey, { payloads }, TTL_CHAT_LIST_SEC).catch(() => {});
 
-    res.json({ success: true, data: payloads });
+    respondWithConversationPage(res, payloads, opts);
   } catch (error) {
     console.error('[Chat] listConversations error:', error);
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải nhóm chat' });

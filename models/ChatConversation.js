@@ -61,6 +61,15 @@ const memberSnapshotSchema = new mongoose.Schema({
   removedAt: { type: Date, default: null },
   /** GVBM add thủ công (đồng bộ với participant.manualAdd) — FE phân biệt với CN/phó. */
   manualAdd: { type: Boolean, default: false },
+  /**
+   * Vai trò chủ nhiệm của GV (`homeroom_role` từ scope Frappe): 'homeroom' = GVCN,
+   * 'vice_homeroom' = Phó GVCN, rỗng = GVBM hoặc snapshot cũ chưa backfill.
+   *
+   * KHÔNG suy ra từ thứ tự mảng `teachers`: nhánh fallback Resource-API dựng danh sách bằng
+   * Promise.all + push nên thứ tự không xác định. Client thấy rỗng thì hiển thị như trước
+   * (nhãn "GVCN") để hội thoại chưa backfill không vỡ giao diện.
+   */
+  homeroomRole: { type: String, enum: ['homeroom', 'vice_homeroom', ''], default: '' },
 }, { _id: false });
 
 /** Snapshot tin ghim (1 conversation tối đa 1 tin) — hiển thị banner, đồng bộ socket. */
@@ -122,6 +131,8 @@ const chatConversationSchema = new mongoose.Schema({
 chatConversationSchema.index({ classId: 1, schoolYearId: 1, type: 1 }, { unique: true });
 /** Sort danh sách chat theo hoạt động cuối (sau unread-priority trong app). */
 chatConversationSchema.index({ 'lastMessage.createdAt': -1 });
+/** Danh sách BOD: lọc theo `type` rồi sort/phân trang theo hoạt động cuối (listConversationsForBod). */
+chatConversationSchema.index({ type: 1, 'lastMessage.createdAt': -1, updatedAt: -1 });
 chatConversationSchema.index({ 'participants.user': 1, updatedAt: -1 });
 chatConversationSchema.index({ 'participants.email': 1, updatedAt: -1 });
 chatConversationSchema.index({ 'participants.guardianId': 1, updatedAt: -1 });

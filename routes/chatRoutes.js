@@ -125,6 +125,8 @@ router.post('/messages/:messageId/poll/vote', authenticate, chatController.voteP
 router.post('/messages/:messageId/poll/close', authenticate, chatController.closePoll);
 router.get('/messages/:messageId/poll/voters', authenticate, chatController.getPollVoters);
 router.get('/conversations/:conversationId/messages', authenticate, chatController.getMessages);
+// Lấy 1 hội thoại theo id — mở link `?c=<id>` khi danh sách đã phân trang (SIS-166).
+router.get('/conversations/:conversationId', authenticate, chatController.getConversation);
 router.post(
   '/conversations/:conversationId/attachments',
   authenticate,
