@@ -9,6 +9,8 @@ require('dotenv').config({ path: './config.env' });
 
 const database = require('./config/database');
 const redisClient = require('./config/redis');
+// Phải require SAU dotenv ở trên — config CDN đọc process.env một lần lúc nạp module.
+const { config: cdnConfig } = require('./services/cdn/config');
 
 // Global safety nets to avoid worker crash
 process.on('unhandledRejection', (reason) => {
@@ -105,17 +107,31 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
-// Static uploads — tên file đã có hash/timestamp ⇒ cache CDN an toàn (P3)
+// Static uploads — dữ liệu CŨ trên đĩa.
+//
+// Khi CDN bật: guard bắt buộc token (lỗ hổng P3 — trước đây ai có URL cũng tải
+// được ảnh chat GV↔PH). Client bình thường không đi đường này nữa vì đã nhận URL
+// CDN đã ký; mount chỉ còn là lưới an toàn cho client giữ cache cũ.
+//
+// Khi CDN tắt: guard cho qua thẳng, `/uploads` LÀ nguồn phục vụ chính thức —
+// đường rollback (§11) phải chạy y như cũ.
+//
+// Chỉ gỡ hẳn mount ở Phase 4, khi legacyUploadsGuard.stats.allowed ngừng tăng
+// (CDN-Design.md §9 Bước 5).
 const staticUploadsOptions = {
   setHeaders(res) {
-    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    // `public` chỉ đúng khi không có guard. Có guard ⇒ nội dung đã xác thực,
+    // proxy dùng chung tuyệt đối không được cache hộ. Guard đã set `private`
+    // trước đó; ở đây chỉ set khi CDN tắt để giữ nguyên hành vi cũ.
+    if (!cdnConfig.enabled) {
+      res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    }
   },
 };
-// Giữ nguyên trong suốt Phase 1–3 để rollback luôn khả thi: tắt CDN_ENABLED là
-// media cũ phục vụ lại từ đĩa ngay. Chỉ gỡ ở Phase 4 (CDN-Design.md §9 Bước 5).
+const legacyUploadsGuard = require('./middleware/legacyUploadsGuard');
 const staticUploads = express.static(uploadPath, staticUploadsOptions);
-app.use('/uploads', staticUploads);
-app.use('/api/social/uploads', staticUploads);
+app.use('/uploads', legacyUploadsGuard, staticUploads);
+app.use('/api/social/uploads', legacyUploadsGuard, staticUploads);
 
 // Ký media cho mọi response REST — phải đứng TRƯỚC khi mount routes.
 app.use(require('./middleware/cdnSignResponse'));
@@ -150,9 +166,12 @@ app.set('chatSocket', chatSocket);
 const postRoutes = require('./routes/postRoutes');
 const userRoutes = require('./routes/userRoutes');
 const chatRoutes = require('./routes/chatRoutes');
+const mediaRoutes = require('./routes/mediaRoutes');
 
 // Chat routes phải mount trước postRoutes để /chat không bị bắt bởi /:postId
 app.use('/api/social/chat', chatRoutes);
+// Upload trực tiếp lên CDN (Phase 3) — cũng phải đứng trước postRoutes
+app.use('/api/social/media', mediaRoutes);
 // Post routes
 app.use('/api/social', postRoutes);
 app.use('/api/posts', postRoutes);

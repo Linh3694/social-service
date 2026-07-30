@@ -54,6 +54,36 @@ function getAuthContext(req) {
   return { token: getBearerToken(req), campusId: getCampusId(req) };
 }
 
+/**
+ * Lọc danh sách khoá media client gửi lên sau khi đã upload trực tiếp (Phase 3).
+ *
+ * Client CHỈ được gửi khoá thuộc bucket bài đăng. Không kiểm ở đây thì một
+ * client vọc có thể nhét `cdn://social-chat/…` vào bài công khai để lôi ảnh chat
+ * riêng tư của lớp khác ra bảng tin toàn trường — khoá tồn tại thật nên URL sẽ
+ * được ký hợp lệ. Đây là đường leo thang quyền, không phải lỗi hiển thị.
+ *
+ * `kind` do client khai chỉ dùng để xếp ảnh/video; nội dung thật đã được server
+ * xác định lúc promote nên khai sai cũng không tạo ra file mới.
+ */
+function sanitizePostMediaKeys(raw) {
+  let ds = raw;
+  if (typeof ds === 'string') {
+    try { ds = JSON.parse(ds); } catch { return []; }
+  }
+  if (!Array.isArray(ds) || !ds.length) return [];
+
+  const prefix = `${cdn.CDN_SCHEME}social-posts/`;
+  const out = [];
+  for (const m of ds.slice(0, 10)) {
+    const stored = typeof m === 'string' ? m : String(m?.stored || '');
+    if (!stored.startsWith(prefix)) continue;
+    if (stored.includes('..')) continue;
+    const kind = (typeof m === 'object' && m?.kind === 'video') ? 'video' : 'image';
+    out.push({ stored: stored.split('?')[0], kind });
+  }
+  return out;
+}
+
 function parsePagination(query) {
   const page = Math.max(parseInt(query.page || '1', 10), 1);
   const limit = Math.min(Math.max(parseInt(query.limit || '10', 10), 1), 50);
@@ -534,6 +564,18 @@ exports.createPost = async (req, res) => {
           else if (mime.startsWith('video/')) videos.push(filePath);
         });
       }
+    }
+
+    // Phase 3 — client đã PUT thẳng lên CDN rồi gọi /media/complete, giờ chỉ gửi
+    // khoá. Chấp nhận song song với req.files để client cũ và mới cùng chạy.
+    const mediaTuClient = sanitizePostMediaKeys(req.body?.mediaKeys);
+    if (mediaTuClient.length) {
+      const keys = mediaTuClient.map((m) => m.stored);
+      uploadedKeys = uploadedKeys.concat(keys);
+      mediaTuClient.forEach((m) => {
+        if (m.kind === 'video') videos.push(m.stored);
+        else images.push(m.stored);
+      });
     }
 
     const audienceType = normalizeAudience(rawAudienceType, classId);

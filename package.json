@@ -6,10 +6,17 @@
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
-    "sync-indexes": "node scripts/sync-social-indexes.js"
+    "sync-indexes": "node scripts/sync-social-indexes.js",
+    "test:cdn": "node scripts/test-cdn-phase1.js && node scripts/test-cdn-wiring.js && node scripts/test-cdn-phase3.js && node scripts/test-cdn-phase4.js",
+    "test:cdn:unit": "node scripts/test-cdn-phase1.js",
+    "test:cdn:wiring": "node scripts/test-cdn-wiring.js",
+    "test:cdn:phase3": "node scripts/test-cdn-phase3.js",
+    "test:cdn:phase4": "node scripts/test-cdn-phase4.js",
+    "check": "for f in $(git ls-files '*.js'); do node --check \"$f\" || exit 1; done && echo 'syntax OK'"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1097.0",
+    "@aws-sdk/s3-request-presigner": "^3.1097.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "@wis/observability": "file:./observability-node",
     "axios": "^1.7.2",
