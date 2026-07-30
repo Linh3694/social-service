@@ -1745,6 +1745,13 @@ function pollPayloadForViewer(poll, viewer) {
     isClosed: Boolean(pollEffectiveClosedAt(plain)),
     totalVoters: pollDistinctVoterCount(plain),
     canSeeVoters: showVoters,
+    /**
+     * false = payload BROADCAST, đã lược các trường phụ thuộc người xem (`myVote`, và `voters` +
+     * `canSeeVoters` khi poll ẩn danh). Client PHẢI giữ lại các trường đó từ trạng thái cũ thay vì
+     * ghi đè — xem applyPollUpdate. Thiếu cờ này thì GV mất nút "Xem người bình chọn" ngay khi có
+     * người bỏ phiếu trên poll ẩn danh.
+     */
+    viewerScoped: Boolean(viewer),
     rev: plain.rev || 0,
   };
 

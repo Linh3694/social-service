@@ -28,6 +28,7 @@ const { signPath, signStored } = require('../services/cdn/sign');
 const { toObjectPath } = require('../services/cdn/resolve');
 const { signMediaDeep } = require('../services/cdn/signDeep');
 const { processImage } = require('../services/cdn/imagePipeline');
+const { contentDispositionFor, alignExt } = require('../services/cdn');
 const { config } = require('../services/cdn/config');
 
 let pass = 0;
@@ -383,6 +384,55 @@ function parse(url) {
 
   await t('đếm được lượt bị chặn (để biết khi nào gỡ mount an toàn)', () => {
     assert.ok(guard.stats.denied >= 2);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  section('Content-Disposition — giữ tên file gốc (khoá là hash nên URL không mang tên)');
+
+  await t('tên tiếng Việt: filename* mang UTF-8, filename ASCII là bản dự phòng', () => {
+    const cd = contentDispositionFor('PR, PO - mẫu mới (3).xlsx');
+    assert.ok(cd.startsWith('inline; '), `phải là inline để PDF/ảnh còn xem trước được: ${cd}`);
+    assert.ok(
+      cd.includes("filename*=UTF-8''PR%2C%20PO%20-%20m%E1%BA%ABu%20m%E1%BB%9Bi%20%283%29.xlsx"),
+      `filename* sai: ${cd}`,
+    );
+    const ascii = /filename="([^"]*)"/.exec(cd)[1];
+    assert.ok(!/[^\x20-\x7e]/.test(ascii), `filename ASCII còn ký tự ngoài ASCII: ${ascii}`);
+    assert.ok(ascii.endsWith('.xlsx'), `mất đuôi file ⇒ Windows không mở được: ${ascii}`);
+  });
+
+  await t("`(`, `)` phải percent-encode (không thuộc attr-char RFC 5987)", () => {
+    const cd = contentDispositionFor('bao cao (1).pdf');
+    assert.ok(!/filename\*=UTF-8''[^;]*[()]/.test(cd), `còn ngoặc thô trong filename*: ${cd}`);
+  });
+
+  await t('CR/LF trong tên bị loại — không chèn được header', () => {
+    const cd = contentDispositionFor('a\r\nX-Injected: 1\r\n.docx');
+    assert.ok(!/[\r\n]/.test(cd), `header còn ký tự xuống dòng: ${JSON.stringify(cd)}`);
+  });
+
+  await t('dấu tách đường dẫn bị loại — tên file không mang đường dẫn', () => {
+    const cd = contentDispositionFor('../../etc/passwd');
+    assert.ok(!cd.includes('/'), cd);
+    assert.ok(!cd.includes('\\'), cd);
+  });
+
+  await t('không có tên đáng tin ⇒ undefined (không set header bịa)', () => {
+    assert.strictEqual(contentDispositionFor(''), undefined);
+    assert.strictEqual(contentDispositionFor('   '), undefined);
+    assert.strictEqual(contentDispositionFor(undefined), undefined);
+  });
+
+  await t('ảnh chuyển WebP ⇒ đuôi tên tải về đi theo nội dung thật', () => {
+    assert.strictEqual(alignExt('anh nghỉ phép.jpg', 'webp'), 'anh nghỉ phép.webp');
+    assert.strictEqual(alignExt('anh.JPEG', 'webp'), 'anh.webp');
+  });
+
+  await t('đuôi đã khớp / tên không có đuôi ⇒ không phá tên', () => {
+    assert.strictEqual(alignExt('PR, PO - mẫu mới (3).xlsx', 'xlsx'), 'PR, PO - mẫu mới (3).xlsx');
+    assert.strictEqual(alignExt('bao.cao.thang.5.docx', 'docx'), 'bao.cao.thang.5.docx');
+    assert.strictEqual(alignExt('khong-co-duoi', 'pdf'), 'khong-co-duoi.pdf');
+    assert.strictEqual(alignExt('', 'webp'), '');
   });
 
   // ─────────────────────────────────────────────────────────────────────

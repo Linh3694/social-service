@@ -15,6 +15,7 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 
+const { decodeMultipartFilename } = require('../../utils/uploadFilename');
 const { config, validate } = require('./config');
 const { signPath, signStored, CDN_SCHEME } = require('./sign');
 const { signMediaDeep } = require('./signDeep');
@@ -63,6 +64,54 @@ function isVideo(mimetype, originalname) {
 }
 
 /**
+ * Đổi đuôi tên tải về cho khớp NỘI DUNG ĐÃ LƯU.
+ *
+ * Pipeline ảnh chuyển sang WebP nhưng tên gốc vẫn là "anh.jpg" (§7.1) — đặt nguyên
+ * tên đó vào header thì người dùng lưu được một file `.jpg` chứa byte WebP, vài
+ * trình xem ảnh trên Windows từ chối mở.
+ */
+function alignExt(name, ext) {
+  const raw = String(name || '');
+  if (!raw || !ext) return raw;
+  const cur = path.extname(raw).replace(/^\./, '').toLowerCase();
+  if (cur === String(ext).toLowerCase()) return raw;
+  const base = cur ? raw.slice(0, raw.length - cur.length - 1) : raw;
+  return `${base || raw}.${ext}`;
+}
+
+/**
+ * Header `Content-Disposition` để trình duyệt lưu file bằng TÊN GỐC.
+ *
+ * Object key là hash nội dung (§5.2) nên tên trong URL luôn là dạng
+ * "6e1246314daf….xlsx". Không có header này thì trình duyệt lưu đúng cái tên hash
+ * đó — phụ huynh tải "PR, PO - mẫu mới (3).xlsx" trong chat ra một tên vô nghĩa.
+ *
+ * Dùng `inline`, KHÔNG dùng `attachment`: ảnh và PDF phải xem trước được ngay
+ * trong tab như hiện tại. Trình duyệt vẫn lấy `filename*` khi thật sự tải về
+ * (loại file không hiển thị được, hoặc người dùng bấm lưu).
+ *
+ * Hai tham số là có chủ ý (RFC 6266 §5): `filename` ASCII cho client cũ,
+ * `filename*` (RFC 5987) cho tên tiếng Việt. `'()*!` KHÔNG thuộc attr-char nên
+ * phải tự percent-encode — encodeURIComponent để nguyên, mà `(` `)` rất hay gặp
+ * trong tên file tải về từ Windows: "mẫu mới (3).xlsx".
+ *
+ * @param {string} [downloadName] tên gốc đã giải mã UTF-8
+ * @returns {string|undefined} undefined khi không có tên đáng tin ⇒ không set header
+ */
+function contentDispositionFor(downloadName) {
+  const raw = String(downloadName || '').trim();
+  if (!raw) return undefined;
+  // Loại ký tự điều khiển (CR/LF là lỗ hổng chèn header), dấu ngoặc kép và mọi
+  // dấu tách đường dẫn — tên file không bao giờ được mang đường dẫn.
+  const safe = raw.replace(/[\x00-\x1f\x7f"\\/]+/g, '_').trim().slice(0, 200);
+  if (!safe) return undefined;
+  const ascii = safe.replace(/[^\x20-\x7e]/g, '_');
+  const encoded = encodeURIComponent(safe)
+    .replace(/['()*!]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `inline; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+/**
  * Đưa một file đã upload lên CDN.
  *
  * @param {{path: string, originalname?: string, mimetype?: string, size?: number}} file file của multer
@@ -77,6 +126,9 @@ async function storeUpload(file, { kind }) {
     mimetype: file.mimetype,
     // Chỉ đường multipart mới có file trên đĩa để ffmpeg đọc trực tiếp.
     sourcePath: file.path,
+    // Tên gốc để đặt Content-Disposition. PHẢI giải mã latin1 trước (SIS-169):
+    // đặt thẳng `originalname` của multer thì header ra "ChÃ­nh sÃ¡ch.docx".
+    downloadName: decodeMultipartFilename(file.originalname || ''),
   });
 }
 
@@ -86,10 +138,16 @@ async function storeUpload(file, { kind }) {
  * khoá hay cách sinh variants — lệch ở đây là loại lỗi chỉ lộ ra ở một trong hai
  * đường và rất khó truy.
  *
+ * `downloadName` là tên gốc do người dùng đặt, dùng riêng cho
+ * `Content-Disposition`. Tách khỏi `originalname` (chỉ dùng để suy đuôi file và
+ * đoán loại khi thiếu mimetype) vì đường upload trực tiếp KHÔNG biết tên gốc —
+ * `promote()` chỉ có stagingKey — và đặt một tên bịa vào header còn tệ hơn không
+ * đặt gì.
+ *
  * @param {Buffer} original
- * @param {{kind: 'posts'|'chat'|'avatars', originalname?: string, mimetype?: string, sourcePath?: string}} opts
+ * @param {{kind: 'posts'|'chat'|'avatars', originalname?: string, mimetype?: string, sourcePath?: string, downloadName?: string}} opts
  */
-async function storeBuffer(original, { kind, originalname, mimetype, sourcePath }) {
+async function storeBuffer(original, { kind, originalname, mimetype, sourcePath, downloadName }) {
   const bucket = bucketFor(kind);
   const prefix = prefixFor(kind);
   const file = { originalname, mimetype };
@@ -166,8 +224,18 @@ async function storeBuffer(original, { kind, originalname, mimetype, sourcePath 
     ? 'private, max-age=3600'
     : 'private, max-age=86400, immutable';
 
+  // Chỉ object chính mang tên gốc. Variants (`_poster.webp`, `_w480.webp`) là ảnh
+  // dẫn xuất, không có tên người dùng đặt nào tương ứng.
+  //
+  // Giới hạn đã biết của khoá content-addressed: hai người gửi CÙNG nội dung với
+  // hai tên khác nhau dùng chung một object ⇒ lượt ghi sau thắng, và nginx cache
+  // có thể giữ header cũ tới hết `max-age`. Vì vậy đây chỉ là lưới an toàn cho
+  // đường mở tab trực tiếp; client vẫn phải tự đặt tên khi tải (nó có tên đúng
+  // của từng tin nhắn trong DB).
+  const contentDisposition = contentDispositionFor(alignExt(downloadName, ext));
+
   await Promise.all([
-    s3.putObject({ bucket, key: mainKey, body, contentType, cacheControl }),
+    s3.putObject({ bucket, key: mainKey, body, contentType, cacheControl, contentDisposition }),
     ...variantParts.map((v) => s3.putObject({
       bucket,
       key: `${dir}/${hash}${v.suffix}.${v.ext}`,
@@ -257,6 +325,8 @@ module.exports = {
   config,
   storeUpload,
   storeBuffer,
+  contentDispositionFor,
+  alignExt,
   // Phase 3 — nạp lười để tránh vòng require (directUpload cần storeBuffer).
   get directUpload() { return require('./directUpload'); },
   removeStored,

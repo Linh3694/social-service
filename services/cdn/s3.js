@@ -36,9 +36,9 @@ function getClient() {
 }
 
 /**
- * @param {{bucket: string, key: string, body: Buffer, contentType: string, cacheControl?: string}} params
+ * @param {{bucket: string, key: string, body: Buffer, contentType: string, cacheControl?: string, contentDisposition?: string}} params
  */
-async function putObject({ bucket, key, body, contentType, cacheControl }) {
+async function putObject({ bucket, key, body, contentType, cacheControl, contentDisposition }) {
   const { PutObjectCommand } = getSdk();
   await getClient().send(new PutObjectCommand({
     Bucket: bucket,
@@ -46,6 +46,9 @@ async function putObject({ bucket, key, body, contentType, cacheControl }) {
     Body: body,
     ContentType: contentType,
     CacheControl: cacheControl,
+    // Tên file gốc cho trình duyệt — undefined thì SDK bỏ hẳn field, MinIO không
+    // lưu header rỗng (xem contentDispositionFor ở index.js).
+    ContentDisposition: contentDisposition,
   }));
   return { bucket, key };
 }
