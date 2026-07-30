@@ -8,14 +8,7 @@
 
 const { runFullMembershipSync } = require('../services/chatMembershipSync');
 const { describeError } = require('../utils/errorLog');
-
-function isServiceKeyAuthorized(req) {
-  const key = process.env.FRAPPE_API_KEY;
-  const secret = process.env.FRAPPE_API_SECRET;
-  if (!key || !secret) return false;
-  const header = String(req.headers.authorization || '').trim();
-  return header === `token ${key}:${secret}`;
-}
+const { isServiceKeyAuthorized } = require('../utils/serviceKeyAuth');
 
 /**
  * POST /api/social/chat/sync/memberships

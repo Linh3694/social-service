@@ -98,12 +98,15 @@ function formatFrappeUser(frappeUser) {
  */
 const syncUsersManual = async (req, res) => {
   try {
-    const token = req.header('Authorization')?.replace('Bearer ', '');
-    if (!token) {
+    // Cron xác thực bằng service key nên không có Bearer của user: truyền token = null để
+    // frappeService dùng FRAPPE_API_KEY/SECRET (interceptor tự gắn khi không có Authorization).
+    const serviceKeyAuth = Boolean(req.serviceKeyAuth);
+    const token = serviceKeyAuth ? null : req.header('Authorization')?.replace('Bearer ', '');
+    if (!serviceKeyAuth && !token) {
       return res.status(401).json({ success: false, message: 'Token required' });
     }
 
-    console.log('🔄 [Social Sync] Starting user sync...');
+    console.log(`🔄 [Social Sync] Starting user sync... (auth=${serviceKeyAuth ? 'service-key' : 'user'})`);
     const startTime = Date.now();
 
     // Fetch enabled users từ Frappe
