@@ -9,6 +9,7 @@ const redisClient = require('../config/redis');
 const frappeService = require('../services/frappeService');
 const { resolveMentions, getMentionedUserEmails } = require('../utils/mentionUtils');
 const cdn = require('../services/cdn');
+const { describeError } = require('../utils/errorLog');
 
 const POST_AUTHOR_SELECT = 'name username guardian_id fullname fullName avatarUrl user_image sis_photo guardian_image email department jobTitle';
 const POST_USER_SELECT = 'name username guardian_id fullname fullName avatarUrl user_image sis_photo guardian_image email';
@@ -734,7 +735,7 @@ exports.getClassGuardianDirectory = async (req, res) => {
     );
     return res.status(200).json({ success: true, data });
   } catch (error) {
-    console.error('[PostController] getClassGuardianDirectory error:', error);
+    console.error('[PostController] getClassGuardianDirectory error:', describeError(error));
     return res.status(500).json({
       success: false,
       message: 'Lỗi server khi lấy danh sách phụ huynh của lớp',

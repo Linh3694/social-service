@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const frappeService = require('../services/frappeService');
 const { searchUsersForMention } = require('../utils/mentionUtils');
+const { describeError } = require('../utils/errorLog');
 
 const FRAPPE_API_URL = process.env.FRAPPE_API_URL || 'https://admin.sis.wellspring.edu.vn';
 
@@ -148,6 +149,10 @@ const syncUsersManual = async (req, res) => {
             delete userData.role;
           }
 
+          // Không hạ account PHHS: payload ở đây là DocType User của Frappe (roles
+          // ['Parent','Guardian'], không có guardian_id) nên sẽ xoá dấu vết parent portal.
+          User.preserveParentPortalRoles(userData, userEmail);
+
           await User.findOneAndUpdate(
             { email: userEmail.toLowerCase() },
             { $set: userData },
@@ -246,9 +251,11 @@ const syncUserByEmail = async (req, res) => {
     }
     
     const userData = formatFrappeUser(frappeUser);
-    
+    const targetEmail = frappeUser.email?.toLowerCase() || email.toLowerCase();
+    User.preserveParentPortalRoles(userData, targetEmail);
+
     const result = await User.findOneAndUpdate(
-      { email: frappeUser.email?.toLowerCase() || email.toLowerCase() },
+      { email: targetEmail },
       userData,
       { upsert: true, new: true }
     );
@@ -378,6 +385,8 @@ const webhookUserChanged = async (req, res) => {
         userData.microsoftId = doc.microsoft_id;
       }
       
+      User.preserveParentPortalRoles(userData, doc.email);
+
       const result = await User.findOneAndUpdate(
         { email: doc.email?.toLowerCase() },
         userData,
@@ -430,7 +439,7 @@ const getUserByEmail = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
   } catch (error) {
-    console.error('[getUserByEmail] ❌ Error:', error);
+    console.error('[getUserByEmail] ❌ Error:', describeError(error));
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -465,7 +474,7 @@ const getCurrentUser = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('[getCurrentUser] Error:', error);
+    console.error('[getCurrentUser] Error:', describeError(error));
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -555,7 +564,7 @@ const searchUsers = async (req, res) => {
       query: q.trim()
     });
   } catch (error) {
-    console.error('[User Search] Error:', error);
+    console.error('[User Search] Error:', describeError(error));
     res.status(500).json({
       success: false,
       message: error.message
@@ -588,7 +597,7 @@ const getUserStats = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('[getUserStats] Error:', error);
+    console.error('[getUserStats] Error:', describeError(error));
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -637,7 +646,7 @@ const checkMyRoles = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('[checkMyRoles] Error:', error);
+    console.error('[checkMyRoles] Error:', describeError(error));
     res.status(500).json({ success: false, message: error.message });
   }
 };

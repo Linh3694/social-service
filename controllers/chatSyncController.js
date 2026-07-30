@@ -7,6 +7,7 @@
  */
 
 const { runFullMembershipSync } = require('../services/chatMembershipSync');
+const { describeError } = require('../utils/errorLog');
 
 function isServiceKeyAuthorized(req) {
   const key = process.env.FRAPPE_API_KEY;
@@ -34,7 +35,7 @@ exports.syncChatMemberships = async (req, res) => {
 
     res.json({ success: true, data: summary });
   } catch (error) {
-    console.error('[Chat] syncChatMemberships error:', error);
+    console.error('[Chat] syncChatMemberships error:', describeError(error));
     res.status(500).json({
       success: false,
       message: error.message || 'Không thể đồng bộ membership nhóm chat',

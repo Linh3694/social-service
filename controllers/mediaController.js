@@ -9,10 +9,11 @@
  */
 
 const cdn = require('../services/cdn');
+const { describeError } = require('../utils/errorLog');
 
 function loi(res, error, mac_dinh = 'Không xử lý được tệp') {
   const status = error.statusCode || 500;
-  if (status >= 500) console.error('[Media] lỗi:', error);
+  if (status >= 500) console.error('[Media] lỗi:', describeError(error));
   return res.status(status).json({
     success: false,
     code: error.code || 'MEDIA_ERROR',
