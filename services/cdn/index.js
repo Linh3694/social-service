@@ -15,7 +15,7 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 
-const { config, validate } = require('./config');
+const { config, validate, directUploadChoUser } = require('./config');
 const { signPath, signStored, CDN_SCHEME } = require('./sign');
 const { signMediaDeep } = require('./signDeep');
 const { toObjectPath } = require('./resolve');
@@ -255,6 +255,7 @@ function logStartupState() {
 
 module.exports = {
   config,
+  directUploadChoUser,
   storeUpload,
   storeBuffer,
   // Phase 3 — nạp lười để tránh vòng require (directUpload cần storeBuffer).

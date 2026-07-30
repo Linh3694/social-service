@@ -49,6 +49,22 @@ const config = {
   // và client cũ vẫn dùng đường multipart cũ song song.
   directUpload: {
     enabled: bool('CDN_DIRECT_UPLOAD', false),
+    // Danh sách trắng để THỬ trên máy thật mà không bật cho cả trường.
+    //
+    // Vì sao cần: hai rủi ro nặng nhất của đường trực tiếp trên mobile — hết bộ
+    // nhớ khi gửi video, và Content-Type lệch chữ ký — chỉ hiện ra trên thiết bị
+    // thật, không phát hiện được bằng đọc code hay test đơn vị. Mà app đã lên
+    // store thì không hotfix được, nên phải xác minh được bằng MỘT tài khoản
+    // trước khi bật rộng.
+    //
+    // `CDN_DIRECT_UPLOAD=true` ⇒ bật cho mọi người, danh sách này vô nghĩa.
+    // Cờ tắt + danh sách có người ⇒ CHỈ những người đó đi đường trực tiếp.
+    allowUsers: new Set(
+      String(process.env.CDN_DIRECT_UPLOAD_USERS || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
     // TTL của presigned PUT. Ngắn thôi — client xin xong là upload ngay.
     presignTtlSec: int('CDN_PRESIGN_TTL_SEC', 900),
     maxFiles: int('CDN_PRESIGN_MAX_FILES', 10),
@@ -105,4 +121,18 @@ function validate() {
   return { ok: errors.length === 0, errors };
 }
 
-module.exports = { config, validate };
+/**
+ * User này có được đi đường upload trực tiếp không.
+ *
+ * MỘT nguồn sự thật cho cả `capability`, `presign` và `promote`. Nếu ba chỗ tự
+ * suy riêng thì sẽ có ngày `capability` bảo "được" mà `presign` trả 409 — client
+ * rơi về multipart im lặng và không ai hiểu tại sao đường trực tiếp không chạy.
+ */
+function directUploadChoUser(user) {
+  if (!config.enabled) return false;
+  if (config.directUpload.enabled) return true;
+  const id = user && user._id !== undefined ? String(user._id) : '';
+  return Boolean(id) && config.directUpload.allowUsers.has(id);
+}
+
+module.exports = { config, validate, directUploadChoUser };
