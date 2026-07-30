@@ -34,7 +34,7 @@
 const crypto = require('crypto');
 const path = require('path');
 
-const { config } = require('./config');
+const { config, directUploadChoUser } = require('./config');
 const s3 = require('./s3');
 
 /** Đuôi file an toàn — chỉ chữ và số. Giống quy ước ở index.js. */
@@ -78,7 +78,7 @@ function userIdCuaKhoa(stagingKey) {
  * @param {'posts'|'chat'} kind
  */
 async function presign(user, files, kind) {
-  if (!config.enabled || !config.directUpload.enabled) {
+  if (!directUploadChoUser(user)) {
     const e = new Error('Upload trực tiếp chưa được bật');
     e.statusCode = 409;
     e.code = 'DIRECT_UPLOAD_DISABLED';
@@ -116,7 +116,11 @@ async function presign(user, files, kind) {
     return {
       stagingKey,
       putUrl,
-      // Client PHẢI gửi đúng header này, nếu không chữ ký SigV4 không khớp.
+      // Đo trên prod 30/07: presigner của SDK v3 ký `X-Amz-SignedHeaders=host`,
+      // KHÔNG có content-type. Nên gửi lệch Content-Type sẽ vẫn 200 chứ không
+      // 403 như trực giác. Vẫn yêu cầu client gửi đúng, vì `promote()` lấy
+      // Content-Type ĐÃ LƯU để chọn nhánh ảnh/video của pipeline: khai lệch thì
+      // sharp/ffmpeg sẽ ném lỗi ở bước promote.
       requiredHeaders: { 'Content-Type': contentType },
       expiresInSec: ttl,
       maxBytes: config.directUpload.maxBytes,
@@ -131,7 +135,7 @@ async function presign(user, files, kind) {
  * một đường xử lý cho cả upload multipart cũ lẫn upload trực tiếp mới.
  */
 async function promote(user, stagingKey, kind) {
-  if (!config.enabled || !config.directUpload.enabled) {
+  if (!directUploadChoUser(user)) {
     const e = new Error('Upload trực tiếp chưa được bật');
     e.statusCode = 409;
     e.code = 'DIRECT_UPLOAD_DISABLED';

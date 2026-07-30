@@ -16,7 +16,7 @@ const os = require('os');
 const path = require('path');
 
 const { decodeMultipartFilename } = require('../../utils/uploadFilename');
-const { config, validate } = require('./config');
+const { config, validate, directUploadChoUser } = require('./config');
 const { signPath, signStored, CDN_SCHEME } = require('./sign');
 const { signMediaDeep } = require('./signDeep');
 const { toObjectPath } = require('./resolve');
@@ -323,6 +323,7 @@ function logStartupState() {
 
 module.exports = {
   config,
+  directUploadChoUser,
   storeUpload,
   storeBuffer,
   contentDispositionFor,

@@ -289,6 +289,48 @@ const NGUOI_KHAC = 'nguoikhac';
     config.enabled = true;
   });
 
+  console.log('\n§Phase 3 — danh sách trắng để thử trên máy thật');
+
+  await t('cờ tắt + user trong danh sách ⇒ ĐƯỢC đi đường trực tiếp', async () => {
+    config.directUpload.enabled = false;
+    config.directUpload.allowUsers = new Set([String(ANH)]);
+    const u = await directUpload.presign({ _id: ANH }, [{ filename: 'a.jpg' }], 'posts');
+    assert.strictEqual(u.length, 1);
+    config.directUpload.allowUsers = new Set();
+    config.directUpload.enabled = true;
+  });
+
+  await t('cờ tắt + user NGOÀI danh sách ⇒ vẫn đóng', async () => {
+    config.directUpload.enabled = false;
+    config.directUpload.allowUsers = new Set([String(ANH)]);
+    await nem(() => directUpload.presign({ _id: NGUOI_KHAC }, [{ filename: 'a.jpg' }], 'posts'), 'DIRECT_UPLOAD_DISABLED');
+    config.directUpload.allowUsers = new Set();
+    config.directUpload.enabled = true;
+  });
+
+  await t('CDN_ENABLED tắt ⇒ danh sách trắng KHÔNG vượt qua được kill switch', async () => {
+    config.enabled = false;
+    config.directUpload.enabled = false;
+    config.directUpload.allowUsers = new Set([String(ANH)]);
+    await nem(() => directUpload.presign({ _id: ANH }, [{ filename: 'a.jpg' }], 'posts'), 'DIRECT_UPLOAD_DISABLED');
+    config.enabled = true;
+    config.directUpload.allowUsers = new Set();
+    config.directUpload.enabled = true;
+  });
+
+  await t('capability đồng ý với presign — cùng một hàm quyết định', async () => {
+    const { directUploadChoUser } = require('../services/cdn/config');
+    config.directUpload.enabled = false;
+    config.directUpload.allowUsers = new Set([String(ANH)]);
+    // Nếu hai bên lệch nhau, client sẽ được bảo "được" rồi ăn 409 và im lặng
+    // rơi về multipart — loại lỗi không ai nhìn thấy.
+    assert.strictEqual(directUploadChoUser({ _id: ANH }), true);
+    assert.strictEqual(directUploadChoUser({ _id: NGUOI_KHAC }), false);
+    assert.strictEqual(directUploadChoUser(undefined), false);
+    config.directUpload.allowUsers = new Set();
+    config.directUpload.enabled = true;
+  });
+
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`${pass} pass, ${fail} fail`);
   process.exit(fail ? 1 : 0);

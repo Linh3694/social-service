@@ -93,7 +93,8 @@ exports.complete = async (req, res) => {
 
 /** Cho client biết có nên dùng đường trực tiếp hay quay về multipart. */
 exports.capability = (req, res) => {
-  const bat = Boolean(cdn.config.enabled && cdn.config.directUpload.enabled);
+  // Cùng một hàm với presign/promote — xem ghi chú ở services/cdn/config.js.
+  const bat = cdn.directUploadChoUser(req.user);
   return res.json({
     success: true,
     data: {
