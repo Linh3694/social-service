@@ -39,6 +39,22 @@ const config = {
     posts: process.env.CDN_BUCKET_POSTS || 'cdn-social-posts',
     chat: process.env.CDN_BUCKET_CHAT || 'cdn-social-chat',
     avatars: process.env.CDN_BUCKET_AVATARS || 'cdn-social-avatars',
+    // Vùng đệm cho upload trực tiếp (Phase 3). KHÔNG phát ra Internet —
+    // nginx VM3 không có location cho bucket này. Lifecycle xoá sau 1 ngày.
+    staging: process.env.CDN_BUCKET_STAGING || 'cdn-staging',
+  },
+
+  // Phase 3 — client PUT thẳng lên MinIO, byte không đi qua social-service.
+  // Tắt mặc định: bật được ngay khi hạ tầng sẵn sàng mà không cần deploy lại,
+  // và client cũ vẫn dùng đường multipart cũ song song.
+  directUpload: {
+    enabled: bool('CDN_DIRECT_UPLOAD', false),
+    // TTL của presigned PUT. Ngắn thôi — client xin xong là upload ngay.
+    presignTtlSec: int('CDN_PRESIGN_TTL_SEC', 900),
+    maxFiles: int('CDN_PRESIGN_MAX_FILES', 10),
+    // Trần dung lượng, kiểm ở bước complete bằng HeadObject. Presigned PUT của
+    // S3 không ép được kích thước, nên phải hậu kiểm rồi xoá nếu vượt.
+    maxBytes: int('CDN_PRESIGN_MAX_BYTES', 100 * 1024 * 1024),
   },
 
   // Cửa sổ làm tròn expiry (§3.2). Cùng cửa sổ ⇒ cùng URL ⇒ cache hit.

@@ -114,6 +114,28 @@ class FrappeService {
   }
 
   /**
+   * Đưa tham số auth về đúng loại trước khi dùng: một JWT parent portal bị truyền vào dưới dạng
+   * chuỗi (tức "coi như Bearer Frappe") sẽ được chuyển thành { parentPortalToken }.
+   *
+   * Account PH chỉ có role Parent/Guardian nên Bearer của họ KHÔNG đọc được `/api/resource/...`
+   * — Frappe trả 403 PermissionError. Chuẩn hoá ở đây là lưới an toàn cho mọi caller: không leo
+   * thang quyền (vẫn đi qua đúng lược đồ header parent portal), chỉ gửi token đúng đường.
+   */
+  normalizeChatScopeAuth(auth) {
+    if (typeof auth !== 'string' || !auth) return auth;
+    let payload = null;
+    try {
+      payload = jwt.decode(auth);
+    } catch {
+      payload = null;
+    }
+    if (payload && payload.guardian) {
+      return { parentPortalToken: auth };
+    }
+    return auth;
+  }
+
+  /**
    * Fingerprint tham số auth cho getClassChatScope (chuỗi Bearer | { parentPortalToken } | falsy).
    */
   chatScopeAuthFingerprint(auth) {
@@ -601,7 +623,8 @@ class FrappeService {
   /**
    * auth: Bearer Frappe (string) | chỉ service key (null/undefined) | Parent Portal { parentPortalToken }.
    */
-  async getClassChatScope(classId, schoolYearId, auth, opts = {}) {
+  async getClassChatScope(classId, schoolYearId, rawAuth, opts = {}) {
+    const auth = this.normalizeChatScopeAuth(rawAuth);
     const bypassCache = Boolean(opts.bypassCache);
     const finger = this.chatScopeAuthFingerprint(auth);
     const sy = schoolYearId != null ? String(schoolYearId) : '';

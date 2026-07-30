@@ -405,9 +405,72 @@ social-service/services/cdn/
 | `controllers/chatController.js` | **27** `messagePayloadForApi` | **Điểm ký tập trung cho chat** — map `attachments[].url` qua `sign()` |
 | `controllers/postController.js` | 60–90 `populatePostQuery` | **Điểm ký tập trung cho post** — thêm hàm `signPostMedia(post)` cho `images`, `videos`, `authorSnapshot.avatarUrl` |
 | `utils/chatSocket.js`, `utils/newfeedSocket.js` | — | **Quan trọng:** payload realtime cũng phải đi qua cùng hàm ký, nếu không tin nhắn mới sẽ hiện ảnh vỡ |
-| `app.js` | 108–116 | Giữ `express.static('/uploads')` trong suốt Phase 1–3, **gỡ ở Phase 4** |
+| `app.js` | 108–116 | Giữ `express.static('/uploads')` trong suốt Phase 1–3 nhưng **đặt sau `legacyUploadsGuard`**; gỡ hẳn ở Phase 4 |
 
 > Cạm bẫy hay gặp: quên ký ở đường socket. Ảnh hiển thị đúng khi F5 nhưng vỡ khi tin nhắn đến realtime. Nên viết **một** hàm `signMediaDeep(payload)` và gọi ở cả REST lẫn socket, thay vì ký rải rác.
+
+### 6.6. Trạng thái Phase 1 (cập nhật 2026-07-30)
+
+Đã triển khai và kiểm chứng:
+
+| Hạng mục | File | Trạng thái |
+|----------|------|-----------|
+| Cấu hình + kill switch | `services/cdn/config.js` | ✅ |
+| Ký `secure_link` + làm tròn cửa sổ | `services/cdn/sign.js` | ✅ |
+| Resolver dữ liệu cũ | `services/cdn/resolve.js` | ✅ |
+| Pipeline ảnh (WebP, variants, strip EXIF) | `services/cdn/imagePipeline.js` | ✅ |
+| Pipeline video (`+faststart`, poster) | `services/cdn/videoPipeline.js` | ✅ |
+| S3/MinIO client (lazy) | `services/cdn/s3.js` | ✅ |
+| Ký đệ quy 1 điểm | `services/cdn/signDeep.js` | ✅ |
+| Ký mọi response REST | `middleware/cdnSignResponse.js` | ✅ |
+| Dọn file tạm mọi nhánh thoát | `middleware/cleanupUploads.js` | ✅ |
+| **Chặn `/uploads` ẩn danh (P3)** | `middleware/legacyUploadsGuard.js` | ✅ |
+| Ký payload socket | `utils/chatBroadcastRooms.js`, `utils/newfeedSocket.js` | ✅ |
+| Upload → MinIO | `controllers/postController.js`, `chatController.js` | ✅ |
+
+**Bộ kiểm thử:** `npm run test:cdn` — 45 test, không cần MinIO/Mongo/Redis.
+
+```
+scripts/test-cdn-phase1.js   37 test — ký, cửa sổ, resolver, signDeep, ảnh, guard
+scripts/test-cdn-wiring.js    8 test — HTTP thật qua đúng chuỗi middleware của app.js
+```
+
+**Kết quả đo trên ảnh THẬT** (không phải ảnh tổng hợp):
+
+| Ảnh | Kích thước | Gốc | WebP 2048 | w480 |
+|-----|-----------|-----|-----------|------|
+| `exif_sample_image.jpg` | 640×480 | 158 KB | 123 KB | 66 KB |
+| `china.jpg` | 640×427 | 192 KB | 64 KB | 35 KB |
+| `sample_image.jpg` | 1920×1281 | 244 KB | 76 KB | 14 KB |
+| `section3-02.png` | 1252×1376 | 606 KB | 104 KB | 47 KB |
+
+Trung bình có trọng số: **36 % dung lượng gốc**.
+
+> Lưu ý về con số: các ảnh test trên đều **nhỏ hơn hoặc xấp xỉ 2048 px** nên gần như không hưởng lợi từ bước resize. Ảnh điện thoại 12 MP (4032×3024) còn được giảm 4× số điểm ảnh trước khi nén, nên tỉ lệ thực tế sẽ tốt hơn 36 % đáng kể — nhưng **con số 350 KB ở §7.1 vẫn là ước lượng**, chưa đo trên ảnh chụp thật từ điện thoại. Cần xác nhận lại ở bước test staging (Phase 1.7) bằng ảnh chụp thật từ iPhone và Android.
+
+**Strip EXIF đã kiểm chứng trên ảnh có EXIF thật:** `exif_sample_image.jpg` chứa **11.256 byte EXIF** trước xử lý → **0 byte** sau xử lý.
+
+### 6.7. Cạm bẫy đã phát hiện khi kiểm chứng — `sharp` hỏng ÂM THẦM
+
+`processImage` cố tình nuốt lỗi để một ảnh hỏng không làm mất cả bài đăng. Nhưng nếu `sharp` **không nạp được** thì mọi ảnh đều rơi vào nhánh đó, và hệ thống hỏng theo hướng nguy hiểm nhất:
+
+* ảnh lưu **nguyên bản** ⇒ **EXIF/GPS không bị loại** — đúng thứ P5 cần diệt,
+* dung lượng và băng thông không giảm,
+* upload vẫn trả **200**, service vẫn "xanh", monitoring không báo gì.
+
+Đây không phải giả định: `node_modules` trong repo hiện chứa binary `sharp-darwin-arm64` (cài trên macOS). Copy nguyên cây đó lên VM Linux là dính bẫy ngay.
+
+Đã thêm `imagePipeline.selfTest()` gọi trong `logStartupState()` — in cảnh báo khung lớn ngay lúc khởi động nếu sharp không nạp được:
+
+```
+╔════════════════════════════════════════════════════════════╗
+║  ⚠️  SHARP KHÔNG NẠP ĐƯỢC — ẢNH SẼ LƯU NGUYÊN BẢN          ║
+║  Hệ quả: EXIF/GPS trong ảnh học sinh KHÔNG bị loại (P5)…   ║
+║  Khắc phục trên VM:  npm rebuild sharp                      ║
+╚════════════════════════════════════════════════════════════╝
+```
+
+⇒ **Quy trình deploy bắt buộc có `npm rebuild sharp` trên chính VM**, và log khởi động phải thấy dòng `[cdn] sharp OK — libvips <version>` trước khi coi là deploy thành công.
 
 ### 6.5. Luồng upload sau khi sửa (Phase 1)
 
@@ -727,17 +790,35 @@ Gỡ `express.static('/uploads')` khỏi `app.js`, xoá thư mục `uploads/` tr
 
 ### Phase 1 — social-service ghi lên CDN (3–5 ngày)
 
-| # | Việc |
-|---|------|
-| 1.1 | Thêm dependency, viết `services/cdn/{s3,sign,imagePipeline,index}.js` |
-| 1.2 | Đổi multer → thư mục tạm; controller gọi `cdn.storeUpload()` |
-| 1.3 | Hàm ký tập trung `signMediaDeep()`; gắn vào `messagePayloadForApi` (chat), `populatePostQuery` (post), **và cả 2 socket** |
-| 1.4 | `sanitizeIncomingAttachments` chấp nhận `cdn://social-chat/` |
-| 1.5 | Resolver legacy (§9 Bước 2) |
-| 1.6 | Cờ `CDN_ENABLED` bao mọi nhánh mới |
-| 1.7 | Test staging: post ảnh, post video, chat ảnh, chat file, avatar, realtime socket, **quay ảnh dọc iPhone**, ảnh HEIC |
+| # | Việc | Trạng thái |
+|---|------|-----------|
+| 1.1 | Thêm dependency, viết `services/cdn/{s3,sign,imagePipeline,index}.js` | ✅ |
+| 1.2 | Đổi multer → thư mục tạm; controller gọi `cdn.storeUpload()` | ✅ |
+| 1.3 | Hàm ký tập trung `signMediaDeep()`; gắn vào REST **và cả 2 socket** | ✅ |
+| 1.4 | `sanitizeIncomingAttachments` chấp nhận `cdn://social-chat/` | ✅ |
+| 1.5 | Resolver legacy (§9 Bước 2) | ✅ |
+| 1.6 | Cờ `CDN_ENABLED` bao mọi nhánh mới | ✅ |
+| **1.6b** | **`legacyUploadsGuard` chặn `/uploads` ẩn danh (P3)** | ✅ |
+| **1.6c** | **`selfTest()` chặn sharp hỏng âm thầm (§6.7)** | ✅ |
+| 1.6d | Bộ test tự động `npm run test:cdn` (45 test) | ✅ |
+| 1.7 | Test staging trên thiết bị thật | ⏳ **còn lại** |
 
-**Nghiệm thu Phase 1:** upload mới không sinh file nào trong `./uploads`; ảnh feed < 400 KB; `exiftool` trên ảnh tải về không còn GPS; URL không chữ ký → 403.
+**Việc còn lại của 1.7 — phải làm trên staging, không thay thế được bằng test tự động:**
+
+```
+[ ] Ảnh chụp DỌC từ iPhone thật → hiển thị đúng chiều (không bị xoay ngang)
+[ ] Ảnh HEIC từ iPhone → không làm hỏng bài đăng (fallback giữ nguyên bản)
+[ ] Ảnh 12 MP thật → đo dung lượng đầu ra, đối chiếu ước lượng 350 KB ở §7.1
+[ ] exiftool trên ảnh tải về từ CDN → không còn GPS
+[ ] Video từ điện thoại → phát được ngay, có poster, tua được (Range)
+[ ] Chat realtime: gửi ảnh, người nhận thấy ảnh NGAY (không cần F5) — đường socket
+[ ] Đăng bài có ảnh rồi sửa bài thêm ảnh → cả ảnh cũ và mới đều hiện
+[ ] Kiểm tra ./uploads KHÔNG sinh file mới sau khi bật CDN
+[ ] Tắt CDN_ENABLED → media cũ phục vụ lại bình thường (diễn tập rollback)
+[ ] Log khởi động có dòng `[cdn] sharp OK — libvips <version>`
+```
+
+**Nghiệm thu Phase 1:** upload mới không sinh file nào trong `./uploads`; ảnh feed < 400 KB; `exiftool` trên ảnh tải về không còn GPS; URL không chữ ký → 403; `npm run test:cdn` xanh.
 
 ### Phase 2 — Migrate dữ liệu cũ + bật production (2–3 ngày)
 
@@ -821,8 +902,9 @@ Chính sách lưu trữ chat và ảnh học sinh nên do **nhà trường quy�
 
 | Rủi ro | Mức | Giảm thiểu |
 |--------|-----|-----------|
-| Quên ký ở đường socket ⇒ ảnh vỡ khi realtime | **Cao** | Một hàm `signMediaDeep()` duy nhất; thêm test cho payload socket |
-| `sharp` build sai kiến trúc trên VM | Trung bình | Cài trên chính VM, pin version, `npm rebuild sharp` trong quy trình deploy |
+| Quên ký ở đường socket ⇒ ảnh vỡ khi realtime | **Cao** | ✅ Một hàm `signMediaDeep()` duy nhất, gọi ở REST + `chatBroadcastRooms` + `newfeedSocket`; có test cho payload lồng `replyTo` |
+| **`sharp` hỏng ⇒ EXIF/GPS KHÔNG bị loại, hỏng âm thầm** | **Cao** (nâng từ Trung bình) | ✅ `selfTest()` cảnh báo lớn lúc khởi động (§6.7); `npm rebuild sharp` bắt buộc trong quy trình deploy; log phải có `[cdn] sharp OK` |
+| Media cũ trên `/uploads` vẫn phục vụ ẩn danh (P3) | **Cao** | ✅ `legacyUploadsGuard` bắt buộc token khi CDN bật; có test HTTP xác nhận không lộ nội dung, kể cả qua path traversal mã hoá |
 | Lệch đồng hồ ⇒ 410 hàng loạt | Trung bình | NTP + cửa sổ 6 h đã có biên rất rộng |
 | Ảnh xoay sai sau khi strip EXIF | Trung bình | `.rotate()` trước `.webp()`; test ảnh dọc từ iPhone thật |
 | Ảnh HEIC từ iPhone | Trung bình | `sharp` cần libheif; nếu thiếu → fallback giữ nguyên file, log cảnh báo (đừng để throw làm hỏng cả bài đăng) |

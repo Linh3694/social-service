@@ -25,6 +25,30 @@ function getSharp() {
 }
 
 /**
+ * Kiểm tra sharp NGAY lúc khởi động, không đợi user upload.
+ *
+ * Vì sao quan trọng: `processImage` nuốt lỗi có chủ ý để một ảnh hỏng không làm
+ * mất cả bài đăng. Nhưng nếu sharp không nạp được thì MỌI ảnh đều rơi vào nhánh
+ * đó — và hỏng âm thầm theo hướng nguy hiểm nhất: ảnh lưu nguyên bản ⇒ **EXIF
+ * GPS KHÔNG bị loại** (P5), dung lượng không giảm. Service vẫn xanh, upload vẫn
+ * 200, chỉ có toạ độ ảnh học sinh là vẫn nằm trong file.
+ *
+ * `sharp` là native binary: cài trên macOS rồi copy `node_modules` sang VM Linux
+ * là dính đúng bẫy này. Phải `npm rebuild sharp` trên chính VM (§13).
+ */
+function selfTest() {
+  const sharp = getSharp();
+  if (!sharp) {
+    return { ok: false, reason: sharpUnavailableReason || 'sharp không khả dụng' };
+  }
+  try {
+    return { ok: true, versions: sharp.versions };
+  } catch (error) {
+    return { ok: false, reason: error.message };
+  }
+}
+
+/**
  * `.rotate()` PHẢI đứng trước khi ghi WebP.
  *
  * Strip EXIF làm mất cờ orientation; nếu không áp orientation trước thì ảnh
@@ -87,4 +111,4 @@ async function processImage(input) {
   }
 }
 
-module.exports = { processImage };
+module.exports = { processImage, selfTest };

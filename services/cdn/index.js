@@ -12,13 +12,15 @@
 
 const crypto = require('crypto');
 const fs = require('fs/promises');
+const os = require('os');
 const path = require('path');
 
 const { config, validate } = require('./config');
 const { signPath, signStored, CDN_SCHEME } = require('./sign');
 const { signMediaDeep } = require('./signDeep');
 const { toObjectPath } = require('./resolve');
-const { processImage } = require('./imagePipeline');
+const imagePipeline = require('./imagePipeline');
+const { processImage } = imagePipeline;
 const { processVideo } = require('./videoPipeline');
 const s3 = require('./s3');
 
@@ -68,9 +70,29 @@ function isVideo(mimetype, originalname) {
  * @returns {Promise<{stored: string, url: string, kind: 'image'|'video'|'file', contentType: string, width?: number, height?: number, size: number, variants: string[]}>}
  */
 async function storeUpload(file, { kind }) {
+  const original = await fs.readFile(file.path);
+  return storeBuffer(original, {
+    kind,
+    originalname: file.originalname,
+    mimetype: file.mimetype,
+    // Chỉ đường multipart mới có file trên đĩa để ffmpeg đọc trực tiếp.
+    sourcePath: file.path,
+  });
+}
+
+/**
+ * Lõi dùng chung cho CẢ HAI đường vào: multipart (Phase 1) và upload trực tiếp
+ * (Phase 3). Tách ra để hai đường không bao giờ lệch nhau về cách nén, cách đặt
+ * khoá hay cách sinh variants — lệch ở đây là loại lỗi chỉ lộ ra ở một trong hai
+ * đường và rất khó truy.
+ *
+ * @param {Buffer} original
+ * @param {{kind: 'posts'|'chat'|'avatars', originalname?: string, mimetype?: string, sourcePath?: string}} opts
+ */
+async function storeBuffer(original, { kind, originalname, mimetype, sourcePath }) {
   const bucket = bucketFor(kind);
   const prefix = prefixFor(kind);
-  const original = await fs.readFile(file.path);
+  const file = { originalname, mimetype };
 
   const image = isImage(file.mimetype, file.originalname);
   let body = original;
@@ -98,19 +120,37 @@ async function storeUpload(file, { kind }) {
     // Remux `+faststart` để video phát ngay thay vì phải tải gần hết (§7.3).
     // Poster đi kèm dưới dạng variant `_poster.webp` — cùng hash nên client
     // suy ra được đường dẫn từ URL video mà không cần thêm field trong DB.
-    const result = await processVideo(file.path, ext);
-    if (result.remuxed && result.buffer) {
-      body = result.buffer;
-      if (result.poster) {
-        variantParts = [{
-          suffix: '_poster',
-          buffer: result.poster,
-          ext: 'webp',
-          contentType: 'image/webp',
-        }];
-      }
+    //
+    // ffmpeg cần đường dẫn file, không nhận buffer. Đường multipart đã có sẵn
+    // file trên đĩa; đường upload trực tiếp (Phase 3) chỉ có buffer trong bộ
+    // nhớ nên phải ghi tạm rồi dọn.
+    let videoPath = sourcePath;
+    let tempVideo = null;
+    if (!videoPath) {
+      tempVideo = path.join(
+        os.tmpdir(),
+        `cdn-promote-${crypto.randomBytes(8).toString('hex')}.${ext}`,
+      );
+      await fs.writeFile(tempVideo, original);
+      videoPath = tempVideo;
     }
-    // remuxed === false ⇒ dùng nguyên bản gốc; đã log trong videoPipeline.
+    try {
+      const result = await processVideo(videoPath, ext);
+      if (result.remuxed && result.buffer) {
+        body = result.buffer;
+        if (result.poster) {
+          variantParts = [{
+            suffix: '_poster',
+            buffer: result.poster,
+            ext: 'webp',
+            contentType: 'image/webp',
+          }];
+        }
+      }
+      // remuxed === false ⇒ dùng nguyên bản gốc; đã log trong videoPipeline.
+    } finally {
+      if (tempVideo) await fs.unlink(tempVideo).catch(() => {});
+    }
   }
 
   // Hash tính trên NỘI DUNG CUỐI đã lưu, không phải file gốc: nhờ vậy
@@ -141,7 +181,7 @@ async function storeUpload(file, { kind }) {
   return {
     stored,
     url: signPath(`/${prefix}/${mainKey}`),
-    kind: image ? 'image' : (isVideo(file.mimetype, file.originalname) ? 'video' : 'file'),
+    kind: image ? 'image' : (video ? 'video' : 'file'),
     contentType,
     width,
     height,
@@ -189,11 +229,36 @@ function logStartupState() {
     return;
   }
   console.log(`[cdn] bật — ${config.publicUrl} qua ${config.s3.endpoint}`);
+
+  // sharp hỏng = hỏng ÂM THẦM theo hướng nguy hiểm: ảnh lưu nguyên bản, EXIF
+  // GPS không bị loại, upload vẫn trả 200. Phải hét lên ngay lúc khởi động.
+  const img = imagePipeline.selfTest();
+  if (!img.ok) {
+    console.error('');
+    console.error('  ╔════════════════════════════════════════════════════════════╗');
+    console.error('  ║  ⚠️  SHARP KHÔNG NẠP ĐƯỢC — ẢNH SẼ LƯU NGUYÊN BẢN          ║');
+    console.error('  ║                                                            ║');
+    console.error('  ║  Hệ quả: EXIF/GPS trong ảnh học sinh KHÔNG bị loại (P5),   ║');
+    console.error('  ║  dung lượng và băng thông không giảm. Upload vẫn trả 200   ║');
+    console.error('  ║  nên lỗi này KHÔNG tự lộ ra — phải xử lý ngay.             ║');
+    console.error('  ║                                                            ║');
+    console.error('  ║  Khắc phục trên VM:  npm rebuild sharp                      ║');
+    console.error('  ║  (sharp là native binary — không copy node_modules từ máy   ║');
+    console.error('  ║   macOS sang VM Linux được)                                ║');
+    console.error('  ╚════════════════════════════════════════════════════════════╝');
+    console.error(`  Chi tiết: ${img.reason}`);
+    console.error('');
+    return;
+  }
+  console.log(`[cdn] sharp OK — libvips ${img.versions?.vips || '?'}`);
 }
 
 module.exports = {
   config,
   storeUpload,
+  storeBuffer,
+  // Phase 3 — nạp lười để tránh vòng require (directUpload cần storeBuffer).
+  get directUpload() { return require('./directUpload'); },
   removeStored,
   cleanupTempFiles,
   signMediaDeep,

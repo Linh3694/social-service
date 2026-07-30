@@ -8,6 +8,7 @@
 const { config } = require('./config');
 
 let client = null;
+let presignClient = null;
 let sdk = null;
 
 function getSdk() {
@@ -67,4 +68,55 @@ async function headObject({ bucket, key }) {
   }
 }
 
-module.exports = { putObject, deleteObject, headObject, getClient };
+/** Tải object về buffer — dùng ở bước promote của upload trực tiếp (Phase 3). */
+async function getObjectBuffer({ bucket, key }) {
+  const { GetObjectCommand } = getSdk();
+  const res = await getClient().send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const chunks = [];
+  for await (const chunk of res.Body) chunks.push(chunk);
+  return {
+    buffer: Buffer.concat(chunks),
+    contentType: res.ContentType,
+  };
+}
+
+/**
+ * Presigned PUT cho client upload thẳng lên MinIO (Phase 3).
+ *
+ * PHẢI ký bằng endpoint CÔNG KHAI, không phải endpoint private: SigV4 đưa `Host`
+ * vào chữ ký, nên ký bằng `172.16.20.31:9000` rồi đưa client dùng qua
+ * `media.wellspring.edu.vn` sẽ luôn `SignatureDoesNotMatch`. Đây đúng là bẫy mà
+ * lms-media-service đã ghi lại trong config/minio.js.
+ */
+async function presignPutUrl({ bucket, key, contentType, expiresIn }) {
+  const { PutObjectCommand, S3Client } = getSdk();
+  const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+
+  if (!presignClient) {
+    presignClient = new S3Client({
+      endpoint: config.publicUrl || config.s3.endpoint,
+      region: config.s3.region,
+      forcePathStyle: config.s3.forcePathStyle,
+      credentials: {
+        accessKeyId: config.s3.accessKeyId,
+        secretAccessKey: config.s3.secretAccessKey,
+      },
+    });
+  }
+
+  const cmd = new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    ContentType: contentType || 'application/octet-stream',
+  });
+  return getSignedUrl(presignClient, cmd, { expiresIn: expiresIn || 900 });
+}
+
+module.exports = {
+  putObject,
+  deleteObject,
+  headObject,
+  getObjectBuffer,
+  presignPutUrl,
+  getClient,
+};
