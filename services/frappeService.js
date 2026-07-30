@@ -1169,7 +1169,24 @@ class FrappeService {
 
     const data = await this.getCurrentGuardianData(token);
     const payload = data?.data || data;
-    const students = Array.isArray(payload?.students) ? payload.students : [];
+    const guardianDocName = payload?.guardian?.name;
+    // Chỉ lớp của HS mà PH còn cờ "Xem thông tin" (access=1) — khớp roster sync/chat_scope.
+    const studentsWithAccess = new Set();
+    for (const family of payload?.families || []) {
+      for (const rel of family?.relationships || []) {
+        const studentId = rel?.student_name || rel?.student;
+        if (
+          studentId
+          && rel?.guardian_name === guardianDocName
+          && (rel?.access === 1 || rel?.access === true)
+        ) {
+          studentsWithAccess.add(studentId);
+        }
+      }
+    }
+    const students = (Array.isArray(payload?.students) ? payload.students : []).filter(
+      (student) => studentsWithAccess.has(student?.name || student?.student_id),
+    );
     const scopes = [];
     const seen = new Set();
 

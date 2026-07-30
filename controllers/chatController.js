@@ -825,7 +825,12 @@ function unionByKey(existing, incoming, getKey, mergeFn, opts) {
 }
 
 /** Merge field-by-field cho participant (giữ user._id cũ nếu incoming thiếu). */
-function mergeParticipantFields(oldP, newP) {
+function mergeParticipantFields(oldP, newP, opts) {
+  const authoritative = opts?.authoritative === true;
+  // Read-path (không scopeComplete) KHÔNG được gỡ soft-remove do sync/cron — tránh undo
+  // revoke khi PH mở lại danh sách chat sau khi bị tắt cờ "Xem thông tin".
+  const wasRevokedBySync = Boolean(oldP?.removedAt) && oldP?.removedReason === 'roster_sync';
+  const shouldReactivate = authoritative || !wasRevokedBySync;
   return {
     ...oldP,
     ...newP,
@@ -840,9 +845,8 @@ function mergeParticipantFields(oldP, newP) {
       ...((oldP.studentIds || []).map(String)),
       ...((newP.studentIds || []).map(String)),
     ])).filter(Boolean),
-    // Xuất hiện lại trong scope (mọi scope đều roster-derived) ⇒ tự khôi phục quyền.
-    removedAt: null,
-    removedReason: undefined,
+    removedAt: shouldReactivate ? null : oldP.removedAt,
+    removedReason: shouldReactivate ? undefined : oldP.removedReason,
   };
 }
 
@@ -899,7 +903,16 @@ function mergeSnapshotFields(oldS, newS, opts) {
     // scope không trả gì thì giữ bản cũ.
     studentLinks: (newS.studentLinks || []).length ? newS.studentLinks : (oldS.studentLinks || []),
     subjects: mergedSubjects,
-    removedAt: null,
+    removedAt: (() => {
+      const wasRevokedBySync = Boolean(oldS?.removedAt) && oldS?.removedReason === 'roster_sync';
+      const shouldReactivate = authoritative || !wasRevokedBySync;
+      return shouldReactivate ? null : oldS.removedAt;
+    })(),
+    removedReason: (() => {
+      const wasRevokedBySync = Boolean(oldS?.removedAt) && oldS?.removedReason === 'roster_sync';
+      const shouldReactivate = authoritative || !wasRevokedBySync;
+      return shouldReactivate ? undefined : oldS.removedReason;
+    })(),
   };
 }
 
@@ -932,13 +945,14 @@ async function upsertMergedConversationFromPayload(payload) {
     }
   }
 
+  const snapshotMergeOpts = { authoritative: payload.authoritative === true };
   const mergedParticipants = unionByKey(
     existing?.participants,
     payload.participants,
     participantIdentityKey,
     mergeParticipantFields,
+    snapshotMergeOpts,
   );
-  const snapshotMergeOpts = { authoritative: payload.authoritative === true };
   const mergedTeachers = unionByKey(
     existing?.teachers,
     payload.teachers,
@@ -1059,15 +1073,8 @@ async function ensureClassConversations({ classId, schoolYearId, token, trustedS
       }
     }
 
-    if (mergedIds.length > 0) {
-      const hasCurrentGuardian = (scope.guardians || []).some((guardian) => matchesGuardianUser(user, guardian));
-      if (!hasCurrentGuardian) {
-        const currentGuardian = buildCurrentGuardianSnapshot(user, trustedScope);
-        if (currentGuardian) {
-          scope.guardians = [...(scope.guardians || []), currentGuardian];
-        }
-      }
-    }
+    // KHÔNG inject PH hiện tại khi scope (access_only) thiếu họ: đó là trường hợp bị thu hồi
+    // cờ "Xem thông tin", không phải lỗi scope. Inject ở đây từng undo revoke của sync/cron.
   }
 
   // Chỉ tạo / duy trì nhóm chung lớp; nhóm GVCN–PH theo từng HS (student_guardians:) đã bỏ — dùng endpoint on-demand.
