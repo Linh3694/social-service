@@ -2,14 +2,18 @@
  * Wislife → Redis Stream `notify.send` (notification-service Phase 3) + HTTP fallback qua notificationDispatcher.
  */
 const { publishEnvelope } = require('../utils/eventBus');
-const { formatVietnameseName } = require('../utils/nameUtils');
 
 /**
- * Tên người trong body push — chuẩn hoá Họ Đệm Tên (xem chatStreamNotify, SIS-170).
+ * Tên người trong body push — giữ nguyên, KHÔNG đảo họ tên ở đây.
+ *
+ * Khác chatStreamNotify: event data của Wislife không mang role người gửi (postController
+ * chỉ truyền `userName`/`authorName`), mà chuẩn hoá thì chỉ được áp cho GV — tên PHHS phải
+ * giữ nguyên (SIS-170). Tên GV đến đây đã đúng thứ tự vì được chuẩn hoá lúc sync
+ * Frappe→Mongo (models/User.js). Nếu sau này cần chuẩn hoá ở đây thì phải truyền kèm role.
  */
 function normalizeName(name) {
   const s = String(name || '').trim();
-  return formatVietnameseName(s) || s || 'Ai đó';
+  return s || 'Ai đó';
 }
 
 /** classId/studentIds — đồng bộ với ERP _wislife_extra_fields. */

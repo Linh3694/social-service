@@ -5,13 +5,20 @@ const { publishEnvelope } = require('../utils/eventBus');
 const { formatVietnameseName } = require('../utils/nameUtils');
 
 /**
- * Tên người gửi trong body push — chuẩn hoá Họ Đệm Tên.
+ * Tên người gửi trong body push — chuẩn hoá Họ Đệm Tên, CHỈ với GV/CBNV.
+ *
  * Body do đây soạn rồi gửi nguyên văn ra Expo, client KHÔNG sửa được, nên không chuẩn hoá
- * ở đây là tên đảo hiện thẳng trên thông báo dù trong app vẫn đúng (SIS-170).
+ * ở đây là tên đảo hiện thẳng trên thông báo dù trong app vẫn đúng (SIS-170). Ngược lại,
+ * tên PHHS do ERP nhập sẵn đúng thứ tự VN nên phải giữ nguyên — đảo lại là làm sai.
+ *
+ * @param {string} name
+ * @param {string} senderRole 'teacher' | 'guardian' (userRole() ở chatController)
  */
-function normalizeName(name) {
+function normalizeName(name, senderRole) {
   const s = String(name || '').trim();
-  return formatVietnameseName(s) || s || 'Ai đó';
+  if (!s) return 'Ai đó';
+  if (String(senderRole || '').trim() === 'guardian') return s;
+  return formatVietnameseName(s) || s;
 }
 
 function normalizeEmails(list) {
@@ -32,7 +39,7 @@ function normalizeEmails(list) {
  */
 function buildChatParts(eventType, eventData) {
   const d = eventData || {};
-  const senderName = normalizeName(d.senderName);
+  const senderName = normalizeName(d.senderName, d.senderRole);
   const conversationId = d.conversationId != null ? String(d.conversationId) : '';
   const messageId = d.messageId != null ? String(d.messageId) : '';
   const conversationType = d.conversationType != null ? String(d.conversationType) : '';

@@ -60,6 +60,33 @@ userSchema.index({ department: 1 });
 // Text index cho search mention - hỗ trợ tìm kiếm theo tên
 userSchema.index({ fullname: 'text', email: 'text' });
 
+const PARENT_PORTAL_EMAIL_SUFFIX = '@parent.wellspring.edu.vn';
+
+/**
+ * Payload này là account PHHS (parent portal) hay không.
+ *
+ * Nhận diện CHỈ qua danh tính parent portal — role `Parent Portal User` (do
+ * frappeService.authenticateParentGuardian tự sinh, không bao giờ có trên account GV),
+ * field guardian_id, hoặc email tổng hợp `{guardian_id}@parent.wellspring.edu.vn` — chứ
+ * KHÔNG suy từ tên role 'Parent'/'Guardian': hàng chục GV của trường đồng thời là PHHS
+ * nhưng ở hai account riêng. Cùng quy ước với `userRole()` ở controllers/chatController.js.
+ *
+ * @param {Object} frappeUser
+ * @param {string[]} roles
+ * @returns {boolean}
+ */
+function isParentPortalAccount(frappeUser, roles) {
+  if ((roles || []).includes('Parent Portal User')) return true;
+  if (String(frappeUser?.guardian_id || '').trim()) return true;
+  const email = String(frappeUser?.email || frappeUser?.name || '').trim().toLowerCase();
+  return email.endsWith(PARENT_PORTAL_EMAIL_SUFFIX);
+}
+
+/** Dùng chung cho script sửa tên (scripts/fix-user-names.js) — một nguồn sự thật. */
+userSchema.statics.isParentPortalAccount = function isParentPortalAccountStatic(user, roles) {
+  return isParentPortalAccount(user, roles || user?.roles);
+};
+
 /**
  * 🔄 Cập nhật/đồng bộ user từ Frappe
  * Pattern giống ticket-service để đảm bảo nhất quán
@@ -77,20 +104,25 @@ userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser
     throw new Error('User email is required');
   }
 
-  // Normalize fullname với nhiều fallback options
-  const rawFullName = frappeUser.full_name || frappeUser.fullname || frappeUser.fullName ||
-    [frappeUser.first_name, frappeUser.middle_name, frappeUser.last_name].filter(Boolean).join(' ') ||
-    frappeUser.name;
-  
-  // Format tên theo chuẩn Việt Nam (Họ + Đệm + Tên)
-  const fullName = formatVietnameseName(rawFullName);
-
   // Normalize roles: hỗ trợ cả string array và object array
+  // (tính trước fullname vì bước chuẩn hoá tên cần biết đây có phải account PHHS không)
   const roles = Array.isArray(frappeUser.roles)
     ? frappeUser.roles.map((r) => (typeof r === 'string' ? r : r?.role)).filter(Boolean)
     : Array.isArray(frappeUser.roles_list)
     ? frappeUser.roles_list
     : [];
+
+  // Normalize fullname với nhiều fallback options
+  const rawFullName = frappeUser.full_name || frappeUser.fullname || frappeUser.fullName ||
+    [frappeUser.first_name, frappeUser.middle_name, frappeUser.last_name].filter(Boolean).join(' ') ||
+    frappeUser.name;
+
+  // Format tên theo chuẩn Việt Nam (Họ + Đệm + Tên) — CHỈ cho account GV/CBNV, vì chỉ
+  // account đồng bộ AD/Microsoft mới bị đảo họ tên. Tên PHHS do ERP nhập sẵn đúng thứ tự
+  // VN nên đảo lại là làm sai (SIS-170).
+  const fullName = isParentPortalAccount(frappeUser, roles)
+    ? String(rawFullName || '').trim()
+    : formatVietnameseName(rawFullName);
 
   // Xác định enabled status: ưu tiên docstatus, fallback về enabled/disabled fields
   const isEnabled = frappeUser.docstatus === 0 || 

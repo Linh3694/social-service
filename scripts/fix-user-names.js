@@ -75,13 +75,20 @@ async function fixUserNames() {
   
   let fixedCount = 0;
   let skippedCount = 0;
+  let guardianSkipped = 0;
   const fixes = [];
-  
+
   for (const user of users) {
+    // Account PHHS: tên do ERP nhập sẵn đúng thứ tự VN — không đảo (SIS-170).
+    if (User.isParentPortalAccount(user)) {
+      guardianSkipped++;
+      continue;
+    }
+
     // Lấy tên từ fullname hoặc fullName
     const originalName = user.fullname || user.fullName;
     if (!originalName) continue;
-    
+
     const parts = originalName.trim().split(/\s+/).filter(Boolean);
     if (parts.length < 2) {
       skippedCount++;
@@ -126,6 +133,7 @@ async function fixUserNames() {
   console.log(`   - Total users scanned: ${users.length}`);
   console.log(`   - ${APPLY ? 'Users fixed' : 'Users cần sửa (chưa ghi)'}: ${fixedCount}`);
   console.log(`   - Users skipped (already correct): ${skippedCount}`);
+  console.log(`   - Account PHHS bỏ qua (giữ nguyên tên): ${guardianSkipped}`);
   console.log('='.repeat(60) + '\n');
 
   if (fixes.length > 0) {
