@@ -75,7 +75,8 @@ function sanitizePostMediaKeys(raw) {
 
   const prefix = `${cdn.CDN_SCHEME}social-posts/`;
   const out = [];
-  for (const m of ds.slice(0, 10)) {
+  // Trần media gắn bài đăng — khớp multer + CDN_PRESIGN_MAX_FILES.
+  for (const m of ds.slice(0, 30)) {
     const stored = typeof m === 'string' ? m : String(m?.stored || '');
     if (!stored.startsWith(prefix)) continue;
     if (stored.includes('..')) continue;
