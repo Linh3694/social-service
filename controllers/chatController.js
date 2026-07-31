@@ -1303,6 +1303,14 @@ function parseConversationListQuery(query) {
     countOnly: ['1', 'true', 'yes'].includes(String(query?.countOnly || '').toLowerCase()),
     q: String(query?.q || '').trim(),
     filter: normalizeConversationFilter(query?.filter),
+    /** `?fields=list` ⇒ payload rút gọn (xem `serializeConversationForList`). */
+    slim: String(query?.fields || '').trim().toLowerCase() === 'list',
+    /**
+     * `?scope=member` ⇒ CHỈ hội thoại người gọi là thành viên, kể cả khi họ là BOD.
+     * Dùng cho màn "chat riêng với PH": danh sách ứng viên dựng từ nhóm lớp mà chính GV tham gia,
+     * nên quyền xem-toàn-trường của BOD chỉ tổ tải về hàng nghìn nhóm rồi loại sạch ở client.
+     */
+    memberScope: String(query?.scope || '').trim().toLowerCase() === 'member',
   };
 }
 
@@ -1370,6 +1378,9 @@ function respondWithConversationPage(res, payloads, opts) {
     (p) => conversationMatchesFilter(p, opts.filter) && conversationMatchesSearch(p, regex),
   );
   const total = matched.length;
+  // Rút gọn ở BƯỚC CUỐI: cache Redis giữ payload đầy đủ nên `?fields=list` của client này
+  // không làm hỏng dữ liệu client khác đọc từ cùng khoá cache.
+  const shrink = (rows) => (opts.slim ? rows.map(toListPayload) : rows);
 
   if (opts.countOnly) {
     return res.json({ success: true, data: [], meta: { page: 1, limit: 0, hasMore: false, total } });
@@ -1377,7 +1388,7 @@ function respondWithConversationPage(res, payloads, opts) {
   if (!opts.paginated) {
     return res.json({
       success: true,
-      data: matched,
+      data: shrink(matched),
       meta: { page: 1, limit: total, hasMore: false, total },
     });
   }
@@ -1386,7 +1397,7 @@ function respondWithConversationPage(res, payloads, opts) {
   const items = matched.slice(start, start + opts.limit);
   return res.json({
     success: true,
-    data: items,
+    data: shrink(items),
     meta: { page: opts.page, limit: opts.limit, hasMore: start + items.length < total, total },
   });
 }
@@ -1437,7 +1448,61 @@ function serializeConversation(conversation, user) {
       : null,
   };
   delete base.hiddenFromListAtByUserId;
+  // `unreadCounts` là map một khoá cho MỖI thành viên (nhóm lớp ~65 khoá) và chỉ tồn tại để tính
+  // ra đúng số `unreadCount` ngay trên — không client nào đọc map thô.
+  // `participants` thì GIỮ: web GV còn dùng để biết viewer là thành viên hay chỉ-xem (BOD).
+  delete base.unreadCounts;
   return base;
+}
+
+/**
+ * Field của member snapshot mà DANH SÁCH hội thoại thực sự đọc: cụm avatar (`name`/`avatarUrl`),
+ * tiêu đề chat 1-1 (`name`/`email`), lối tắt "chat riêng với PH" (`guardianId`/`teacherId`/
+ * `studentNames`) và pane phụ huynh (`studentIds`). Phần còn lại — `studentLinks`, `phoneNumber`,
+ * `contactEmail`, `subjects` — chỉ dùng ở panel thành viên trong thread, nạp sau bằng
+ * `GET /conversations/:id` nên không cần nhân với 50 dòng danh sách.
+ */
+const LIST_MEMBER_FIELDS = [
+  'email', 'name', 'guardianId', 'teacherId', 'studentIds', 'studentNames',
+  'avatarUrl', 'removedAt', 'manualAdd', 'homeroomRole',
+];
+
+function pickListMember(member) {
+  const out = {};
+  for (const field of LIST_MEMBER_FIELDS) {
+    if (member?.[field] !== undefined) out[field] = member[field];
+  }
+  return out;
+}
+
+/**
+ * Payload RÚT GỌN cho danh sách hội thoại (`?fields=list`) — cắt phần roster chi tiết.
+ *
+ * Danh sách của BOD gồm toàn nhóm lớp, mỗi nhóm kèm roster ~40–65 người, nên bản đầy đủ
+ * khiến một trang 50 dòng nặng vài MB. Client nào cần bản đầy đủ (panel thành viên) thì gọi
+ * `GET /conversations/:id` cho ĐÚNG hội thoại đang mở.
+ *
+ * Nhận payload ĐÃ serialize (không phải Document) để dùng được cho cả nhánh đọc cache Redis.
+ * `listPayload: true` để client biết object đang thiếu roster chi tiết mà tự nạp lại.
+ */
+function toListPayload(payload) {
+  const slim = {
+    ...payload,
+    listPayload: true,
+    guardians: (payload.guardians || []).map(pickListMember),
+    teachers: (payload.teachers || []).map(pickListMember),
+  };
+  // `participants` chỉ để xét viewer là thành viên hay chỉ-xem, mà việc đó chỉ hỏi ở hội thoại
+  // ĐANG MỞ — không đáng nhân với 50 dòng danh sách. Client suy từ `teachers`/`guardians` trong
+  // lúc chờ, rồi nạp bản đầy đủ bằng `GET /conversations/:id`.
+  delete slim.participants;
+  return slim;
+}
+
+/** Serialize một Document theo hợp đồng danh sách, rút gọn khi client hỏi `?fields=list`. */
+function serializeConversationForList(conversation, user, opts) {
+  const payload = serializeConversation(conversation, user);
+  return opts?.slim ? toListPayload(payload) : payload;
 }
 
 /** Tách teacherId + guardianId từ `type` dạng `teacher_guardian:<tid>:<gid>`. */
@@ -2263,26 +2328,36 @@ async function listConversationsForBod(req, res, opts) {
       : { $or: [groupArm, directArm] };
 
   const filter = { $and: [typeArm, ...baseConditions] };
-  const total = await ChatConversation.countDocuments(filter);
 
   if (opts.countOnly) {
+    const total = await ChatConversation.countDocuments(filter);
     return res.json({ success: true, data: [], meta: { page: 1, limit: 0, hasMore: false, total } });
   }
 
   // `_id` làm tie-break để hai trang liên tiếp không trả trùng/sót dòng.
   const sort = { 'lastMessage.createdAt': -1, updatedAt: -1, _id: -1 };
+  // Nhánh này chỉ đọc rồi trả JSON: `lean()` bỏ bước hydrate Document (đắt với mảng
+  // participants/guardians hàng chục phần tử), projection bỏ luôn field sẽ bị cắt ở serializer —
+  // `participants` chỉ bỏ khi client hỏi `fields=list`, để hợp đồng cũ không đổi.
+  const projection = opts.slim
+    ? { participants: 0, hiddenFromListAtByUserId: 0 }
+    : { hiddenFromListAtByUserId: 0 };
 
   if (opts.paginated) {
-    const rows = await ChatConversation.find(filter)
+    const rows = await ChatConversation.find(filter, projection)
       .sort(sort)
       .skip((opts.page - 1) * opts.limit)
-      .limit(opts.limit + 1);
+      .limit(opts.limit + 1)
+      .lean();
     const hasMore = rows.length > opts.limit;
     const pageRows = hasMore ? rows.slice(0, opts.limit) : rows;
     return res.json({
       success: true,
-      data: pageRows.map((c) => serializeConversation(c, req.user)),
-      meta: { page: opts.page, limit: opts.limit, hasMore, total },
+      data: pageRows.map((c) => serializeConversationForList(c, req.user, opts)),
+      // `total` chỉ trả khi client hỏi `countOnly`: không màn nào hiển thị tổng số, mà đếm thì
+      // phải quét lại đúng tập vừa tìm — với BOD (tìm kiếm regex không index) là một COLLSCAN
+      // thừa cho MỖI lần gõ. Phân trang chỉ cần `hasMore`, đã có sẵn từ `limit + 1`.
+      meta: { page: opts.page, limit: opts.limit, hasMore, total: null },
     });
   }
 
@@ -2291,10 +2366,12 @@ async function listConversationsForBod(req, res, opts) {
   const [groups, directs] = await Promise.all([
     opts.filter === 'direct'
       ? []
-      : ChatConversation.find({ $and: [groupArm, ...baseConditions] }).sort(sort).limit(BOD_FULL_LIST_GROUP_CAP),
+      : ChatConversation.find({ $and: [groupArm, ...baseConditions] }, projection)
+        .sort(sort).limit(BOD_FULL_LIST_GROUP_CAP).lean(),
     opts.filter === 'group'
       ? []
-      : ChatConversation.find({ $and: [directArm, ...baseConditions] }).sort(sort).limit(BOD_FULL_LIST_DIRECT_CAP),
+      : ChatConversation.find({ $and: [directArm, ...baseConditions] }, projection)
+        .sort(sort).limit(BOD_FULL_LIST_DIRECT_CAP).lean(),
   ]);
   if (groups.length >= BOD_FULL_LIST_GROUP_CAP || directs.length >= BOD_FULL_LIST_DIRECT_CAP) {
     console.warn(
@@ -2305,8 +2382,8 @@ async function listConversationsForBod(req, res, opts) {
   const rows = [...groups, ...directs].sort(compareConversationRecency);
   return res.json({
     success: true,
-    data: rows.map((c) => serializeConversation(c, req.user)),
-    meta: { page: 1, limit: rows.length, hasMore: false, total },
+    data: rows.map((c) => serializeConversationForList(c, req.user, opts)),
+    meta: { page: 1, limit: rows.length, hasMore: false, total: rows.length },
   });
 }
 
@@ -2340,7 +2417,9 @@ exports.listConversations = async (req, res) => {
 
     // Quyền NHẮN vẫn xét theo thành viên từng hội thoại (rejectObserverWrite) — user lai
     // GV+BOD nhắn được ở lớp mình, chỉ-xem ở hội thoại khác.
-    if (isBodUser(req.user)) {
+    // `?scope=member` bỏ qua đặc quyền xem-toàn-trường: người gọi chỉ muốn hội thoại của CHÍNH
+    // mình (xem `memberScope`), nhánh dưới đã lọc bằng `buildParticipantMatchOr`.
+    if (isBodUser(req.user) && !opts.memberScope) {
       return await listConversationsForBod(req, res, opts);
     }
 
