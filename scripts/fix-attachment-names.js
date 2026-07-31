@@ -4,18 +4,23 @@
  * Chạy thử (KHÔNG ghi DB):  node scripts/fix-attachment-names.js
  * Ghi DB thật:              node scripts/fix-attachment-names.js --apply
  *
- * Trước khi fix trong buildChatAttachments, tên file từ multer bị decode latin1 nên
- * `attachments[].name` của tin nhắn cũ đang lưu chuỗi lỗi ("ChÃ­nh sÃ¡ch…").
- * Script decode lại về UTF-8 bằng cùng helper mà API đang dùng.
+ * Chữa hai kiểu hỏng của `attachments[].name` trong tin nhắn cũ, bằng đúng helper
+ * mà API đang dùng (`normalizeUploadFilename`) nên DB và dữ liệu mới luôn cùng dạng:
  *
- * An toàn: decodeMultipartFilename chỉ đổi khi chuỗi byte đúng là UTF-8 hợp lệ, nên tên
- * ASCII và tên latin1 thật được giữ nguyên. Chạy lại nhiều lần không đổi thêm (idempotent).
+ *   1. Mojibake latin1 do multer (SIS-169): "ChÃ­nh sÃ¡ch.docx".
+ *   2. Tên bị percent-encode: "HU%CC%9BO%CC%9B%CC%81NG%20DA%CC%82%CC%83N…" —
+ *      tên đi qua một URL (file:// trên iOS, `filename*` của Content-Disposition,
+ *      khoá CDN…) rồi được gửi lại nguyên xi. Sửa luôn cả dạng NFC.
+ *
+ * An toàn: chỉ đổi khi chắc chắn (byte đúng UTF-8 hợp lệ / có escape percent của byte
+ * ngoài ASCII), nên tên ASCII, tên latin1 thật và tên chứa `%` hợp lệ được giữ nguyên.
+ * Chạy lại nhiều lần không đổi thêm (idempotent).
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '../config.env') });
 const mongoose = require('mongoose');
 const ChatMessage = require('../models/ChatMessage');
-const { decodeMultipartFilename } = require('../utils/uploadFilename');
+const { normalizeUploadFilename } = require('../utils/uploadFilename');
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/wis_social';
 const APPLY = process.argv.includes('--apply');
@@ -53,7 +58,7 @@ async function fixAttachmentNames() {
     let dirty = false;
 
     const next = attachments.map((att) => {
-      const fixed = decodeMultipartFilename(att.name);
+      const fixed = normalizeUploadFilename(att.name);
       if (fixed === att.name) return att;
       dirty = true;
       changedNames++;

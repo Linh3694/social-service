@@ -18,7 +18,7 @@ const {
   TTL_CHAT_LIST_SEC,
   TTL_MSG_COUNT_SEC,
 } = require('../utils/cache');
-const { decodeMultipartFilename } = require('../utils/uploadFilename');
+const { normalizeUploadFilename } = require('../utils/uploadFilename');
 
 const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
 
@@ -1535,7 +1535,7 @@ function attachmentKindFromMime(mime) {
  * cdnSignResponse sẽ ký khoá này thành URL đầy đủ trước khi tới client.
  * Tắt CDN: giữ nguyên hành vi cũ (đường dẫn /uploads/chat/).
  *
- * Tên file LUÔN phải đi qua decodeMultipartFilename: multer trả `originalname` đã bị
+ * Tên file LUÔN phải đi qua normalizeUploadFilename: multer trả `originalname` đã bị
  * decode sai thành latin1 nên tên tiếng Việt vào DB thành ký tự lỗi (SIS-169).
  */
 async function buildChatAttachments(files) {
@@ -1543,7 +1543,7 @@ async function buildChatAttachments(files) {
     return files.map((file) => ({
       kind: attachmentKindFromMime(file.mimetype),
       url: `/uploads/chat/${file.filename}`,
-      name: decodeMultipartFilename(file.originalname || file.filename || 'file').slice(0, 220),
+      name: normalizeUploadFilename(file.originalname || file.filename || 'file').slice(0, 220),
       mimeType: file.mimetype || '',
       size: file.size || 0,
     }));
@@ -1556,7 +1556,7 @@ async function buildChatAttachments(files) {
     return results.map((r, i) => ({
       kind: r.kind,
       url: r.stored,
-      name: decodeMultipartFilename(files[i].originalname || 'file').slice(0, 220),
+      name: normalizeUploadFilename(files[i].originalname || 'file').slice(0, 220),
       mimeType: r.contentType,
       size: r.size,
       width: r.width,
@@ -1616,7 +1616,7 @@ function sanitizeIncomingAttachments(raw) {
     out.push({
       kind,
       url,
-      name: String(a.name || 'file').trim().slice(0, 220),
+      name: (normalizeUploadFilename(a.name) || 'file').slice(0, 220),
       mimeType: String(a.mimeType || '').trim().slice(0, 120),
       size: Math.max(0, Math.min(Number(a.size) || 0, 200 * 1024 * 1024)),
       width: Number.isFinite(Number(a.width)) ? Number(a.width) : undefined,

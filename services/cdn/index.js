@@ -15,7 +15,7 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 
-const { decodeMultipartFilename } = require('../../utils/uploadFilename');
+const { normalizeUploadFilename } = require('../../utils/uploadFilename');
 const { config, validate, directUploadChoUser } = require('./config');
 const { signPath, signStored, CDN_SCHEME } = require('./sign');
 const { signMediaDeep } = require('./signDeep');
@@ -128,7 +128,7 @@ async function storeUpload(file, { kind }) {
     sourcePath: file.path,
     // Tên gốc để đặt Content-Disposition. PHẢI giải mã latin1 trước (SIS-169):
     // đặt thẳng `originalname` của multer thì header ra "ChÃ­nh sÃ¡ch.docx".
-    downloadName: decodeMultipartFilename(file.originalname || ''),
+    downloadName: normalizeUploadFilename(file.originalname || ''),
   });
 }
 

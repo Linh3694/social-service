@@ -33,4 +33,44 @@ function decodeMultipartFilename(raw) {
   return decoded;
 }
 
-module.exports = { decodeMultipartFilename };
+/** Có escape percent của byte ngoài ASCII (`%C3`, `%CC`…) ⇒ dấu vết UTF-8 đã bị encode. */
+const NON_ASCII_ESCAPE = /%[89a-f][0-9a-f]/i;
+
+/**
+ * Chuẩn hoá tên file trước khi LƯU VÀO DB — dùng cho mọi đường nạp đính kèm.
+ *
+ * Ngoài mojibake latin1 (xem trên), còn gặp tên đã bị percent-encode:
+ * "HƯỚNG DẪN SỬ DỤNG.pdf" vào DB thành "HU%CC%9BO%CC%9B%CC%81NG%20DA%CC%82%CC%83N…".
+ * Chuỗi này sinh ra khi tên đi qua một URL (đường dẫn file:// trên iOS, tham số
+ * `filename*` của Content-Disposition, khoá CDN…) rồi được lấy nguyên xi làm tên
+ * file khi người dùng gửi lại. Tên hỏng nằm trong DB nên hiện sai ở MỌI client
+ * (app + web, PH lẫn GV) ⇒ chặn ngay tại cửa vào.
+ *
+ * Chỉ giải mã khi có escape của byte ≥ 0x80, nên tên chứa `%` hợp lệ được giữ
+ * nguyên: "Doanh thu 50%.pdf" (decodeURIComponent ném lỗi) và "Bao cao 100%20.pdf"
+ * (escape ASCII, không đụng tới).
+ *
+ * Cuối cùng chuẩn hoá NFC: macOS/iOS đặt tên ở dạng NFD ("Ư" = "U" + dấu móc rời),
+ * nhiều font trên Android dựng chồng dấu rất xấu.
+ *
+ * @param {string} raw
+ * @returns {string}
+ */
+function normalizeUploadFilename(raw) {
+  const name = decodeMultipartFilename(raw);
+  if (!name) return '';
+
+  let decoded = name;
+  if (NON_ASCII_ESCAPE.test(name)) {
+    try {
+      decoded = decodeURIComponent(name);
+    } catch {
+      // Có `%` nhưng không phải percent-encoding hợp lệ ⇒ giữ nguyên.
+      decoded = name;
+    }
+  }
+
+  return decoded.normalize('NFC');
+}
+
+module.exports = { decodeMultipartFilename, normalizeUploadFilename };
