@@ -47,8 +47,8 @@ router.get('/pinned', authenticate, postController.getPinnedPosts);
 router.get('/contributors/top', postController.getTopContributors || ((req, res)=>res.status(501).json({message:'Not implemented'})));
 
 // Write operations require auth
-router.post('/', authenticate, upload.array('files', 10), cleanupUploads, postController.createPost);
-router.put('/:postId', authenticate, upload.array('files', 10), cleanupUploads, postController.updatePost);
+router.post('/', authenticate, upload.array('files', 30), cleanupUploads, postController.createPost);
+router.put('/:postId', authenticate, upload.array('files', 30), cleanupUploads, postController.updatePost);
 router.delete('/:postId', authenticate, postController.deletePost);
 router.post('/:postId/reactions', authenticate, postController.addReaction);
 router.delete('/:postId/reactions', authenticate, postController.removeReaction);

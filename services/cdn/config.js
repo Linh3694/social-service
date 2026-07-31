@@ -67,7 +67,7 @@ const config = {
     ),
     // TTL của presigned PUT. Ngắn thôi — client xin xong là upload ngay.
     presignTtlSec: int('CDN_PRESIGN_TTL_SEC', 900),
-    maxFiles: int('CDN_PRESIGN_MAX_FILES', 10),
+    maxFiles: int('CDN_PRESIGN_MAX_FILES', 30),
     // Trần dung lượng, kiểm ở bước complete bằng HeadObject. Presigned PUT của
     // S3 không ép được kích thước, nên phải hậu kiểm rồi xoá nếu vượt.
     maxBytes: int('CDN_PRESIGN_MAX_BYTES', 100 * 1024 * 1024),

@@ -65,7 +65,7 @@ exports.complete = async (req, res) => {
     }
 
     // Tuần tự chứ không song song: promote đọc byte về rồi chạy sharp/ffmpeg.
-    // Mười tệp cùng lúc trên một process Node sẽ ăn hết CPU và làm chậm feed
+    // Nhiều tệp cùng lúc trên một process Node sẽ ăn hết CPU và làm chậm feed
     // của mọi người khác — đúng vấn đề P1 mà Phase 3 sinh ra để giảm.
     const ket_qua = [];
     for (const key of ds) {
