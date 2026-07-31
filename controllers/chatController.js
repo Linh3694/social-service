@@ -91,12 +91,22 @@ function userRole(user) {
 }
 
 /**
- * BOD (Ban giám hiệu/HĐQT) — quan sát viên: đọc mọi hội thoại theo ROLE,
- * không bao giờ nằm trong participants, không được ghi (send/markRead/reaction/pin...).
+ * Quan sát viên chat: đọc mọi hội thoại theo ROLE, không bao giờ nằm trong participants,
+ * không được ghi (send/markRead/reaction/pin...).
+ *
+ * Ngoài BOD (Ban giám hiệu/HĐQT) còn có Sales Care — bộ phận chăm sóc PH cần theo dõi
+ * trao đổi GV↔PH, quyền y hệt BOD (chỉ-xem, silent observer, có audit log).
  */
+const CHAT_OBSERVER_ROLES = [
+  'SIS BOD',
+  'Mobile BOD',
+  'SIS Sales Care',
+  'SIS Sales Care Admin',
+];
+
 function isBodUser(user) {
   const roles = user?.roles || [];
-  return roles.includes('SIS BOD') || roles.includes('Mobile BOD');
+  return CHAT_OBSERVER_ROLES.some((role) => roles.includes(role));
 }
 
 /** Participant đang active (chưa bị soft-remove bởi sync roster). */
