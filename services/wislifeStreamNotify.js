@@ -2,6 +2,10 @@
  * Wislife → Redis Stream `notify.send` (notification-service Phase 3) + HTTP fallback qua notificationDispatcher.
  */
 const { publishEnvelope } = require('../utils/eventBus');
+const { truncatePreview } = require('../utils/textPreview');
+
+/** Trần độ dài đoạn xem trước trong body push (đã tính cả dấu "…"). */
+const PREVIEW_MAX = 80;
 
 /**
  * Tên người trong body push — giữ nguyên, KHÔNG đảo họ tên ở đây.
@@ -181,7 +185,7 @@ function buildParts(eventType, eventData) {
       if (!emails.length) return null;
       const authorName = normalizeName(d.authorName);
       const classTitle = String(d.classTitle || d.classId || '').trim() || 'lớp';
-      const preview = d.content != null ? String(d.content).trim().slice(0, 80) : '';
+      const preview = truncatePreview(d.content, PREVIEW_MAX);
       const notification_message = preview
         ? `${authorName} đã đăng Nhật ký lớp ${classTitle}: ${preview}`
         : `${authorName} đã đăng Nhật ký lớp ${classTitle}`;
@@ -206,7 +210,7 @@ function buildParts(eventType, eventData) {
       const emails = normalizeEmails(d.recipientEmails);
       if (!emails.length) return null;
       const authorName = normalizeName(d.authorName);
-      const preview = d.content != null ? String(d.content).trim().slice(0, 80) : '';
+      const preview = truncatePreview(d.content, PREVIEW_MAX);
       const notification_message = preview
         ? `${authorName} đã đăng tin tức mới: ${preview}`
         : `${authorName} đã đăng tin tức mới`;

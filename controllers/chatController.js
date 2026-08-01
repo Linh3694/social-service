@@ -19,8 +19,15 @@ const {
   TTL_MSG_COUNT_SEC,
 } = require('../utils/cache');
 const { normalizeUploadFilename } = require('../utils/uploadFilename');
+const { truncatePreview } = require('../utils/textPreview');
 
 const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
+
+/**
+ * Trần độ dài đoạn xem trước gửi kèm sự kiện notify (body push dựng từ đây).
+ * Cắt theo ranh giới từ + "…" để thông báo không đứt giữa chữ (xem utils/textPreview).
+ */
+const NOTIFY_PREVIEW_MAX = 100;
 
 /**
  * Chuẩn hoá tin trả API/socket: không populate User — client dùng senderSnapshot (+ _id sender).
@@ -1889,7 +1896,7 @@ function firePollLifecycleNotify(eventType, conversation, message, { recipientEm
     senderEmail: '',
     senderName: '',
     recipientEmails: emails,
-    messagePreview: String(message.poll?.question || '').slice(0, 100),
+    messagePreview: truncatePreview(message.poll?.question, NOTIFY_PREVIEW_MAX),
     hasAttachment: false,
     messageKind: 'poll',
     timestamp: new Date().toISOString(),
@@ -2268,7 +2275,7 @@ async function appendMessageToConversation(conversation, req, {
     senderName: message.senderSnapshot.name,
     senderRole: message.senderSnapshot.role,
     recipientEmails: chatRecipientEmails(conversation, req.user.email),
-    messagePreview: (lastPreview || c || '').slice(0, 100),
+    messagePreview: truncatePreview(lastPreview || c || '', NOTIFY_PREVIEW_MAX),
     hasAttachment: att.length > 0,
     messageKind: poll ? 'poll' : 'text',
     timestamp: new Date().toISOString(),

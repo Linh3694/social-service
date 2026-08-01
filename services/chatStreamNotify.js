@@ -3,6 +3,10 @@
  */
 const { publishEnvelope } = require('../utils/eventBus');
 const { formatVietnameseName } = require('../utils/nameUtils');
+const { truncatePreview } = require('../utils/textPreview');
+
+/** Trần độ dài đoạn xem trước trong body push (đã tính cả dấu "…"). */
+const PREVIEW_MAX = 100;
 
 /**
  * Tên người gửi trong body push — chuẩn hoá Họ Đệm Tên, CHỈ với GV/CBNV.
@@ -48,7 +52,7 @@ function buildChatParts(eventType, eventData) {
 
   switch (eventType) {
     case 'new_message': {
-      const preview = String(d.messagePreview || '').trim().slice(0, 100);
+      const preview = truncatePreview(d.messagePreview, PREVIEW_MAX);
       const body = preview ? `${senderName}: ${preview}` : `${senderName} đã gửi tin nhắn`;
       return {
         recipients: emails,
@@ -89,7 +93,7 @@ function buildChatParts(eventType, eventData) {
       };
     }
     case 'poll_reminder': {
-      const question = String(d.messagePreview || '').trim().slice(0, 100);
+      const question = truncatePreview(d.messagePreview, PREVIEW_MAX);
       return {
         recipients: emails,
         title: 'Bình chọn',
@@ -108,7 +112,7 @@ function buildChatParts(eventType, eventData) {
       };
     }
     case 'poll_closed': {
-      const question = String(d.messagePreview || '').trim().slice(0, 100);
+      const question = truncatePreview(d.messagePreview, PREVIEW_MAX);
       return {
         recipients: emails,
         title: 'Bình chọn',
