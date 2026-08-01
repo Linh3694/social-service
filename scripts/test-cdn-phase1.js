@@ -337,6 +337,89 @@ function parse(url) {
       assert.strictEqual(r.ok, true, 'selfTest phải xanh khi sharp nạp được');
       assert.ok(r.versions?.vips, 'thiếu version libvips');
     });
+
+    // ───────────────────────────────────────────────────────────────────
+    section('SIS-172 Ảnh HEIC từ iPhone — phải ra WebP, không được giữ nguyên bản');
+
+    const heicDecode = require('../services/cdn/heicDecode');
+    const heic = heicDecode.tinyHeicBuffer();
+
+    // Ghi lại hiện trạng để người sau biết vì sao cần libheif riêng. Cố tình KHÔNG
+    // assert: sharp mai này có HEIC thì đó là tin tốt, không phải test hỏng.
+    //
+    // PHẢI thử GIẢI MÃ chứ đừng thử `metadata()`: libvips đọc được phần container
+    // của HEIF nên `metadata()` trả 64x32 rất thuyết phục, chỉ tới lúc đụng pixel
+    // mới lộ ra là không có bộ giải mã HEVC.
+    try {
+      await sharp(heic).resize(16).webp().toBuffer();
+      console.log('       ℹ️  sharp bản này ĐÃ giải mã được HEIC — cân nhắc bỏ libheif-js');
+    } catch (error) {
+      console.log(`       ℹ️  sharp một mình không giải mã được HEIC ("${error.message.slice(0, 40)}") ⇒ cần libheif`);
+    }
+
+    await t('isHeic nhận đúng HEIC, không nhận JPEG/PNG', async () => {
+      assert.strictEqual(heicDecode.isHeic(heic), true, 'không nhận ra file HEIC');
+      const jpg = await sharp({ create: { width: 8, height: 8, channels: 3, background: { r: 1, g: 2, b: 3 } } })
+        .jpeg().toBuffer();
+      const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: { r: 1, g: 2, b: 3 } } })
+        .png().toBuffer();
+      assert.strictEqual(heicDecode.isHeic(jpg), false, 'nhận nhầm JPEG là HEIC');
+      assert.strictEqual(heicDecode.isHeic(png), false, 'nhận nhầm PNG là HEIC');
+      assert.strictEqual(heicDecode.isHeic(Buffer.alloc(4)), false, 'buffer quá ngắn phải trả false');
+    });
+
+    await t('KHÔNG cướp AVIF khỏi sharp (cùng họ HEIF nhưng sharp đọc được)', async () => {
+      const avif = await sharp({ create: { width: 32, height: 32, channels: 3, background: { r: 7, g: 8, b: 9 } } })
+        .avif({ quality: 40 }).toBuffer();
+      assert.strictEqual(heicDecode.isHeic(avif), false, 'AVIF bị đẩy nhầm sang libheif');
+      const r = await processImage(avif);
+      assert.strictEqual(r.ok, true, `AVIF phải xử lý được: ${r.reason || ''}`);
+    });
+
+    await t('processImage chuyển HEIC sang WebP (SIS-171 — không còn giữ nguyên .heic)', async () => {
+      const r = await processImage(heic);
+      assert.strictEqual(r.ok, true, `HEIC vẫn hỏng: ${r.reason || ''}`);
+      assert.strictEqual(r.main.ext, 'webp', 'HEIC không ra WebP ⇒ trình duyệt vẫn không xem được');
+      assert.strictEqual(r.main.contentType, 'image/webp');
+      assert.strictEqual(r.main.width, 64, `rộng ${r.main.width}, kỳ vọng 64`);
+      assert.strictEqual(r.main.height, 32, `cao ${r.main.height}, kỳ vọng 32`);
+    });
+
+    await t('ảnh HEIC đầu ra không còn metadata (GPS không thể lọt — P5)', async () => {
+      const r = await processImage(heic);
+      const meta = await sharp(r.main.buffer).metadata();
+      assert.ok(!meta.exif, 'EXIF vẫn còn trong ảnh HEIC đã xử lý');
+    });
+
+    await t('nhiều ảnh HEIC song song vẫn đúng (hàng đợi decoder dùng chung)', async () => {
+      // Đường multipart chạy Promise.all trên từng file (chatController.js:1635).
+      // Không xếp hàng thì lượt sau giải phóng context lượt trước đang đọc.
+      const rs = await Promise.all([heic, heic, heic, heic].map((b) => processImage(b)));
+      for (const r of rs) {
+        assert.strictEqual(r.ok, true, `một lượt song song hỏng: ${r.reason || ''}`);
+        assert.strictEqual(r.main.width, 64);
+      }
+    });
+
+    await t('file HEIC hỏng KHÔNG throw, vẫn fallback như cũ', async () => {
+      // Giữ nguyên header ftyp cho isHeic() nhận, phần thân là rác.
+      const hong = Buffer.concat([heic.subarray(0, 32), crypto.randomBytes(200)]);
+      const r = await processImage(hong);
+      assert.strictEqual(r.ok, false, 'file rác lại báo thành công');
+      assert.ok(r.reason);
+    });
+
+    await t('hàng đợi không kẹt sau khi một ảnh hỏng', async () => {
+      const r = await processImage(heic);
+      assert.strictEqual(r.ok, true, `ảnh tốt sau ảnh hỏng lại lỗi: ${r.reason || ''}`);
+    });
+
+    await t('selfTestHeic báo decoder sẵn sàng (chặn hỏng âm thầm — SIS-171)', async () => {
+      const { selfTestHeic } = require('../services/cdn/imagePipeline');
+      const r = await selfTestHeic();
+      assert.strictEqual(r.ok, true, `selfTestHeic đỏ: ${r.reason || ''}`);
+      assert.strictEqual(r.width, 64);
+    });
   }
 
   // ─────────────────────────────────────────────────────────────────────

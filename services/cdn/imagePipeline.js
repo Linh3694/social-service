@@ -7,6 +7,7 @@
  */
 
 const { config } = require('./config');
+const heicDecode = require('./heicDecode');
 
 let sharpLib;
 let sharpUnavailableReason = null;
@@ -54,9 +55,13 @@ function selfTest() {
  * Strip EXIF làm mất cờ orientation; nếu không áp orientation trước thì ảnh
  * chụp dọc bằng iPhone sẽ bị xoay ngang. Lỗi này chỉ lộ ra khi user thật dùng
  * (§7.1, §13).
+ *
+ * `options` chỉ khác rỗng ở nhánh HEIC, nơi đầu vào là RGBA thô nên phải khai
+ * kích thước cho sharp. Với RGBA thô thì `.rotate()` là no-op (không có EXIF để
+ * đọc) — đúng ý, vì libheif đã áp chiều xoay lúc giải mã; xem heicDecode.js.
  */
-function basePipeline(sharp, input) {
-  return sharp(input, { failOn: 'none' }).rotate();
+function basePipeline(sharp, input, options) {
+  return sharp(input, { failOn: 'none', ...options }).rotate();
 }
 
 /**
@@ -72,7 +77,18 @@ async function processImage(input) {
   try {
     const { maxWidth, quality, variants } = config.image;
 
-    const mainBuffer = await basePipeline(sharp, input)
+    // HEIC phải giải mã bằng libheif trước — sharp prebuilt không đọc được, và
+    // im lặng rơi vào nhánh catch bên dưới chính là bug SIS-171. Mọi định dạng
+    // khác (kể cả AVIF) đi thẳng như cũ, không gánh thêm chi phí nào.
+    let source = input;
+    let sourceOptions;
+    if (heicDecode.isHeic(input)) {
+      const raw = await heicDecode.decodeToRaw(input);
+      source = raw.data;
+      sourceOptions = { raw: { width: raw.width, height: raw.height, channels: raw.channels } };
+    }
+
+    const mainBuffer = await basePipeline(sharp, source, sourceOptions)
       .resize({ width: maxWidth, height: maxWidth, fit: 'inside', withoutEnlargement: true })
       // sharp mặc định KHÔNG copy metadata ⇒ EXIF/GPS bị loại.
       // Đừng gọi .withMetadata(), sẽ giữ lại toạ độ chụp.
@@ -85,7 +101,7 @@ async function processImage(input) {
     for (const width of variants) {
       // Không phóng to ảnh nhỏ hơn variant — vừa phí dung lượng vừa xấu
       if (meta.width && meta.width <= width) continue;
-      const buffer = await basePipeline(sharp, input)
+      const buffer = await basePipeline(sharp, source, sourceOptions)
         .resize({ width, withoutEnlargement: true })
         .webp({ quality, effort: 4 })
         .toBuffer();
@@ -104,11 +120,24 @@ async function processImage(input) {
       variants: variantOut,
     };
   } catch (error) {
-    // Ảnh HEIC thiếu libheif, ảnh hỏng… — KHÔNG throw, để bài đăng vẫn tạo
-    // được với file gốc (§13). Thà ảnh nặng còn hơn mất bài.
+    // Ảnh hỏng, định dạng lạ… — KHÔNG throw, để bài đăng vẫn tạo được với file
+    // gốc (§13). Thà ảnh nặng còn hơn mất bài.
+    //
+    // CẢNH BÁO khi sửa: từ SIS-171 ta biết nhánh này còn có mặt xấu — file lưu
+    // nguyên bản là file trình duyệt KHÔNG hiển thị được thì người dùng mất ảnh
+    // mà hệ thống vẫn báo thành công. Thêm định dạng mới vào pipeline thì phải
+    // tự hỏi: rơi vào đây thì bản gốc có xem được trên web không?
     console.error('[cdn] xử lý ảnh thất bại, giữ nguyên bản gốc:', error.message);
     return { ok: false, reason: error.message };
   }
 }
 
-module.exports = { processImage, selfTest };
+/**
+ * Self-test riêng cho decoder HEIC (bất đồng bộ vì phải nạp WASM).
+ * Tách khỏi `selfTest()` để phần kiểm tra sharp vẫn đồng bộ như cũ.
+ */
+function selfTestHeic() {
+  return heicDecode.selfTest();
+}
+
+module.exports = { processImage, selfTest, selfTestHeic };

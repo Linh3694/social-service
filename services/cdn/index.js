@@ -319,6 +319,31 @@ function logStartupState() {
     return;
   }
   console.log(`[cdn] sharp OK — libvips ${img.versions?.vips || '?'}`);
+
+  // Decoder HEIC nằm NGOÀI sharp (xem heicDecode.js) nên phải kiểm riêng. Hỏng
+  // thì ảnh iPhone lại rơi vào đúng nhánh giữ-nguyên-bản-gốc của SIS-171: upload
+  // 200, tin nhắn có, ảnh trắng. Không tự lộ ra ⇒ phải hét lên lúc khởi động.
+  //
+  // Chạy nền, không await: nạp WASM tốn khoảng một giây, không đáng chặn tiến
+  // trình khởi động chỉ để in một dòng log.
+  imagePipeline.selfTestHeic().then((heic) => {
+    if (heic.ok) {
+      console.log(`[cdn] decoder HEIC OK — ảnh mẫu ${heic.width}x${heic.height}`);
+      return;
+    }
+    console.error('');
+    console.error('  ╔════════════════════════════════════════════════════════════╗');
+    console.error('  ║  ⚠️  DECODER HEIC HỎNG — ẢNH iPHONE SẼ LƯU NGUYÊN BẢN      ║');
+    console.error('  ║                                                            ║');
+    console.error('  ║  Hệ quả: ảnh .heic gửi vào chat/bảng tin KHÔNG hiển thị    ║');
+    console.error('  ║  được trên mọi trình duyệt ngoài Safari (SIS-171). Upload  ║');
+    console.error('  ║  vẫn trả 200 nên lỗi này KHÔNG tự lộ ra.                   ║');
+    console.error('  ║                                                            ║');
+    console.error('  ║  Khắc phục trên VM:  npm ci   (thiếu gói libheif-js)        ║');
+    console.error('  ╚════════════════════════════════════════════════════════════╝');
+    console.error(`  Chi tiết: ${heic.reason}`);
+    console.error('');
+  });
 }
 
 module.exports = {
