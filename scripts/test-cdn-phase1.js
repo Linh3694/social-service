@@ -423,6 +423,60 @@ function parse(url) {
   }
 
   // ─────────────────────────────────────────────────────────────────────
+  section('SIS-174 Video HEVC — dò codec, khoá poster, bóc khoá');
+
+  const videoPipeline = require('../services/cdn/videoPipeline');
+  const { posterKeyFor, parseStored } = require('../services/cdn');
+
+  await t('codec phổ biến KHÔNG bị transcode', () => {
+    for (const c of ['h264', 'H264', 'vp9', 'av1']) {
+      assert.strictEqual(videoPipeline.codecAnToan(c), true, `${c} bị coi là cần transcode`);
+    }
+  });
+
+  await t('hevc và codec lạ ĐƯỢC xếp transcode', () => {
+    assert.strictEqual(videoPipeline.codecAnToan('hevc'), false);
+    assert.strictEqual(videoPipeline.codecAnToan('mpeg4'), false);
+  });
+
+  await t('không đo được codec ⇒ KHÔNG transcode (không biết thì đừng đụng vào)', () => {
+    assert.strictEqual(videoPipeline.codecAnToan(null), true);
+    assert.strictEqual(videoPipeline.codecAnToan(''), true);
+  });
+
+  await t('khoá poster suy đúng từ khoá video', () => {
+    assert.strictEqual(
+      posterKeyFor('cdn://social-chat/2026/08/ab/deadbeef.mp4'),
+      'cdn://social-chat/2026/08/ab/deadbeef_poster.webp',
+    );
+  });
+
+  await t('dữ liệu legacy không có poster ⇒ null, không bịa khoá', () => {
+    assert.strictEqual(posterKeyFor('/uploads/chat/IMG_0001.mov'), null);
+    assert.strictEqual(posterKeyFor(''), null);
+    assert.strictEqual(posterKeyFor('cdn://social-chat/khongcoduoi'), null);
+  });
+
+  await t('bóc khoá ra bucket + kind đúng', () => {
+    assert.deepStrictEqual(parseStored('cdn://social-chat/2026/08/ab/x.mp4'), {
+      bucket: 'cdn-social-chat', prefix: 'social-chat', key: '2026/08/ab/x.mp4', kind: 'chat',
+    });
+    assert.strictEqual(parseStored('cdn://social-posts/a/b.mp4').kind, 'posts');
+    // Bucket ngoài chat/posts ⇒ kind null, gọi phía trên phải tự từ chối.
+    assert.strictEqual(parseStored('cdn://social-avatars/a/b.webp').kind, null);
+    assert.strictEqual(parseStored('/uploads/chat/x.mov'), null);
+  });
+
+  await t('poster đi kèm kết quả storeBuffer để signMediaDeep ký được', () => {
+    // Client KHÔNG tự suy được URL poster (URL ra ngoài đã ký theo từng path), nên
+    // khoá poster bắt buộc phải là một giá trị riêng trong payload.
+    const stored = 'cdn://social-chat/2026/08/ab/deadbeef.mp4';
+    const poster = posterKeyFor(stored);
+    assert.ok(poster.startsWith('cdn://'), 'poster phải là khoá cdn:// để được ký');
+    assert.notStrictEqual(signMediaDeep({ posterUrl: poster }).posterUrl, poster, 'poster chưa được ký');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
   section('P3 Guard /uploads — chặn truy cập ẩn danh');
 
   const guard = require('../middleware/legacyUploadsGuard');

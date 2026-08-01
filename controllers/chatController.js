@@ -1703,6 +1703,11 @@ function sanitizeIncomingAttachments(raw) {
       size: Math.max(0, Math.min(Number(a.size) || 0, 200 * 1024 * 1024)),
       width: Number.isFinite(Number(a.width)) ? Number(a.width) : undefined,
       height: Number.isFinite(Number(a.height)) ? Number(a.height) : undefined,
+      // Poster suy từ chính khoá video (SIS-174). Suy ở ĐÂY vì đây là chỗ duy nhất
+      // mọi đính kèm chat đi qua — cả đường multipart lẫn đường upload trực tiếp
+      // (client echo lại mảng attachments) — nên không phải sửa client nào cả.
+      // KHÔNG tin `a.posterUrl` do client gửi: giá trị này phải do server suy ra.
+      posterUrl: kind === 'video' ? (cdn.posterKeyFor(url) || '') : '',
     });
   }
   return out;

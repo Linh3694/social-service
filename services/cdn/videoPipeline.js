@@ -29,11 +29,29 @@ const crypto = require('crypto');
 const TIMEOUT_MS = 120_000;
 const POSTER_WIDTH = 480;
 
-let ffmpegAvailable;
+/**
+ * Transcode (SIS-174) đắt hơn remux hàng trăm lần nên có trần riêng, rộng hơn nhiều.
+ * Chạy ở worker nền chứ không trong request nên kéo dài không ảnh hưởng ai.
+ */
+const TRANSCODE_TIMEOUT_MS = Number(process.env.CDN_TRANSCODE_TIMEOUT_MS || 15 * 60 * 1000);
 
-function run(bin, args) {
+/**
+ * Hạ độ phân giải khi transcode. H.264 kém hiệu quả hơn HEVC khoảng 40-50% ở cùng
+ * chất lượng, nên giữ nguyên 4K sẽ cho ra file LỚN HƠN HẲN bản gốc — vừa tốn đĩa
+ * vừa tốn băng thông của phụ huynh. 1080p là mức vừa đủ cho video xem trong chat.
+ * Video thấp hơn ngưỡng này KHÔNG bị phóng to.
+ */
+const TRANSCODE_MAX_HEIGHT = Number(process.env.CDN_TRANSCODE_MAX_HEIGHT || 1080);
+
+/** Codec trình duyệt nào cũng phát được — thấy codec này thì không cần đụng vào. */
+const CODEC_AN_TOAN = new Set(['h264', 'vp8', 'vp9', 'av1']);
+
+let ffmpegAvailable;
+let ffprobeAvailable;
+
+function run(bin, args, timeoutMs = TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { timeout: TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(bin, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`${bin}: ${err.message} ${String(stderr).slice(-300)}`));
       resolve(stdout);
     });
@@ -54,8 +72,94 @@ async function hasFfmpeg() {
   return ffmpegAvailable;
 }
 
+/** ffprobe đi kèm ffmpeg nhưng vẫn kiểm riêng — có bản đóng gói thiếu nó. */
+async function hasFfprobe() {
+  if (ffprobeAvailable === undefined) {
+    try {
+      await run('ffprobe', ['-version']);
+      ffprobeAvailable = true;
+    } catch {
+      ffprobeAvailable = false;
+      console.warn('[cdn] khong tim thay ffprobe — khong do duoc codec video, bo qua transcode');
+    }
+  }
+  return ffprobeAvailable;
+}
+
 function tmpPath(ext) {
   return path.join(os.tmpdir(), `cdn-vid-${crypto.randomBytes(8).toString('hex')}.${ext}`);
+}
+
+/**
+ * Codec của luồng video đầu tiên: 'h264', 'hevc', 'vp9'… hoặc null nếu không đo được.
+ * Không bao giờ throw — không đo được thì coi như không biết, và "không biết" phải
+ * dẫn tới KHÔNG làm gì, chứ không phải transcode bừa.
+ */
+async function probeVideoCodec(inputPath) {
+  if (!(await hasFfprobe())) return null;
+  try {
+    const out = await run('ffprobe', [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=codec_name',
+      '-of', 'default=nw=1:nk=1',
+      inputPath,
+    ]);
+    const codec = String(out).trim().split('\n')[0].trim().toLowerCase();
+    return codec || null;
+  } catch (error) {
+    console.warn('[cdn] khong do duoc codec video:', error.message);
+    return null;
+  }
+}
+
+/** Codec này trình duyệt nào cũng phát được ⇒ không cần transcode. */
+function codecAnToan(codec) {
+  return !codec || CODEC_AN_TOAN.has(String(codec).toLowerCase());
+}
+
+/**
+ * Chuyển video sang H.264/AAC trong MP4 — chạy ở worker nền (SIS-174).
+ *
+ * Ba tham số dưới đây đều là bắt buộc chứ không phải tuỳ chọn:
+ *
+ *   `-pix_fmt yuv420p` — iPhone quay HDR ra HEVC 10-bit. Không ép về 8-bit thì
+ *   libx264 xuất yuv420p10le, mà H.264 High 10 profile thì Chrome/Firefox KHÔNG
+ *   giải mã được. Thiếu dòng này là transcode xong vẫn không xem được — đúng thứ
+ *   ta đang đi sửa, chỉ đổi tên codec.
+ *
+ *   `-vf scale` giới hạn chiều cao — xem ghi chú ở TRANSCODE_MAX_HEIGHT.
+ *
+ *   `-movflags +faststart` — cùng lý do với nhánh remux (§7.3).
+ *
+ * @returns {Promise<{ok: boolean, buffer?: Buffer, reason?: string}>} không bao giờ throw
+ */
+async function transcodeToH264(inputPath) {
+  if (!(await hasFfmpeg())) {
+    return { ok: false, reason: 'ffmpeg khong co san' };
+  }
+
+  const outPath = tmpPath('mp4');
+  try {
+    await run('ffmpeg', [
+      '-nostdin', '-y', '-loglevel', 'error',
+      '-i', inputPath,
+      // `-2` để chiều rộng luôn chẵn (yêu cầu của yuv420p); `min(h,MAX)` nên video
+      // thấp hơn ngưỡng giữ nguyên, không bị phóng to.
+      '-vf', `scale=-2:'min(${TRANSCODE_MAX_HEIGHT},ih)'`,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-movflags', '+faststart',
+      outPath,
+    ], TRANSCODE_TIMEOUT_MS);
+    const buffer = await fs.readFile(outPath);
+    return { ok: true, buffer };
+  } catch (error) {
+    console.error('[cdn] transcode that bai:', error.message);
+    return { ok: false, reason: error.message };
+  } finally {
+    await unlinkQuiet(outPath);
+  }
 }
 
 async function unlinkQuiet(p) {
@@ -130,4 +234,12 @@ async function processVideo(inputPath, ext = 'mp4') {
   return { buffer, poster, remuxed: true };
 }
 
-module.exports = { processVideo, hasFfmpeg };
+module.exports = {
+  processVideo,
+  hasFfmpeg,
+  hasFfprobe,
+  probeVideoCodec,
+  codecAnToan,
+  transcodeToH264,
+  TRANSCODE_MAX_HEIGHT,
+};

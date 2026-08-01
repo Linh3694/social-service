@@ -36,6 +36,12 @@ const attachmentSchema = new mongoose.Schema({
   size: { type: Number, default: 0 },
   width: { type: Number },
   height: { type: Number },
+  /**
+   * Khoá `cdn://` của ảnh poster video (SIS-174). Chỉ có với kind='video'.
+   * Phải lưu thành giá trị riêng chứ không để client tự suy: URL ra ngoài là URL
+   * đã ký theo từng path, client nối `_poster.webp` vào là chữ ký sai (403).
+   */
+  posterUrl: { type: String, default: '', trim: true },
 }, { _id: false });
 
 /** Một phương án của bình chọn. `id` do server sinh ('o1','o2'…) và ổn định suốt đời poll. */

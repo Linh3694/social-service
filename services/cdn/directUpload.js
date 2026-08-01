@@ -185,6 +185,15 @@ async function promote(user, stagingKey, kind) {
   // Dọn staging. Thất bại cũng không sao — lifecycle 1 ngày sẽ quét.
   await s3.deleteObject({ bucket: staging, key: stagingKey }).catch(() => {});
 
+  // Video codec lạ ⇒ xếp hàng transcode nền (SIS-174). Đặt ở đây chứ không trong
+  // `storeBuffer` — xem ghi chú ở `enqueueTranscode` trong index.js.
+  try {
+    const { enqueueIfNeeded } = require('../transcodeScheduler');
+    await enqueueIfNeeded(ket_qua, kind);
+  } catch (error) {
+    console.error('[cdn] enqueue transcode lỗi:', error.message);
+  }
+
   return ket_qua;
 }
 

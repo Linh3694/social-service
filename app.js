@@ -184,6 +184,7 @@ const PORT = process.env.PORT || 5010;
 server.listen(PORT, () => console.log(`🚀 [Social Service] Running on port ${PORT}`));
 
 const { startPollScheduler } = require('./services/pollScheduler');
+const { startTranscodeScheduler } = require('./services/transcodeScheduler');
 
 database.connect()
   .then(() => {
@@ -195,6 +196,13 @@ database.connect()
       startPollScheduler();
     } catch (e) {
       console.error('[PollScheduler] không khởi động được:', e.message);
+    }
+    // Transcode video HEVC → H.264 (SIS-174) — cũng in-process vì cùng lý do: xong
+    // job phải đẩy socket cho người đang mở hội thoại.
+    try {
+      startTranscodeScheduler();
+    } catch (e) {
+      console.error('[Transcode] không khởi động được:', e.message);
     }
   })
   .catch((e) => { console.error('DB connect error:', e.message); process.exit(1); });

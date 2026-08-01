@@ -22,7 +22,7 @@ const { signMediaDeep } = require('./signDeep');
 const { toObjectPath } = require('./resolve');
 const imagePipeline = require('./imagePipeline');
 const { processImage } = imagePipeline;
-const { processVideo } = require('./videoPipeline');
+const { processVideo, probeVideoCodec } = require('./videoPipeline');
 const s3 = require('./s3');
 
 /** kind → bucket vật lý */
@@ -120,7 +120,7 @@ function contentDispositionFor(downloadName) {
  */
 async function storeUpload(file, { kind }) {
   const original = await fs.readFile(file.path);
-  return storeBuffer(original, {
+  const ketQua = await storeBuffer(original, {
     kind,
     originalname: file.originalname,
     mimetype: file.mimetype,
@@ -130,6 +130,27 @@ async function storeUpload(file, { kind }) {
     // đặt thẳng `originalname` của multer thì header ra "ChÃ­nh sÃ¡ch.docx".
     downloadName: normalizeUploadFilename(file.originalname || ''),
   });
+  await enqueueTranscode(ketQua, kind);
+  return ketQua;
+}
+
+/**
+ * Xếp job transcode nếu video dùng codec lạ (SIS-174).
+ *
+ * Đặt ở `storeUpload`/`promote` chứ KHÔNG ở `storeBuffer`: đây mới là ranh giới
+ * "người dùng vừa upload". `storeBuffer` còn được script backfill và worker
+ * transcode gọi lại — xếp hàng ở đó là tự sinh việc cho chính mình.
+ *
+ * Nạp lười để tránh vòng require (scheduler cần cdn) và để tầng cdn không phải
+ * biết tới Mongo lúc khởi động. Nuốt lỗi: hàng đợi hỏng không được làm hỏng upload.
+ */
+async function enqueueTranscode(ketQua, kind) {
+  try {
+    const { enqueueIfNeeded } = require('../transcodeScheduler');
+    await enqueueIfNeeded(ketQua, kind);
+  } catch (error) {
+    console.error('[cdn] enqueue transcode lỗi:', error.message);
+  }
 }
 
 /**
@@ -159,6 +180,8 @@ async function storeBuffer(original, { kind, originalname, mimetype, sourcePath,
   let width;
   let height;
   let variantParts = [];
+  /** Codec luồng video (SIS-174) — null với ảnh/tệp hoặc khi không đo được. */
+  let videoCodec = null;
 
   const video = !image && isVideo(file.mimetype, file.originalname);
 
@@ -193,6 +216,11 @@ async function storeBuffer(original, { kind, originalname, mimetype, sourcePath,
       videoPath = tempVideo;
     }
     try {
+      // Đo codec để biết có phải xếp hàng transcode không (SIS-174). Đo TRƯỚC khi
+      // remux cho gọn: remux `-c copy` không đổi codec nên đo lúc nào cũng ra một
+      // kết quả, mà file gốc thì chắc chắn đang có sẵn ở đây.
+      videoCodec = await probeVideoCodec(videoPath);
+
       const result = await processVideo(videoPath, ext);
       if (result.remuxed && result.buffer) {
         body = result.buffer;
@@ -246,6 +274,7 @@ async function storeBuffer(original, { kind, originalname, mimetype, sourcePath,
   ]);
 
   const stored = `${CDN_SCHEME}${prefix}/${mainKey}`;
+  const variants = variantParts.map((v) => `${CDN_SCHEME}${prefix}/${dir}/${hash}${v.suffix}.${v.ext}`);
   return {
     stored,
     url: signPath(`/${prefix}/${mainKey}`),
@@ -254,8 +283,49 @@ async function storeBuffer(original, { kind, originalname, mimetype, sourcePath,
     width,
     height,
     size: body.length,
-    variants: variantParts.map((v) => `${CDN_SCHEME}${prefix}/${dir}/${hash}${v.suffix}.${v.ext}`),
+    variants,
+    // Tách riêng poster thay vì bắt gọi phía trên tự lọc trong `variants`: client
+    // KHÔNG tự suy ra được đường dẫn poster, vì URL phục vụ ra ngoài là URL đã ký
+    // theo từng path — nối chuỗi `_poster.webp` vào URL đã ký là chữ ký sai (403).
+    // Vì vậy khoá poster phải được lưu vào DB như một giá trị riêng để signMediaDeep ký.
+    posterStored: variants.find((v) => v.endsWith('_poster.webp')) || null,
+    videoCodec,
   };
+}
+
+/**
+ * Bóc khoá `cdn://social-chat/2026/08/ab/<hash>.mp4` thành các mảnh dùng được.
+ * @returns {{bucket: string, prefix: string, key: string, kind: 'chat'|'posts'|null}|null}
+ */
+function parseStored(stored) {
+  if (typeof stored !== 'string' || !stored.startsWith(CDN_SCHEME)) return null;
+  const rest = stored.slice(CDN_SCHEME.length);
+  const slash = rest.indexOf('/');
+  if (slash <= 0) return null;
+  const prefix = rest.slice(0, slash);
+  const key = rest.slice(slash + 1);
+  if (!key) return null;
+  const kind = prefix === 'social-chat' ? 'chat' : prefix === 'social-posts' ? 'posts' : null;
+  return { bucket: `cdn-${prefix}`, prefix, key, kind };
+}
+
+/**
+ * Khoá poster suy ra từ khoá video: `…/<hash>.mp4` → `…/<hash>_poster.webp`.
+ *
+ * Suy ra được vì poster là variant cùng hash, sinh trong cùng một lượt `storeBuffer`
+ * (§7.3). Nhưng CHỈ server mới suy được: URL phục vụ ra ngoài là URL đã ký theo
+ * từng path, nên client nối thêm `_poster.webp` vào URL đã ký sẽ ra chữ ký sai (403).
+ * Vì thế khoá poster phải nằm sẵn trong DB dưới dạng một giá trị `cdn://` riêng để
+ * `signMediaDeep` ký cùng lúc với video.
+ *
+ * @returns {string|null} null nếu không phải khoá cdn:// (dữ liệu legacy không có poster)
+ */
+function posterKeyFor(stored) {
+  if (typeof stored !== 'string' || !stored.startsWith(CDN_SCHEME)) return null;
+  const dot = stored.lastIndexOf('.');
+  const slash = stored.lastIndexOf('/');
+  if (dot <= slash) return null;
+  return `${stored.slice(0, dot)}_poster.webp`;
 }
 
 /**
@@ -353,6 +423,8 @@ module.exports = {
   storeBuffer,
   contentDispositionFor,
   alignExt,
+  posterKeyFor,
+  parseStored,
   // Phase 3 — nạp lười để tránh vòng require (directUpload cần storeBuffer).
   get directUpload() { return require('./directUpload'); },
   removeStored,
