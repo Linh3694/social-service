@@ -2667,12 +2667,50 @@ exports.getMessages = async (req, res) => {
         at: new Date().toISOString(),
       });
     }
-    const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+    let page = Math.max(parseInt(req.query.page || '1', 10), 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit || '30', 10), 1), 100);
-    const skip = (page - 1) * limit;
 
     const baseQuery = { conversation: conversation._id, isDeleted: false };
     const ck = messageCountRedisKey(conversation._id);
+
+    /**
+     * `around=<messageId>` — nạp liền một mạch từ tin MỚI NHẤT xuống hết trang chứa tin đó.
+     * Dùng khi mở hội thoại từ thông báo: client cần cuộn thẳng tới tin được nhắc tới, kể cả
+     * khi tin đã cũ nằm ngoài trang đầu (SIS-180). Không truyền `around` ⇒ hành vi cũ y nguyên.
+     *
+     * Vì sao trả liền mạch chứ không trả riêng trang chứa tin: danh sách chat phía client là
+     * FlatList inverted, chỉ có đường tải THÊM TIN CŨ (`onEndReached`), không có đường tải tin
+     * mới hơn. Trả mỗi trang giữa sẽ để lại khoảng trống không bao giờ lấp được.
+     *
+     * `currentPage` vẫn trả về trang chứa tin đích nên client tải tiếp trang kế là liền mạch.
+     * Tin không tồn tại / đã xoá / quá xa (> AROUND_MAX_MESSAGES) ⇒ `aroundResolved: false`
+     * và rơi về trang được yêu cầu, KHÔNG lỗi — thông báo cũ vẫn phải mở được hội thoại.
+     */
+    const AROUND_MAX_MESSAGES = 300;
+    const around = String(req.query.around || '').trim();
+    let aroundResolved = false;
+    let aroundTake = 0;
+    if (around) {
+      const target = mongoose.Types.ObjectId.isValid(around)
+        ? await ChatMessage.findOne({ ...baseQuery, _id: around }).select('createdAt').lean()
+        : null;
+      if (target) {
+        // Vị trí tin trong danh sách sort createdAt DESC = số tin mới hơn nó.
+        // Các tin trùng khít createdAt có thể lệch vài bậc, không đủ để văng khỏi trang.
+        const newerCount = await ChatMessage.countDocuments({
+          ...baseQuery,
+          createdAt: { $gt: target.createdAt },
+        });
+        if (newerCount < AROUND_MAX_MESSAGES) {
+          page = Math.floor(newerCount / limit) + 1;
+          aroundTake = page * limit;
+          aroundResolved = true;
+        }
+      }
+    }
+
+    const skip = aroundResolved ? 0 : (page - 1) * limit;
+    const pageSize = aroundResolved ? aroundTake : limit;
 
     const loadRows = async (take) => ChatMessage.find(baseQuery)
       .sort({ createdAt: -1 })
@@ -2684,11 +2722,10 @@ exports.getMessages = async (req, res) => {
     let total;
     let hasNext;
 
-    if (page === 1) {
-      const take = limit + 1;
-      const rawRows = await loadRows(take);
-      hasNext = rawRows.length > limit;
-      messages = rawRows.slice(0, limit);
+    if (skip === 0) {
+      const rawRows = await loadRows(pageSize + 1);
+      hasNext = rawRows.length > pageSize;
+      messages = rawRows.slice(0, pageSize);
 
       const hit = await cacheGetJSON(ck);
       if (hit && typeof hit.total === 'number') {
@@ -2698,9 +2735,9 @@ exports.getMessages = async (req, res) => {
         cacheSetJSON(ck, { total }, TTL_MSG_COUNT_SEC).catch(() => {});
       }
     } else {
-      messages = await loadRows(limit + 1);
-      hasNext = messages.length > limit;
-      messages = messages.slice(0, limit);
+      messages = await loadRows(pageSize + 1);
+      hasNext = messages.length > pageSize;
+      messages = messages.slice(0, pageSize);
 
       total = await ChatMessage.countDocuments(baseQuery);
     }
@@ -2714,6 +2751,7 @@ exports.getMessages = async (req, res) => {
           totalPages: Math.ceil(total / limit),
           totalMessages: total,
           hasNext,
+          ...(around ? { aroundResolved } : {}),
         },
         conversation: serializeConversation(conversation, req.user),
       },
