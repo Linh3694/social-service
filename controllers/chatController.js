@@ -1687,10 +1687,24 @@ function normalizeAttachmentUrl(rawUrl) {
 }
 
 /** Chỉ chấp nhận đính kèm do chính service này phát ra (chống URL tùy ý). */
+/**
+ * Trần số đính kèm mỗi tin nhắn.
+ *
+ * PHẢI KHỚP ba nơi, thiếu một chỗ là hỏng NGẦM:
+ *   • `chatUpload.array('files', N)` — routes/chatRoutes.js
+ *   • vòng cắt ngay dưới đây
+ *   • trần chọn file ở client
+ *
+ * Nguy hiểm nhất là chỗ này: nó CẮT IM LẶNG. Client gửi 30 ảnh, upload xong cả
+ * 30, nhưng tin nhắn chỉ lưu N cái đầu và KHÔNG có lỗi nào — người dùng tưởng
+ * mất ảnh còn log thì sạch trơn.
+ */
+const CHAT_MAX_ATTACHMENTS = 30;
+
 function sanitizeIncomingAttachments(raw) {
   if (!Array.isArray(raw) || !raw.length) return [];
   const out = [];
-  for (const a of raw.slice(0, 10)) {
+  for (const a of raw.slice(0, CHAT_MAX_ATTACHMENTS)) {
     const url = normalizeAttachmentUrl(a.url);
     if (!url) continue;
     let kind = a.kind;
@@ -1710,6 +1724,13 @@ function sanitizeIncomingAttachments(raw) {
       // (client echo lại mảng attachments) — nên không phải sửa client nào cả.
       // KHÔNG tin `a.posterUrl` do client gửi: giá trị này phải do server suy ra.
       posterUrl: kind === 'video' ? (cdn.posterKeyFor(url) || '') : '',
+      // Bản 480px cho ô thumbnail — pipeline đã sinh sẵn nhưng client chưa từng
+      // dùng, nên vẫn đang tải ảnh 2048px vào ô 134px. `thumbKeyFor` trả null khi
+      // không chắc biến thể tồn tại (ảnh gốc ≤480px, hoặc ảnh giữ nguyên bản gốc)
+      // ⇒ để rỗng và client tự dùng ảnh đầy đủ.
+      thumbUrl: kind === 'image'
+        ? (cdn.thumbKeyFor(url, Number(a.width)) || '')
+        : '',
     });
   }
   return out;
@@ -3697,3 +3718,5 @@ exports.chatRecipientEmails = chatRecipientEmails;
 exports.canSeePollVoters = canSeePollVoters;
 exports.pollEffectiveClosedAt = pollEffectiveClosedAt;
 exports.buildPollFromRequestBody = buildPollFromRequestBody;
+/** Trần đính kèm mỗi tin — routes/chatRoutes.js dùng lại để multer khớp cùng số. */
+exports.CHAT_MAX_ATTACHMENTS = CHAT_MAX_ATTACHMENTS;

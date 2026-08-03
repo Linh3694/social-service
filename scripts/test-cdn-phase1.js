@@ -467,6 +467,27 @@ function parse(url) {
     assert.strictEqual(parseStored('/uploads/chat/x.mov'), null);
   });
 
+  await t('khoá thumbnail 480px suy đúng khi ảnh đủ lớn', () => {
+    const { thumbKeyFor } = require('../services/cdn');
+    assert.strictEqual(
+      thumbKeyFor('cdn://social-chat/2026/08/ab/deadbeef.webp', 2048),
+      'cdn://social-chat/2026/08/ab/deadbeef_w480.webp',
+    );
+  });
+
+  await t('KHÔNG suy thumbnail khi biến thể chắc chắn không tồn tại', () => {
+    const { thumbKeyFor } = require('../services/cdn');
+    // `processImage` bỏ qua biến thể rộng hơn ảnh gốc ⇒ ảnh ≤480px không có _w480.
+    assert.strictEqual(thumbKeyFor('cdn://social-chat/a/b/x.webp', 480), null);
+    assert.strictEqual(thumbKeyFor('cdn://social-chat/a/b/x.webp', 320), null);
+    // Không biết chiều rộng ⇒ không đoán bừa.
+    assert.strictEqual(thumbKeyFor('cdn://social-chat/a/b/x.webp', undefined), null);
+    // Ảnh giữ nguyên bản gốc (không qua pipeline) ⇒ không có biến thể nào.
+    assert.strictEqual(thumbKeyFor('cdn://social-chat/a/b/x.heic', 4032), null);
+    // Dữ liệu legacy.
+    assert.strictEqual(thumbKeyFor('/uploads/chat/x.webp', 2048), null);
+  });
+
   await t('poster đi kèm kết quả storeBuffer để signMediaDeep ký được', () => {
     // Client KHÔNG tự suy được URL poster (URL ra ngoài đã ký theo từng path), nên
     // khoá poster bắt buộc phải là một giá trị riêng trong payload.

@@ -361,6 +361,31 @@ function parseStored(stored) {
 }
 
 /**
+ * Khoá ảnh thu nhỏ suy từ khoá ảnh chính: `…/<hash>.webp` → `…/<hash>_w480.webp`.
+ *
+ * VÌ SAO CẦN. Pipeline vẫn sinh sẵn biến thể 480px và 1080px cho mọi ảnh
+ * (`CDN_IMAGE_VARIANTS`), nhưng client CHƯA BAO GIỜ dùng — nó tải bản đầy đủ
+ * 2048px (~250KB) để vẽ vào ô 134px trong khung chat, hoặc ô 64px ở thanh
+ * thumbnail. Một tin 30 ảnh vì thế kéo về ~7,5MB thay vì ~1,2MB.
+ *
+ * HAI ĐIỀU KIỆN, thiếu một là 404:
+ *   • Ảnh chính phải là `.webp` — tức đã qua pipeline. Ảnh rơi vào nhánh giữ
+ *     nguyên bản gốc (định dạng lạ) thì KHÔNG có biến thể nào cả.
+ *   • Ảnh gốc phải RỘNG HƠN 480px — `processImage` cố ý bỏ qua biến thể lớn hơn
+ *     ảnh gốc để khỏi phóng to (xem imagePipeline.js).
+ *
+ * @param {string} stored khoá `cdn://…`
+ * @param {number} [width] chiều rộng ảnh đã lưu
+ * @returns {string|null} null khi không chắc chắn có biến thể — gọi phía trên dùng ảnh đầy đủ
+ */
+function thumbKeyFor(stored, width) {
+  if (typeof stored !== 'string' || !stored.startsWith(CDN_SCHEME)) return null;
+  if (!stored.toLowerCase().endsWith('.webp')) return null;
+  if (!Number.isFinite(Number(width)) || Number(width) <= 480) return null;
+  return `${stored.slice(0, -'.webp'.length)}_w480.webp`;
+}
+
+/**
  * Khoá poster suy ra từ khoá video: `…/<hash>.mp4` → `…/<hash>_poster.webp`.
  *
  * Suy ra được vì poster là variant cùng hash, sinh trong cùng một lượt `storeBuffer`
@@ -476,6 +501,7 @@ module.exports = {
   contentDispositionFor,
   alignExt,
   posterKeyFor,
+  thumbKeyFor,
   parseStored,
   // Phase 3 — nạp lười để tránh vòng require (directUpload cần storeBuffer).
   get directUpload() { return require('./directUpload'); },

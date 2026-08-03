@@ -73,7 +73,7 @@ const chatUpload = multer({
 // Bọc chatUpload.array để trả JSON lỗi rõ ràng. Lỗi multer (quá dung lượng / sai loại) phát sinh ở
 // middleware — KHÔNG đi vào try/catch của controller — nên nếu không bắt ở đây client chỉ nhận lỗi chung.
 function chatUploadArray(req, res, next) {
-  chatUpload.array('files', 10)(req, res, (err) => {
+  chatUpload.array('files', chatController.CHAT_MAX_ATTACHMENTS)(req, res, (err) => {
     if (!err) return next();
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {

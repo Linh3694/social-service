@@ -42,6 +42,13 @@ const attachmentSchema = new mongoose.Schema({
    * đã ký theo từng path, client nối `_poster.webp` vào là chữ ký sai (403).
    */
   posterUrl: { type: String, default: '', trim: true },
+  /**
+   * Khoá `cdn://` của bản thu nhỏ 480px (chỉ với kind='image').
+   *
+   * Rỗng khi không chắc có biến thể — client thấy rỗng thì dùng ảnh đầy đủ. Cùng
+   * lý do với `posterUrl`: client không tự suy khoá được vì URL đã ký theo path.
+   */
+  thumbUrl: { type: String, default: '', trim: true },
 }, { _id: false });
 
 /** Một phương án của bình chọn. `id` do server sinh ('o1','o2'…) và ổn định suốt đời poll. */
