@@ -53,7 +53,15 @@ function chatFileFilter(_req, file, cb) {
 
 // SIS-125: 25MB quá nhỏ cho video điện thoại ⇒ video bị multer chặn (LIMIT_FILE_SIZE) và app hiện
 // lỗi chung "Không thể gửi tin nhắn". Nâng lên 100MB làm lưới an toàn (client đã nén video trước khi gửi).
-const CHAT_UPLOAD_MAX_BYTES = 100 * 1024 * 1024; // 100MB
+//
+// SIS-181: 100MB vẫn chặn video 4K của iPhone (một clip 4K60p ~500MB). Nâng lên 1GB.
+//
+// CẢNH BÁO VẬN HÀNH — `client_max_body_size` của nginx PHẢI LỚN HƠN con số này.
+// Nginx nhỏ hơn thì nó cắt request trước khi tới Node, và **trang lỗi 413 của nginx
+// không mang header CORS** (CORS do app gắn) ⇒ trình duyệt báo "blocked by CORS
+// policy" và nuốt mất thông báo tiếng Việt bên dưới. Đó chính là SIS-181: đoạn
+// `res.status(413)` ngay dưới đây vẫn đúng, chỉ là chưa ai từng nhìn thấy nó.
+const CHAT_UPLOAD_MAX_BYTES = Number(process.env.CHAT_UPLOAD_MAX_BYTES || 1024 * 1024 * 1024); // 1GB
 const CHAT_UPLOAD_MAX_MB = Math.round(CHAT_UPLOAD_MAX_BYTES / (1024 * 1024));
 
 const chatUpload = multer({

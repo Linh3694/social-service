@@ -197,4 +197,118 @@ async function promote(user, stagingKey, kind) {
   return ket_qua;
 }
 
-module.exports = { presign, promote, stagingKeyFor, userIdCuaKhoa, kiemTraKind };
+// ── Upload nhiều phần, nối lại được (SIS-181) ─────────────────────────────
+//
+// Cùng mô hình tin cậy với `presign`: stagingKey do server sinh, mang tiền tố
+// `<userId>/`, và MỌI thao tác đều kiểm lại tiền tố đó trước khi làm gì.
+
+/** 8MB. S3 bắt mỗi phần ≥5MB (trừ phần cuối); 8MB là mức gửi lại không quá đau khi rớt mạng. */
+const PART_SIZE = Number(process.env.CDN_MULTIPART_PART_SIZE || 8 * 1024 * 1024);
+
+function kiemQuyen(user, stagingKey) {
+  if (!directUploadChoUser(user)) {
+    const e = new Error('Upload trực tiếp chưa được bật');
+    e.statusCode = 409; e.code = 'DIRECT_UPLOAD_DISABLED';
+    throw e;
+  }
+  if (userIdCuaKhoa(stagingKey) !== String(user._id)) {
+    const e = new Error('Khoá tải lên không thuộc về bạn');
+    e.statusCode = 403; e.code = 'STAGING_KEY_FORBIDDEN';
+    throw e;
+  }
+}
+
+/** Mở một phiên upload nhiều phần. */
+async function multipartCreate(user, { filename, contentType, kind }) {
+  if (!directUploadChoUser(user)) {
+    const e = new Error('Upload trực tiếp chưa được bật');
+    e.statusCode = 409; e.code = 'DIRECT_UPLOAD_DISABLED';
+    throw e;
+  }
+  kiemTraKind(kind);
+  const stagingKey = stagingKeyFor(String(user._id), filename);
+  const uploadId = await s3.createMultipartUpload({
+    bucket: config.buckets.staging,
+    key: stagingKey,
+    contentType: String(contentType || '').slice(0, 120) || 'application/octet-stream',
+  });
+  return { stagingKey, uploadId, partSize: PART_SIZE, maxBytes: config.directUpload.maxBytes };
+}
+
+/** Cấp URL đã ký cho một loạt phần. Client gọi lại khi URL hết hạn giữa chừng. */
+async function multipartSign(user, { stagingKey, uploadId, partNumbers }) {
+  kiemQuyen(user, stagingKey);
+  const ds = (Array.isArray(partNumbers) ? partNumbers : [])
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n >= 1 && n <= 10000)
+    .slice(0, 1000);
+  if (!ds.length) {
+    const e = new Error('Danh sách phần trống'); e.statusCode = 400; e.code = 'NO_PARTS';
+    throw e;
+  }
+  const urls = await Promise.all(ds.map(async (partNumber) => ({
+    partNumber,
+    url: await s3.presignUploadPart({
+      bucket: config.buckets.staging,
+      key: stagingKey,
+      uploadId,
+      partNumber,
+      expiresIn: config.directUpload.presignTtlSec,
+    }),
+  })));
+  return { urls };
+}
+
+/**
+ * Phần nào đã lên rồi — để client nối tiếp sau khi rớt mạng hoặc tải lại trang.
+ * Hỏi thẳng MinIO chứ không tin localStorage: phần lỡ hỏng giữa chừng sẽ không
+ * có trong danh sách, nên client tự động gửi lại đúng phần đó.
+ */
+async function multipartStatus(user, { stagingKey, uploadId }) {
+  kiemQuyen(user, stagingKey);
+  const parts = await s3.listParts({ bucket: config.buckets.staging, key: stagingKey, uploadId });
+  return { uploaded: parts.map((p) => ({ partNumber: p.PartNumber, size: p.Size })) };
+}
+
+/**
+ * Đóng phiên rồi promote như đường một-lượt-PUT.
+ * ETag lấy từ `ListParts` phía server — client không đọc được header ETag qua CORS.
+ */
+async function multipartComplete(user, { stagingKey, uploadId, kind }) {
+  kiemQuyen(user, stagingKey);
+  kiemTraKind(kind);
+
+  const parts = await s3.listParts({ bucket: config.buckets.staging, key: stagingKey, uploadId });
+  if (!parts.length) {
+    const e = new Error('Chưa có phần nào được tải lên'); e.statusCode = 400; e.code = 'NO_PARTS_UPLOADED';
+    throw e;
+  }
+  await s3.completeMultipartUpload({
+    bucket: config.buckets.staging, key: stagingKey, uploadId, parts,
+  });
+  // Từ đây trở đi giống hệt đường cũ: promote kiểm dung lượng, chạy pipeline,
+  // dọn staging. Không nhân bản logic nào.
+  return promote(user, stagingKey, kind);
+}
+
+/** Huỷ phiên — dọn phần đã lên để không chiếm chỗ tới khi lifecycle quét. */
+async function multipartAbort(user, { stagingKey, uploadId }) {
+  kiemQuyen(user, stagingKey);
+  await s3.abortMultipartUpload({ bucket: config.buckets.staging, key: stagingKey, uploadId })
+    .catch(() => {});
+  return { ok: true };
+}
+
+module.exports = {
+  presign,
+  promote,
+  stagingKeyFor,
+  userIdCuaKhoa,
+  kiemTraKind,
+  multipartCreate,
+  multipartSign,
+  multipartStatus,
+  multipartComplete,
+  multipartAbort,
+  PART_SIZE,
+};

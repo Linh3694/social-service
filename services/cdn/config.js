@@ -70,7 +70,11 @@ const config = {
     maxFiles: int('CDN_PRESIGN_MAX_FILES', 30),
     // Trần dung lượng, kiểm ở bước complete bằng HeadObject. Presigned PUT của
     // S3 không ép được kích thước, nên phải hậu kiểm rồi xoá nếu vượt.
-    maxBytes: int('CDN_PRESIGN_MAX_BYTES', 100 * 1024 * 1024),
+    //
+    // SIS-181: nâng 100MB → 1GB cho khớp trần multipart ở routes/chatRoutes.js.
+    // Hai đường phải cùng một con số, lệch nhau là loại lỗi chỉ hiện ở MỘT trong
+    // hai đường và rất khó truy (cùng lý do đã ghi ở storeBuffer).
+    maxBytes: int('CDN_PRESIGN_MAX_BYTES', 1024 * 1024 * 1024),
   },
 
   // Cửa sổ làm tròn expiry (§3.2). Cùng cửa sổ ⇒ cùng URL ⇒ cache hit.

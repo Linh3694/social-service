@@ -33,7 +33,9 @@ const POSTER_WIDTH = 480;
  * Transcode (SIS-174) đắt hơn remux hàng trăm lần nên có trần riêng, rộng hơn nhiều.
  * Chạy ở worker nền chứ không trong request nên kéo dài không ảnh hưởng ai.
  */
-const TRANSCODE_TIMEOUT_MS = Number(process.env.CDN_TRANSCODE_TIMEOUT_MS || 15 * 60 * 1000);
+// SIS-181 nâng trần upload lên 1GB ⇒ đầu vào có thể lớn gấp 10 lần trước.
+// Hết 30 phút mà chưa xong thì gần như chắc chắn là kẹt, không phải chậm.
+const TRANSCODE_TIMEOUT_MS = Number(process.env.CDN_TRANSCODE_TIMEOUT_MS || 30 * 60 * 1000);
 
 /**
  * Hạ độ phân giải khi transcode. H.264 kém hiệu quả hơn HEVC khoảng 40-50% ở cùng
@@ -42,6 +44,13 @@ const TRANSCODE_TIMEOUT_MS = Number(process.env.CDN_TRANSCODE_TIMEOUT_MS || 15 *
  * Video thấp hơn ngưỡng này KHÔNG bị phóng to.
  */
 const TRANSCODE_MAX_HEIGHT = Number(process.env.CDN_TRANSCODE_MAX_HEIGHT || 1080);
+
+/**
+ * Trần khung hình/giây (SIS-181). 60fps gấp đôi số khung so với 30fps ⇒ gần gấp
+ * đôi dung lượng cho một thứ gần như không ai nhận ra trên video lớp học. Khớp
+ * với mức client web nén trước khi gửi để hai đường cho ra cùng một dạng.
+ */
+const TRANSCODE_MAX_FPS = Number(process.env.CDN_TRANSCODE_MAX_FPS || 30);
 
 /** Codec trình duyệt nào cũng phát được — thấy codec này thì không cần đụng vào. */
 const CODEC_AN_TOAN = new Set(['h264', 'vp8', 'vp9', 'av1']);
@@ -119,6 +128,29 @@ function codecAnToan(codec) {
 }
 
 /**
+ * Số khung hình/giây của luồng video, hoặc null nếu không đo được.
+ * ffprobe trả phân số ("60000/1001", "30/1") chứ không trả số thập phân.
+ */
+async function probeFps(inputPath) {
+  if (!(await hasFfprobe())) return null;
+  try {
+    const out = await run('ffprobe', [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=r_frame_rate',
+      '-of', 'default=nw=1:nk=1',
+      inputPath,
+    ]);
+    const raw = String(out).trim().split('\n')[0].trim();
+    const [tu, mau] = raw.split('/');
+    const fps = Number(mau) ? Number(tu) / Number(mau) : Number(tu);
+    return Number.isFinite(fps) && fps > 0 ? fps : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Chuyển video sang H.264/AAC trong MP4 — chạy ở worker nền (SIS-174).
  *
  * Ba tham số dưới đây đều là bắt buộc chứ không phải tuỳ chọn:
@@ -141,12 +173,22 @@ async function transcodeToH264(inputPath) {
 
   const outPath = tmpPath('mp4');
   try {
+    // `-2` để chiều rộng luôn chẵn (yêu cầu của yuv420p); `min(h,MAX)` nên video
+    // thấp hơn ngưỡng giữ nguyên, không bị phóng to.
+    const filters = [`scale=-2:'min(${TRANSCODE_MAX_HEIGHT},ih)'`];
+
+    // Hạ fps CHỈ khi nguồn cao hơn trần (SIS-181). Đo trước rồi mới quyết định,
+    // chứ không đặt `-r 30` vô điều kiện: nguồn 24fps mà ép lên 30 thì ffmpeg
+    // NHÂN BẢN khung hình — file to thêm mà chẳng mượt hơn chút nào.
+    const fps = await probeFps(inputPath);
+    if (fps && fps > TRANSCODE_MAX_FPS + 0.5) {
+      filters.push(`fps=${TRANSCODE_MAX_FPS}`);
+    }
+
     await run('ffmpeg', [
       '-nostdin', '-y', '-loglevel', 'error',
       '-i', inputPath,
-      // `-2` để chiều rộng luôn chẵn (yêu cầu của yuv420p); `min(h,MAX)` nên video
-      // thấp hơn ngưỡng giữ nguyên, không bị phóng to.
-      '-vf', `scale=-2:'min(${TRANSCODE_MAX_HEIGHT},ih)'`,
+      '-vf', filters.join(','),
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '128k',
       '-movflags', '+faststart',
@@ -239,7 +281,9 @@ module.exports = {
   hasFfmpeg,
   hasFfprobe,
   probeVideoCodec,
+  probeFps,
   codecAnToan,
   transcodeToH264,
   TRANSCODE_MAX_HEIGHT,
+  TRANSCODE_MAX_FPS,
 };

@@ -101,6 +101,79 @@ exports.capability = (req, res) => {
       directUpload: bat,
       maxFiles: cdn.config.directUpload.maxFiles,
       maxBytes: cdn.config.directUpload.maxBytes,
+      // Client cũ không đọc trường này ⇒ vẫn dùng một-lượt-PUT như trước.
+      multipart: bat,
+      partSize: cdn.directUpload.PART_SIZE,
     },
   });
+};
+
+// ── Upload nhiều phần, nối lại được (SIS-181) ─────────────────────────────
+//
+// Bốn endpoint mỏng: mọi kiểm tra quyền và mọi thao tác S3 nằm ở
+// services/cdn/directUpload.js, đây chỉ dịch HTTP ↔ hàm.
+
+/** body: { kind, filename, contentType } → { stagingKey, uploadId, partSize, maxBytes } */
+exports.multipartCreate = async (req, res) => {
+  try {
+    const { kind = 'posts', filename, contentType } = req.body || {};
+    const data = await cdn.directUpload.multipartCreate(req.user, { kind, filename, contentType });
+    return res.json({ success: true, data });
+  } catch (error) {
+    return loi(res, error, 'Không mở được phiên tải lên');
+  }
+};
+
+/** body: { stagingKey, uploadId, partNumbers[] } → { urls: [{ partNumber, url }] } */
+exports.multipartSign = async (req, res) => {
+  try {
+    const data = await cdn.directUpload.multipartSign(req.user, req.body || {});
+    return res.json({ success: true, data });
+  } catch (error) {
+    return loi(res, error, 'Không cấp được đường tải phần');
+  }
+};
+
+/** body: { stagingKey, uploadId } → { uploaded: [{ partNumber, size }] } — dùng để nối lại. */
+exports.multipartStatus = async (req, res) => {
+  try {
+    const data = await cdn.directUpload.multipartStatus(req.user, req.body || {});
+    return res.json({ success: true, data });
+  } catch (error) {
+    return loi(res, error, 'Không đọc được tiến trình tải lên');
+  }
+};
+
+/** body: { kind, stagingKey, uploadId } → media (đã promote, giống /complete). */
+exports.multipartComplete = async (req, res) => {
+  try {
+    const { kind = 'posts', stagingKey, uploadId } = req.body || {};
+    const r = await cdn.directUpload.multipartComplete(req.user, { stagingKey, uploadId, kind });
+    return res.json({
+      success: true,
+      data: {
+        media: {
+          stored: r.stored,
+          url: r.url,
+          kind: r.kind,
+          contentType: r.contentType,
+          width: r.width,
+          height: r.height,
+          size: r.size,
+        },
+      },
+    });
+  } catch (error) {
+    return loi(res, error, 'Không hoàn tất được tải lên');
+  }
+};
+
+/** body: { stagingKey, uploadId } — huỷ phiên, dọn phần đã lên. */
+exports.multipartAbort = async (req, res) => {
+  try {
+    const data = await cdn.directUpload.multipartAbort(req.user, req.body || {});
+    return res.json({ success: true, data });
+  } catch (error) {
+    return loi(res, error, 'Không huỷ được phiên tải lên');
+  }
 };
