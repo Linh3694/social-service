@@ -529,7 +529,21 @@ exports.createPost = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Unauthorized - Missing user context' });
     }
     const authorId = req.user._id;
-    if (!content || content.trim() === '') return res.status(400).json({ message: 'Nội dung bài viết không được để trống' });
+
+    // Bài CHỈ có ảnh/video là hợp lệ — không bắt buộc caption (03/08/2026).
+    //
+    // Media vào bằng HAI đường và phải chấp nhận cả hai, nếu không thì client đi
+    // đường upload trực tiếp sẽ bị từ chối oan dù đã tải ảnh lên xong:
+    //   • `req.files`            — multipart, byte đi qua Node
+    //   • `req.body.mediaKeys`   — Phase 3, client PUT thẳng lên CDN rồi gửi khoá
+    //
+    // Tính sớm ở đây rồi dùng lại bên dưới, tránh sanitize hai lần và tránh cảnh
+    // hai chỗ hiểu "có file hay không" theo hai kiểu khác nhau.
+    const mediaTuClient = sanitizePostMediaKeys(req.body?.mediaKeys);
+    const coMedia = Boolean(req.files?.length) || mediaTuClient.length > 0;
+    if (!content?.trim() && !coMedia) {
+      return res.status(400).json({ message: 'Bài viết phải có nội dung hoặc ảnh/video' });
+    }
 
     let parsedTags = tags;
     if (typeof tags === 'string') {
@@ -591,7 +605,7 @@ exports.createPost = async (req, res) => {
 
     // Phase 3 — client đã PUT thẳng lên CDN rồi gọi /media/complete, giờ chỉ gửi
     // khoá. Chấp nhận song song với req.files để client cũ và mới cùng chạy.
-    const mediaTuClient = sanitizePostMediaKeys(req.body?.mediaKeys);
+    // (`mediaTuClient` đã tính ở đầu hàm để dùng cho bước kiểm nội dung.)
     if (mediaTuClient.length) {
       const keys = mediaTuClient.map((m) => m.stored);
       uploadedKeys = uploadedKeys.concat(keys);

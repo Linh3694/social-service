@@ -33,7 +33,15 @@ const postSchema = new mongoose.Schema(
       jobTitle: String,
       username: String,
     },
-    content: { type: String, required: true },
+    /**
+     * Caption — KHÔNG bắt buộc: bài chỉ có ảnh/video là hợp lệ (03/08/2026).
+     *
+     * Không dùng `required: true` được, vì với String thì Mongoose coi chuỗi rỗng
+     * là thiếu giá trị và chặn luôn — chính là thứ đã cấm đăng bài không caption.
+     * Ràng buộc thật ("phải có chữ HOẶC có file") nằm ở controller, vì model không
+     * nhìn thấy `req.files`.
+     */
+    content: { type: String, default: '' },
     images: [{ type: String }],
     videos: [{ type: String }],
     type: { type: String, enum: ['Thông báo', 'Chia sẻ', 'Câu hỏi', 'Badge', 'Khác'], default: 'Chia sẻ' },
