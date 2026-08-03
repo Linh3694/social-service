@@ -543,6 +543,26 @@ exports.createPost = async (req, res) => {
       if (invalid.length) return res.status(400).json({ message: 'Một số người dùng được tag không tồn tại', invalidTags: invalid });
     }
 
+    // Kiểm điều kiện tiên quyết TRƯỚC KHI upload (sự cố 03/08/2026).
+    //
+    // Trước đây khối này nằm SAU vòng upload. Hai hệ quả, cái nào cũng tệ:
+    //   • Chọn nhầm lớp/năm học ⇒ người dùng chờ tải xong 30 file rồi mới bị từ
+    //     chối, và đống file vừa lên MinIO thành rác.
+    //   • Đây là lời gọi axios sang Frappe với timeout 20s (AUTH_TIMEOUT ở
+    //     frappeService.js:34). Đặt sau vòng upload nghĩa là nó chạy khi tiến
+    //     trình vừa gồng mình xử lý 30 file — chỉ cần Frappe chậm một nhịp là cả
+    //     bài đã upload xong bị vứt bỏ với lỗi "timeout of 20000ms exceeded".
+    //
+    // Không có phụ thuộc ngược: `buildClassPostMetadata` chỉ đọc `req.body` và
+    // token, hoàn toàn không cần biết gì về file đã tải lên.
+    const audienceType = normalizeAudience(rawAudienceType, classId);
+    const classMetadata = await buildClassPostMetadata({
+      audienceType,
+      classId,
+      schoolYearId,
+      auth: getAuthContext(req),
+    });
+
     let images = [], videos = [];
     if (req.files?.length) {
       if (cdn.config.enabled) {
@@ -581,13 +601,6 @@ exports.createPost = async (req, res) => {
       });
     }
 
-    const audienceType = normalizeAudience(rawAudienceType, classId);
-    const classMetadata = await buildClassPostMetadata({
-      audienceType,
-      classId,
-      schoolYearId,
-      auth: getAuthContext(req),
-    });
     const postData = {
       author: authorId,
       authorSnapshot: buildAuthorSnapshotPayload(req.user),
