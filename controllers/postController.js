@@ -546,10 +546,11 @@ exports.createPost = async (req, res) => {
     let images = [], videos = [];
     if (req.files?.length) {
       if (cdn.config.enabled) {
-        // Đẩy song song lên MinIO VM3; DB lưu object key `cdn://…`, không lưu URL (§5.3)
-        const results = await Promise.all(
-          req.files.map((file) => cdn.storeUpload(file, { kind: 'posts' }))
-        );
+        // Đẩy lên MinIO VM3; DB lưu object key `cdn://…`, không lưu URL (§5.3).
+        // `storeUploads` (KHÔNG phải Promise.all) vì nó có trần đồng thời: đăng
+        // 26 ảnh + 4 video song song từng làm PM2 giết tiến trình ở mốc 1GB và
+        // nginx trả 502 (03/08/2026).
+        const results = await cdn.storeUploads(req.files, { kind: 'posts' });
         uploadedKeys = results.map((r) => r.stored);
         results.forEach((r) => {
           if (r.kind === 'video') videos.push(r.stored);
@@ -990,9 +991,8 @@ exports.updatePost = async (req, res) => {
     let nextVideos = normalizeMediaList(videos);
     if (req.files?.length) {
       if (cdn.config.enabled) {
-        const results = await Promise.all(
-          req.files.map((file) => cdn.storeUpload(file, { kind: 'posts' }))
-        );
+        // Trần đồng thời — xem ghi chú ở createPost và ở `storeUploads`.
+        const results = await cdn.storeUploads(req.files, { kind: 'posts' });
         results.forEach((r) => {
           if (r.kind === 'video') {
             if (!nextVideos) nextVideos = [...(post.videos || [])];

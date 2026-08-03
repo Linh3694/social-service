@@ -201,6 +201,13 @@ async function promote(user, stagingKey, kind) {
 //
 // Cùng mô hình tin cậy với `presign`: stagingKey do server sinh, mang tiền tố
 // `<userId>/`, và MỌI thao tác đều kiểm lại tiền tố đó trước khi làm gì.
+//
+// ⚠️ TOÀN BỘ PHẦN NÀY CHƯA CHẠY ĐƯỢC TRÊN PROD (03/08/2026, SIS-182). Nó chỉ
+// sống khi `directUploadChoUser()` trả true, mà đường trực tiếp đang bị chặn ở
+// tầng nginx VM media chứ không phải ở code — bucket `cdn-staging` không có
+// location nên browser PUT vào là 404. Xem hướng dẫn đầy đủ ở khối chú thích
+// `directUpload` trong config.js. Khi cờ tắt, client hỏi `/media/capability`
+// thấy `multipart: false` và đi đường multipart cũ, nên phần này nằm im vô hại.
 
 /** 8MB. S3 bắt mỗi phần ≥5MB (trừ phần cuối); 8MB là mức gửi lại không quá đau khi rớt mạng. */
 const PART_SIZE = Number(process.env.CDN_MULTIPART_PART_SIZE || 8 * 1024 * 1024);

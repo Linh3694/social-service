@@ -41,12 +41,57 @@ const config = {
     avatars: process.env.CDN_BUCKET_AVATARS || 'cdn-social-avatars',
     // Vùng đệm cho upload trực tiếp (Phase 3). KHÔNG phát ra Internet —
     // nginx VM3 không có location cho bucket này. Lifecycle xoá sau 1 ngày.
+    //
+    // ⚠️ CÂU TRÊN LÀ CON DAO HAI LƯỠI (xác minh 03/08/2026, SIS-182). "Không có
+    // location" chặn cả chiều GHI, không riêng chiều đọc: trình duyệt PUT tới
+    // `https://media.wellspring.edu.vn/cdn-staging/…` sẽ ăn 404. Nên đường upload
+    // trực tiếp CHƯA BAO GIỜ chạy được với bất kỳ ai kể từ khi Phase 3 lên.
+    // Muốn dùng thì phải mở location CHỈ-GHI trên nginx VM media — xem ghi chú
+    // đầy đủ ở `directUpload.enabled` bên dưới.
     staging: process.env.CDN_BUCKET_STAGING || 'cdn-staging',
   },
 
   // Phase 3 — client PUT thẳng lên MinIO, byte không đi qua social-service.
   // Tắt mặc định: bật được ngay khi hạ tầng sẵn sàng mà không cần deploy lại,
   // và client cũ vẫn dùng đường multipart cũ song song.
+  //
+  // ╔══════════════════════════════════════════════════════════════════════╗
+  // ║  ⛔ ĐỪNG BẬT `CDN_DIRECT_UPLOAD=true` TRƯỚC KHI LÀM XONG PHẦN NGINX   ║
+  // ║     Ở VM MEDIA. Bật lúc chưa xong = HỎNG UPLOAD TOÀN TRƯỜNG.         ║
+  // ╚══════════════════════════════════════════════════════════════════════╝
+  //
+  // Hiện trạng đã xác minh trên prod ngày 03/08/2026 (SIS-182):
+  //   • `CDN_ENABLED=true` — file VẪN lên CDN bình thường. Cái chưa bật chỉ là
+  //     ĐƯỜNG ĐI của byte, và cả hai đường đều kết thúc trên MinIO.
+  //   • `CDN_DIRECT_UPLOAD` không khai trong config.env ⇒ false.
+  //   • `CDN_DIRECT_UPLOAD_USERS=phase3-probe-user` — placeholder, phải là
+  //     ObjectId hex 24 ký tự mới khớp, nên KHÔNG khớp ai. Đường trực tiếp vì
+  //     vậy chưa từng chạy với một người dùng thật nào.
+  //   • Chốt chặn: bucket `cdn-staging` KHÔNG có location trên nginx VM media
+  //     (172.16.20.31 — CDN-Design.md ghi .94 và cdn.wellspring.edu.vn, cả hai
+  //     đều LỆCH thực tế; config.env mới là sự thật). Browser PUT vào đó ⇒ 404.
+  //
+  // Việc cần làm trên nginx VM media trước khi bật:
+  //   1. `location ~ ^/cdn-staging(/.*)?$` proxy sang MinIO, kèm
+  //      `limit_except PUT OPTIONS { deny all; }` để giữ nguyên tính chất
+  //      "không đọc được từ Internet" — mở chiều ghi, vẫn khoá chiều đọc.
+  //   2. Trả preflight `OPTIONS` 204 + `Access-Control-Allow-Origin`. BẮT BUỘC:
+  //      PUT kèm Content-Type luôn sinh preflight, thiếu là hỏng 100% và lại
+  //      hiện ra dưới dạng "lỗi CORS" che mất nguyên nhân thật (đúng bẫy SIS-181).
+  //   3. `$cors_allow_origin` nhận https://wis.wellspring.edu.vn + origin portal PH.
+  //   4. `client_max_body_size 1200m`, `proxy_request_buffering off`, timeout rộng.
+  //   5. Lifecycle 1 ngày cho bucket staging.
+  //
+  // Xác nhận đã thông (kỳ vọng 204 + có header ACAO):
+  //   curl -i -X OPTIONS https://media.wellspring.edu.vn/cdn-staging/test \
+  //     -H "Origin: https://wis.wellspring.edu.vn" \
+  //     -H "Access-Control-Request-Method: PUT" \
+  //     -H "Access-Control-Request-Headers: content-type"
+  // Và chiều đọc PHẢI vẫn 403:
+  //   curl -s -o /dev/null -w "%{http_code}\n" https://media.wellspring.edu.vn/cdn-staging/test
+  //
+  // Thông rồi thì THỬ MỘT TÀI KHOẢN trước (CDN_DIRECT_UPLOAD_USERS = _id thật
+  // trong Mongo), chạy ổn vài ngày mới bật cờ cho cả trường.
   directUpload: {
     enabled: bool('CDN_DIRECT_UPLOAD', false),
     // Danh sách trắng để THỬ trên máy thật mà không bật cho cả trường.

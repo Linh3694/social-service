@@ -134,6 +134,57 @@ async function storeUpload(file, { kind }) {
   return ketQua;
 }
 
+/** Số ẢNH xử lý đồng thời. Video LUÔN tuần tự — xem ghi chú ở storeUploads. */
+const UPLOAD_CONCURRENCY = Number(process.env.CDN_UPLOAD_CONCURRENCY || 3);
+
+/**
+ * Tải MỘT LOẠT file lên CDN, có trần số lượng xử lý đồng thời.
+ *
+ * VÌ SAO PHẢI CÓ HÀM NÀY (sự cố 03/08/2026 — 502 Bad Gateway khi đăng bài 26 ảnh
+ * + 4 video). Trước đây cả ba controller đều `Promise.all(files.map(storeUpload))`,
+ * tức xử lý TOÀN BỘ file cùng lúc. Mỗi `storeUpload` đọc trọn file vào RAM rồi
+ * chạy sharp/ffmpeg. Ba mươi file cùng lúc vượt `max_memory_restart: '1G'` của
+ * PM2 ⇒ PM2 giết tiến trình giữa chừng ⇒ nginx mất upstream ⇒ 502. Người dùng
+ * không thấy lỗi gì có nghĩa, chỉ thấy "Bad Gateway".
+ *
+ * VIDEO XỬ LÝ TUẦN TỰ, KHÔNG CHỈ GIẢM SONG SONG. Một video ngốn RAM gấp hàng
+ * chục lần một tấm ảnh: buffer file gốc + buffer bản remux, mỗi cái bằng cả file.
+ * Hai video 300MB chạy song song là đã hơn 1GB, tức vẫn chết dù đã hạ trần
+ * chung. Ảnh thì nhẹ và nhanh nên vẫn cho chạy vài cái một lúc.
+ *
+ * GIỮ NGUYÊN THỨ TỰ đầu ra theo đầu vào — controller ánh xạ kết quả về
+ * `images[]`/`videos[]` và về `files[i].originalname`, đảo thứ tự là gán nhầm tên.
+ *
+ * @param {Array} files file của multer
+ * @param {{kind: 'posts'|'chat'}} opts
+ */
+async function storeUploads(files, { kind }) {
+  const ds = Array.isArray(files) ? files : [];
+  const out = new Array(ds.length);
+
+  const laVideo = (f) => !isImage(f.mimetype, f.originalname) && isVideo(f.mimetype, f.originalname);
+  const anh = [];
+  const video = [];
+  ds.forEach((f, i) => (laVideo(f) ? video : anh).push(i));
+
+  let con = 0;
+  const chayAnh = async () => {
+    while (con < anh.length) {
+      const idx = anh[con];
+      con += 1;
+      out[idx] = await storeUpload(ds[idx], { kind });
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(UPLOAD_CONCURRENCY, anh.length) }, chayAnh),
+  );
+
+  for (const idx of video) {
+    out[idx] = await storeUpload(ds[idx], { kind });
+  }
+  return out;
+}
+
 /**
  * Xếp job transcode nếu video dùng codec lạ (SIS-174).
  *
@@ -420,6 +471,7 @@ module.exports = {
   config,
   directUploadChoUser,
   storeUpload,
+  storeUploads,
   storeBuffer,
   contentDispositionFor,
   alignExt,

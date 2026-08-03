@@ -1632,9 +1632,11 @@ async function buildChatAttachments(files) {
   }
 
   try {
-    const results = await Promise.all(
-      files.map((file) => cdn.storeUpload(file, { kind: 'chat' }))
-    );
+    // Trần đồng thời (KHÔNG dùng Promise.all): mười file cùng lúc, mỗi file đọc
+    // trọn vào RAM rồi chạy sharp/ffmpeg, đủ để PM2 giết tiến trình ở mốc 1GB —
+    // xem ghi chú đầy đủ ở `storeUploads`. Thứ tự đầu ra được giữ nguyên nên
+    // `files[i].originalname` bên dưới vẫn khớp đúng file.
+    const results = await cdn.storeUploads(files, { kind: 'chat' });
     return results.map((r, i) => ({
       kind: r.kind,
       url: r.stored,
