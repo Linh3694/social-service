@@ -19,7 +19,7 @@ const { normalizeUploadFilename } = require('../../utils/uploadFilename');
 const { config, validate, directUploadChoUser } = require('./config');
 const { signPath, signStored, CDN_SCHEME } = require('./sign');
 const { signMediaDeep } = require('./signDeep');
-const { toObjectPath } = require('./resolve');
+const { toObjectPath, toStoredKey } = require('./resolve');
 const imagePipeline = require('./imagePipeline');
 const { processImage } = imagePipeline;
 const { processVideo, probeVideoCodec } = require('./videoPipeline');
@@ -511,6 +511,7 @@ module.exports = {
   signPath,
   signStored,
   toObjectPath,
+  toStoredKey,
   logStartupState,
   CDN_SCHEME,
 };

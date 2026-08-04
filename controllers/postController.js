@@ -1071,10 +1071,15 @@ exports.updatePost = async (req, res) => {
       }
     }
     
+    // Client hay gửi lại URL đã ký từ feed khi sửa bài → chuẩn hoá về cdn://
+    // trước khi ghi DB. Legacy `/uploads/…` và URL ngoài giữ nguyên.
     const normalizeMediaList = (value) => {
       if (value === undefined) return undefined;
-      if (Array.isArray(value)) return value;
-      return [value].filter(Boolean);
+      const arr = Array.isArray(value) ? value : [value].filter(Boolean);
+      return arr.map((item) => {
+        if (typeof item !== 'string') return item;
+        return cdn.toStoredKey(item) || item;
+      });
     };
 
     let nextImages = normalizeMediaList(images);

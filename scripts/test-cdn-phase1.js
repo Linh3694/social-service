@@ -160,6 +160,23 @@ function parse(url) {
     assert.strictEqual(toObjectPath('http://example.com/a.jpg'), null);
   });
 
+  await t('URL media đã ký → bóc path để ký lại', () => {
+    // Host phải khớp CDN_PUBLIC_URL của test (cdn.wellspring…), không hard-code prod.
+    assert.strictEqual(
+      toObjectPath('https://cdn.wellspring.edu.vn/social-posts/2026/08/ab/x.webp?e=1&s=abc'),
+      '/social-posts/2026/08/ab/x.webp',
+    );
+    assert.strictEqual(
+      toObjectPath('https://cdn.wellspring.edu.vn/social-chat/2026/08/ab/y.webp?e=1&s=xyz'),
+      '/social-chat/2026/08/ab/y.webp',
+    );
+    // Host lạ vẫn null — không ký nhầm ảnh ngoài
+    assert.strictEqual(
+      toObjectPath('https://evil.example/social-posts/2026/08/ab/x.webp'),
+      null,
+    );
+  });
+
   await t('giá trị rác không làm vỡ', () => {
     for (const v of [null, undefined, 42, {}, [], '', '   ', true]) {
       assert.strictEqual(toObjectPath(v), null);
