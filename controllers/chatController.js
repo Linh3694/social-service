@@ -30,11 +30,24 @@ const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guar
 const NOTIFY_PREVIEW_MAX = 100;
 
 /**
+ * Giáo viên (thành viên) được xem read receipt; PH và BOD observer thuần thì không.
+ * `conversation` có thể null (broadcast / chưa biết hội thoại) ⇒ chỉ xét role.
+ */
+function canSeeReadReceipts(user, conversation) {
+  if (!user || userRole(user) !== 'teacher') return false;
+  if (conversation && isBodUser(user) && !isConversationParticipant(conversation, user)) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Chuẩn hoá tin trả API/socket: không populate User — client dùng senderSnapshot (+ _id sender).
  * `viewer` = null nghĩa là payload BROADCAST (một payload cho mọi người xem) ⇒ poll bị lược
  * `myVote` và chỉ kèm `voters` khi bình chọn không ẩn danh. Xem pollPayloadForViewer.
+ * `readBy` chỉ trả cho GV (không PH / không BOD observer) — tránh lộ trạng thái đọc.
  */
-function messagePayloadForApi(doc, viewer) {
+function messagePayloadForApi(doc, viewer, conversation) {
   const m = doc?.toObject ? doc.toObject() : { ...doc };
   const uid = m.sender;
   const snap = m.senderSnapshot || {};
@@ -47,6 +60,15 @@ function messagePayloadForApi(doc, viewer) {
   };
   if (m.poll) m.poll = pollPayloadForViewer(m.poll, viewer);
   else delete m.poll;
+  // Broadcast (viewer null) hoặc PH / BOD observer → ẩn readBy.
+  if (!canSeeReadReceipts(viewer, conversation)) {
+    delete m.readBy;
+  } else if (Array.isArray(m.readBy)) {
+    m.readBy = m.readBy.map((r) => ({
+      user: String(r.user || ''),
+      readAt: r.readAt ? new Date(r.readAt).toISOString() : null,
+    })).filter((r) => r.user);
+  }
   return m;
 }
 
@@ -2288,11 +2310,11 @@ async function appendMessageToConversation(conversation, req, {
   cacheDel(messageCountRedisKey(conversation._id)).catch(() => {});
   invalidateConversationParticipantsListCaches(conversation).catch(() => {});
 
-  // Hai payload khác nhau: broadcast KHÔNG được mang gì gắn với người xem (myVote/voters ẩn danh).
-  const payloadMsg = messagePayloadForApi(message, req.user);
+  // Hai payload khác nhau: broadcast KHÔNG được mang gì gắn với người xem (myVote/voters ẩn danh / readBy).
+  const payloadMsg = messagePayloadForApi(message, req.user, conversation);
   await emitToConversation(conversation, 'chat:message', {
     conversation: serializeConversation(conversation, req.user),
-    message: messagePayloadForApi(message, null),
+    message: messagePayloadForApi(message, null, conversation),
   });
 
   fireChatToFrappe('new_message', {
@@ -2768,7 +2790,7 @@ exports.getMessages = async (req, res) => {
     res.json({
       success: true,
       data: {
-        messages: messages.reverse().map((m) => messagePayloadForApi(m, req.user)),
+        messages: messages.reverse().map((m) => messagePayloadForApi(m, req.user, conversation)),
         pagination: {
           currentPage: page,
           totalPages: Math.ceil(total / limit),
@@ -2782,6 +2804,222 @@ exports.getMessages = async (req, res) => {
   } catch (error) {
     console.error('[Chat] getMessages error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải tin nhắn' });
+  }
+};
+
+/**
+ * Nhãn hiển thị cho người đã đọc — ưu tiên snapshot participants/guardians/teachers.
+ * PH → "Tên PH (PHHS Học sinh A + Học sinh B)"; còn lại dùng name/email.
+ */
+function readerDisplayFromConversation(conversation, userId) {
+  const uid = String(userId || '');
+  if (!uid) return { userId: '', name: '', role: '', email: '', studentNames: [] };
+
+  const participants = conversation?.participants || [];
+  const part = participants.find((p) => p.user && String(p.user) === uid);
+  const email = normalizeEmail(part?.email);
+  const role = part?.role || '';
+
+  if (role === 'guardian' || (part && !role && email)) {
+    const guardian = (conversation.guardians || []).find((g) => {
+      if (email && normalizeEmail(g.email) === email) return true;
+      if (part?.guardianId && normalizeId(g.guardianId) === normalizeId(part.guardianId)) return true;
+      return false;
+    });
+    const studentNames = Array.isArray(guardian?.studentNames)
+      ? guardian.studentNames.map((n) => String(n || '').trim()).filter(Boolean)
+      : [];
+    const guardianName = String(guardian?.name || part?.name || email || 'Phụ huynh').trim();
+    const name = studentNames.length
+      ? `${guardianName} (PHHS ${studentNames.join(' + ')})`
+      : guardianName;
+    return {
+      userId: uid,
+      name,
+      role: 'guardian',
+      email: email || normalizeEmail(guardian?.email),
+      studentNames,
+    };
+  }
+
+  const teacher = (conversation.teachers || []).find((t) => {
+    if (email && normalizeEmail(t.email) === email) return true;
+    if (part?.teacherId && normalizeId(t.teacherId) === normalizeId(part.teacherId)) return true;
+    return false;
+  });
+  return {
+    userId: uid,
+    name: teacher?.name || part?.name || email || 'Giáo viên',
+    role: 'teacher',
+    email: email || normalizeEmail(teacher?.email),
+    studentNames: [],
+  };
+}
+
+/** GET — danh sách người đã đọc một tin (chỉ GV thành viên). */
+exports.getMessageReaders = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (!canSeeReadReceipts(req.user, conversation)) {
+      return res.status(403).json({
+        success: false,
+        code: 'READ_RECEIPT_FORBIDDEN',
+        message: 'Chỉ giáo viên mới xem được danh sách đã đọc',
+      });
+    }
+
+    const messageId = String(req.params.messageId || '').trim();
+    if (!mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ success: false, message: 'messageId không hợp lệ' });
+    }
+
+    const message = await ChatMessage.findOne({
+      _id: messageId,
+      conversation: conversation._id,
+      isDeleted: false,
+    }).select('readBy sender senderSnapshot').lean();
+
+    if (!message) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy tin nhắn' });
+    }
+
+    const senderId = String(message.sender || '');
+    const readers = (message.readBy || [])
+      .filter((r) => r?.user && String(r.user) !== senderId)
+      .map((r) => {
+        const base = readerDisplayFromConversation(conversation, r.user);
+        return {
+          ...base,
+          readAt: r.readAt ? new Date(r.readAt).toISOString() : null,
+        };
+      })
+      .sort((a, b) => {
+        const ta = a.readAt ? Date.parse(a.readAt) : 0;
+        const tb = b.readAt ? Date.parse(b.readAt) : 0;
+        return tb - ta;
+      });
+
+    // Tổng thành viên active (trừ người gửi) — để UI hiện N/M.
+    const activeOthers = (conversation.participants || [])
+      .filter(isActiveParticipant)
+      .filter((p) => p.user && String(p.user) !== senderId);
+
+    res.json({
+      success: true,
+      data: {
+        messageId,
+        readers,
+        readerCount: readers.length,
+        participantCount: activeOthers.length,
+      },
+    });
+  } catch (error) {
+    console.error('[Chat] getMessageReaders error:', describeError(error));
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Không thể tải danh sách đã đọc',
+    });
+  }
+};
+
+/**
+ * GET — danh sách tệp/ảnh/video đính kèm trong hội thoại (phẳng), hỗ trợ tìm theo tên.
+ * Query: q, kind (image|video|file|media), page, limit.
+ * kind=media → ảnh + video (không gồm tệp).
+ */
+exports.listConversationAttachments = async (req, res) => {
+  try {
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '40', 10), 1), 100);
+    const kind = String(req.query.kind || '').trim().toLowerCase();
+    const q = String(req.query.q || '').trim();
+    const nameRegex = buildAccentInsensitiveRegex(q);
+
+    const match = {
+      conversation: conversation._id,
+      isDeleted: false,
+      // Tin thu hồi không đưa vào kho tệp — chấp nhận null hoặc thiếu field (doc cũ).
+      $or: [{ recalledAt: null }, { recalledAt: { $exists: false } }],
+      'attachments.0': { $exists: true },
+    };
+
+    const pipeline = [
+      { $match: match },
+      { $unwind: '$attachments' },
+    ];
+
+    const attMatch = {};
+    if (kind === 'media') {
+      attMatch['attachments.kind'] = { $in: ['image', 'video'] };
+    } else if (kind === 'image' || kind === 'video' || kind === 'file') {
+      attMatch['attachments.kind'] = kind;
+    }
+    if (nameRegex) {
+      attMatch['attachments.name'] = nameRegex;
+    }
+    if (Object.keys(attMatch).length) {
+      pipeline.push({ $match: attMatch });
+    }
+
+    pipeline.push(
+      { $sort: { createdAt: -1, _id: -1 } },
+      {
+        $facet: {
+          rows: [
+            { $skip: (page - 1) * limit },
+            { $limit: limit },
+            {
+              $project: {
+                _id: 0,
+                messageId: '$_id',
+                createdAt: 1,
+                senderName: '$senderSnapshot.name',
+                senderEmail: '$senderSnapshot.email',
+                senderRole: '$senderSnapshot.role',
+                kind: '$attachments.kind',
+                url: '$attachments.url',
+                name: '$attachments.name',
+                mimeType: '$attachments.mimeType',
+                size: '$attachments.size',
+                width: '$attachments.width',
+                height: '$attachments.height',
+                posterUrl: '$attachments.posterUrl',
+                thumbUrl: '$attachments.thumbUrl',
+              },
+            },
+          ],
+          total: [{ $count: 'n' }],
+        },
+      },
+    );
+
+    const [agg] = await ChatMessage.aggregate(pipeline);
+    const items = (agg?.rows || []).map((row) => ({
+      ...row,
+      messageId: String(row.messageId),
+      createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+    }));
+    const total = agg?.total?.[0]?.n || 0;
+
+    res.json({
+      success: true,
+      data: {
+        items,
+        pagination: {
+          currentPage: page,
+          totalPages: Math.max(1, Math.ceil(total / limit)),
+          totalItems: total,
+          hasNext: page * limit < total,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('[Chat] listConversationAttachments error:', describeError(error));
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Không thể tải danh sách tệp đính kèm',
+    });
   }
 };
 

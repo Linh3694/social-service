@@ -133,6 +133,18 @@ router.post('/messages/:messageId/poll/vote', authenticate, chatController.voteP
 router.post('/messages/:messageId/poll/close', authenticate, chatController.closePoll);
 router.get('/messages/:messageId/poll/voters', authenticate, chatController.getPollVoters);
 router.get('/conversations/:conversationId/messages', authenticate, chatController.getMessages);
+// Danh sách người đã đọc một tin — chỉ GV (check trong controller).
+router.get(
+  '/conversations/:conversationId/messages/:messageId/readers',
+  authenticate,
+  chatController.getMessageReaders,
+);
+// Danh sách tệp đính kèm phẳng + tìm theo tên.
+router.get(
+  '/conversations/:conversationId/attachments',
+  authenticate,
+  chatController.listConversationAttachments,
+);
 // Lấy 1 hội thoại theo id — mở link `?c=<id>` khi danh sách đã phân trang (SIS-166).
 router.get('/conversations/:conversationId', authenticate, chatController.getConversation);
 router.post(
