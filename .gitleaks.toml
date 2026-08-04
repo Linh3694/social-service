@@ -1,0 +1,72 @@
+title = "Wellspring DX secret rules"
+
+# Nguồn: PLAN-01 §2.2. Đặt ở gốc mỗi repo (10 repo — PLAN-01 §0.1).
+# Chạy:  gitleaks git . --config .gitleaks.toml --redact      (quét cả lịch sử)
+#        gitleaks dir . --config .gitleaks.toml --redact      (quét cây làm việc)
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "internal-weak-token"
+description = "Token/mật khẩu nội bộ dùng chuỗi 'breakpoint'"
+regex = '''(?i)(secret|token|password|passwd|pwd)\s*[:=]\s*["']?breakpoint["']?'''
+tags = ["internal"]
+
+[[rules]]
+id = "internal-lan-ip"
+description = "IP LAN nội bộ lộ trong file cấu hình"
+regex = '''\b(172\.16\.\d{1,3}\.\d{1,3}|10\.1\.\d{1,3}\.\d{1,3})\b'''
+tags = ["internal"]
+
+[[rules]]
+id = "hardcoded-password-literal"
+description = "Password/secret gán trực tiếp trong code (rule breakpoint không bắt được — vd VIVAS_SMS_CONFIG)"
+regex = '''(?i)["'](password|passwd|secret|api_key|apikey)["']\s*[:=]\s*["'][^"']{6,}["']'''
+tags = ["internal"]
+
+[allowlist]
+description = "Miễn trừ đã xác minh 03/08/2026 — xem SECRETS-INVENTORY.md §2"
+paths = [
+  # File của chính gitleaks
+  '''\.gitleaks\.toml''',
+  '''gitleaks-report.*\.json''',
+
+  # Artefact build / thư viện — không phải mã nguồn sản phẩm
+  '''(^|/)node_modules/''',
+  '''(^|/)dist/''',
+  '''(^|/)dev-dist/''',
+  '''(^|/)\.tmp_pylibs/''',
+  '''(^|/)\.test_deps_py\d*/''',
+  '''(^|/)android/app/build/''',
+  '''(^|/)ios/Pods/''',
+  '''(^|/)ios/build/''',
+  '''(^|/)__pycache__/''',
+  '''\.pyc$''',
+
+  # False positive đã kiểm từng chỗ:
+  # rule hardcoded-password-literal khớp vào CHUỖI DỊCH chứa từ "mật khẩu"/"password"
+  '''(^|/)src/locales/(vi|en)\.json$''',
+  # biến tên device_token / email_to_tokens của DocType "Mobile Device Token", không phải secret
+  '''(^|/)erp/api/erp_sis/contact_log\.py$''',
+  # chuỗi dạng base64 trong code UI thời khoá biểu
+  '''(^|/)components/timetable/TimetableScreen\.tsx$''',
+  # lockfile của CocoaPods — chuỗi checksum, không phải key
+  '''(^|/)ios/(Podfile|Manifest)\.lock$''',
+]
+
+regexTarget = "match"
+regexes = [
+  # Firebase config KHÔNG phải secret theo tài liệu Google (client-side, bảo vệ bằng
+  # Security Rules). Vẫn tách per-tenant ở GĐ3-E, nhưng không tính là finding.
+  '''AIza[0-9A-Za-z_-]{35}''',
+
+  # Rule generic-api-key khớp mọi định danh kết thúc bằng "key". Các tên dưới đây là
+  # prop UI của bảng/cột, đã kiểm từng chỗ 03/08/2026 — không phải secret.
+  '''(?i)\b(storageKey|labelKey|sortKey|rowKey|columnKey|cacheKey|queryKey|translationKey|i18nKey)\b\s*[:=]''',
+  '''(?i)\bcolumn\.key\s*===''',
+
+  # `key: 'weight1_count'` — định danh cột dạng snake_case thường. API key thật không bao giờ
+  # chỉ gồm [a-z0-9_] ngắn như vậy (chúng có entropy cao, lẫn hoa/thường/ký tự đặc biệt).
+  '''\bkey\s*:\s*['"][a-z][a-z0-9_]{2,40}['"]''',
+]

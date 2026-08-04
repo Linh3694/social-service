@@ -509,6 +509,56 @@ async function buildClassPostMetadata({ audienceType, classId, schoolYearId, aut
   };
 }
 
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+/**
+ * Caller phải là GVCN/phó hoặc poster đã cấu hình cho lớp — chặn staff/PH tùy ý đăng bài class.
+ */
+async function requireClassPosterCaller(classId, schoolYearId, req) {
+  if (req.user?.guardian_id) {
+    const err = new Error('Phụ huynh không được đăng bài bảng tin lớp');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  let permissions;
+  try {
+    permissions = await frappeService.getClassNewsfeedPermissions(classId, schoolYearId);
+  } catch (e) {
+    const err = new Error(e.message || 'Không tải được quyền đăng bài lớp');
+    err.statusCode = 502;
+    throw err;
+  }
+  if (!permissions) {
+    const err = new Error('Không tải được quyền đăng bài lớp');
+    err.statusCode = 502;
+    throw err;
+  }
+
+  const callerEmail = normalizeEmail(req.user?.email);
+  const allowed = [...(permissions.homeroom || []), ...(permissions.posters || [])];
+  const allowedEmails = new Set(
+    allowed.map((entry) => normalizeEmail(entry.email)).filter(Boolean),
+  );
+  const allowedUserIds = new Set(
+    allowed.map((entry) => String(entry.userId || '').trim().toLowerCase()).filter(Boolean),
+  );
+
+  const callerUserName = String(req.user?.username || req.user?.name || '').trim().toLowerCase();
+  const ok =
+    (callerEmail && allowedEmails.has(callerEmail))
+    || (callerUserName && allowedUserIds.has(callerUserName));
+
+  if (!ok) {
+    const err = new Error('Bạn không có quyền đăng bài trên bảng tin lớp này');
+    err.statusCode = 403;
+    throw err;
+  }
+  return permissions;
+}
+
 exports.createPost = async (req, res) => {
   // Khai báo ngoài try để nhánh catch xoá được object đã lên MinIO
   let uploadedKeys = [];
@@ -544,6 +594,9 @@ exports.createPost = async (req, res) => {
     if (!content?.trim() && !coMedia) {
       return res.status(400).json({ message: 'Bài viết phải có nội dung hoặc ảnh/video' });
     }
+    // Bài chỉ có ảnh/video được phép ⇒ client có thể KHÔNG gửi field `content`.
+    // Chuẩn hoá một lần tại đây; gọi `content.trim()` trực tiếp sẽ nổ TypeError.
+    const noiDung = (content || '').trim();
 
     let parsedTags = tags;
     if (typeof tags === 'string') {
@@ -576,6 +629,16 @@ exports.createPost = async (req, res) => {
       schoolYearId,
       auth: getAuthContext(req),
     });
+    // Chỉ GVCN/phó hoặc GV được cấu hình mới được đăng bài lớp. Đặt cùng chỗ với
+    // kiểm lớp/năm học (trước upload) vì cùng lý do: từ chối sớm để không để lại
+    // rác trên MinIO khi caller không có quyền.
+    if (audienceType === 'class') {
+      await requireClassPosterCaller(
+        classMetadata.classId || classId,
+        classMetadata.schoolYearId || schoolYearId,
+        req,
+      );
+    }
 
     let images = [], videos = [];
     if (req.files?.length) {
@@ -618,7 +681,7 @@ exports.createPost = async (req, res) => {
     const postData = {
       author: authorId,
       authorSnapshot: buildAuthorSnapshotPayload(req.user),
-      content: content.trim(),
+      content: noiDung,
       type,
       visibility,
       audienceType,
@@ -656,7 +719,7 @@ exports.createPost = async (req, res) => {
         authorEmail: req.user.email,
         authorName: req.user.fullname,
         authorToken: getBearerToken(req),
-        content: content.trim().substring(0, 100),
+        content: noiDung.substring(0, 100),
         type: type,
         classId: String(post.classId),
         classTitle: post.classTitle ? String(post.classTitle) : '',
@@ -677,7 +740,7 @@ exports.createPost = async (req, res) => {
         authorEmail: req.user.email,
         authorName: req.user.fullname,
         authorToken: getBearerToken(req),
-        content: content.trim().substring(0, 100),
+        content: noiDung.substring(0, 100),
         type: type,
         ...wislifePayloadExtra(post),
       });

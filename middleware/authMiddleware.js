@@ -43,7 +43,7 @@ const optionalAuth = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
     if (!token) { req.user = null; return next(); }
     let decoded = null;
-    try { decoded = jwt.verify(token, process.env.JWT_SECRET || 'breakpoint'); } catch {}
+    try { decoded = jwt.verify(token, process.env.JWT_SECRET); } catch {}
     if (!decoded) { req.user = null; return next(); }
     try {
       // Hỗ trợ cả Frappe JWT (sub/email) và local JWT (id)

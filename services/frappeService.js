@@ -178,7 +178,7 @@ class FrappeService {
   verifyParentPortalToken(token) {
     if (!token) return null;
     try {
-      const secret = process.env.PARENT_PORTAL_JWT_SECRET || process.env.JWT_SECRET || 'breakpoint';
+      const secret = process.env.PARENT_PORTAL_JWT_SECRET || process.env.JWT_SECRET;
       const decoded = jwt.verify(token, secret);
       if (!decoded || typeof decoded !== 'object') return null;
       return decoded;
@@ -1271,6 +1271,37 @@ class FrappeService {
       docstatus: 0,
       user_type: 'Website User',
     };
+  }
+
+  /**
+   * Quyền đăng bài bảng tin lớp (GVCN/phó ∪ posters cấu hình).
+   * Gọi bằng API key service (interceptor) — cache ngắn ~60s.
+   */
+  async getClassNewsfeedPermissions(classId, schoolYearId) {
+    if (!classId || !schoolYearId) return null;
+    const sy = String(schoolYearId);
+    const cacheKey = `frappe:newsfeed-perm:${encodeURIComponent(classId)}:${encodeURIComponent(sy)}`;
+    const cached = await cacheGetJSON(cacheKey);
+    if (cached) return cached;
+
+    const response = await this.api.post(
+      '/api/method/erp.api.erp_sis.newsfeed_poster.get_class_newsfeed_permissions',
+      {
+        class_id: classId,
+        school_year_id: sy,
+      },
+    );
+    const message = response.data?.message ?? response.data;
+    if (message && message.success === false) {
+      const err = new Error(message.message || 'get_class_newsfeed_permissions failed');
+      err.response = response;
+      err.frappeCode = message.code || '';
+      throw err;
+    }
+    const payload = message?.data ?? message;
+    if (!payload?.classId) return null;
+    await cacheSetJSON(cacheKey, payload, 60);
+    return payload;
   }
 
   /**

@@ -111,7 +111,7 @@ function resolveMediaUrl(path?: string) {
           │  cdn-service :5040   (Phase 2)           │
           │   └── sharp + ffmpeg: variants, EXIF     │
           └────────────────┬─────────────────────────┘
-                           │ private 172.16.20.0/24
+                           │ private __INTERNAL_HOST__/24
                            │ S3 API + presign
           ┌────────────────┴─────────────────────────┐
           │  VM microservices — social-service :5010 │
@@ -154,7 +154,7 @@ Nếu để `mc anonymous set none` rồi `proxy_pass` thẳng, MinIO sẽ trả
 
 | Cách | Đánh giá |
 |------|----------|
-| `mc anonymous set download` | ❌ Mọi máy trong `172.16.20.0/24` đọc được object không cần chữ ký. Trái với yêu cầu "100% private". |
+| `mc anonymous set download` | ❌ Mọi máy trong `__INTERNAL_HOST__/24` đọc được object không cần chữ ký. Trái với yêu cầu "100% private". |
 | Nginx ký SigV4 bằng njs (`nginx-s3-gateway`) | Đúng nhất, nhưng thêm module njs + độ phức tạp vận hành |
 | **Bucket policy có điều kiện `aws:SourceIp = 127.0.0.1`** ✅ | Chỉ **tiến trình Nginx trên chính VM3** đọc được. Không cần njs. |
 
@@ -176,7 +176,7 @@ Nếu để `mc anonymous set none` rồi `proxy_pass` thẳng, MinIO sẽ trả
 mc anonymous set-json /opt/cdn/policies/allow-nginx-only.json local/cdn-social-posts
 ```
 
-Cộng thêm: MinIO **chỉ nghe `127.0.0.1:9000` + `172.16.20.94:9000`**, UFW chặn 9000 từ Internet, và Nginx bắt buộc chữ ký. Kết quả — object không lộ ra ngoài kể cả khi đoán đúng key, và **cũng không lộ với máy khác trong LAN**.
+Cộng thêm: MinIO **chỉ nghe `127.0.0.1:9000` + `__INTERNAL_HOST__:9000`**, UFW chặn 9000 từ Internet, và Nginx bắt buộc chữ ký. Kết quả — object không lộ ra ngoài kể cả khi đoán đúng key, và **cũng không lộ với máy khác trong LAN**.
 
 > Nginx **không** được `proxy_set_header X-Forwarded-For` ở chặng đi MinIO, nếu không MinIO có thể lấy IP client thay vì `127.0.0.1` và policy sẽ chặn nhầm. Config §8 đã xoá header này một cách tường minh.
 
@@ -278,7 +278,7 @@ NIC 1 Gbps thừa sức. Nút thắt thực tế là **IOPS ảnh nhỏ**, khôn
 | Disk data | **1 TB NVMe** → `/data` | Đủ ~3 năm học sau tối ưu. Chọn volume **mở rộng online được**. |
 | Cache Nginx | 60 GB (trong 1 TB) | `/var/cache/nginx/cdn` |
 | Public IP | 1 | Nginx :443 |
-| Private IP | `172.16.20.94` (đề xuất) | Kề VM1 `.93`, dễ nhớ |
+| Private IP | `__INTERNAL_HOST__` (đề xuất) | Kề VM1 `.93`, dễ nhớ |
 | NIC | 1 Gbps | |
 
 > 4 vCPU / 8 GB là mức khởi điểm, **không** phải giới hạn. Nếu bật transcode video 720p (§7.3), FFmpeg cần thêm 2–4 core — hãy chọn nhà cung cấp cho phép resize CPU/RAM nóng.
@@ -354,9 +354,9 @@ npm i @aws-sdk/client-s3 @aws-sdk/lib-storage @aws-sdk/s3-request-presigner shar
 # --- CDN ---
 CDN_ENABLED=true                                    # kill switch → false = quay lại disk local
 CDN_PUBLIC_URL=https://cdn.wellspring.edu.vn
-CDN_S3_ENDPOINT=http://172.16.20.94:9000            # private, không qua Internet
-CDN_ACCESS_KEY=social_service
-CDN_SECRET_KEY=<đổi>
+CDN_S3_ENDPOINT=http://__INTERNAL_HOST__:9000            # private, không qua Internet
+CDN_ACCESS_KEY=__CDN_ACCESS_KEY__
+CDN_SECRET_KEY=__CDN_SECRET_KEY__
 CDN_REGION=us-east-1
 CDN_FORCE_PATH_STYLE=true
 
@@ -531,7 +531,7 @@ ffmpeg -i in.mp4 -ss 1 -vframes 1 -vf scale=480:-1 poster.webp
 
 `+faststart` đẩy moov atom lên đầu file ⇒ video **phát ngay** thay vì phải tải hết. Poster frame giúp feed không bị khoảng trắng chờ.
 
-**Phase 2 — transcode 720p (tuỳ chọn):** `-c:v libx264 -crf 26 -preset veryfast -vf scale=-2:720` cắt ~60 % dung lượng video, nhưng cần thêm 2–4 vCPU và một queue (BullMQ, Redis `172.16.20.120` DB **/3** — tránh trùng DB /2 của `lms-media-service`). Chỉ làm nếu video chat vượt ~0,5 GB/ngày.
+**Phase 2 — transcode 720p (tuỳ chọn):** `-c:v libx264 -crf 26 -preset veryfast -vf scale=-2:720` cắt ~60 % dung lượng video, nhưng cần thêm 2–4 vCPU và một queue (BullMQ, Redis `__INTERNAL_HOST__` DB **/3** — tránh trùng DB /2 của `lms-media-service`). Chỉ làm nếu video chat vượt ~0,5 GB/ngày.
 
 **Không làm HLS cho social.** Video chat/feed ngắn (< 2 phút), progressive MP4 + `faststart` là đủ; HLS thêm phức tạp mà không có lợi ích tương xứng. HLS để dành cho LMS trên VM1.
 
@@ -704,7 +704,7 @@ ufw default deny incoming
 ufw allow 22/tcp
 ufw allow 80/tcp
 ufw allow 443/tcp
-ufw allow from 172.16.20.0/24 to any port 9000 proto tcp   # chỉ private subnet
+ufw allow from __INTERNAL_HOST__/24 to any port 9000 proto tcp   # chỉ private subnet
 ufw enable
 ```
 
@@ -718,7 +718,7 @@ Nguyên tắc: **không sửa DB trước, dùng resolver ở tầng đọc.** C
 
 ```bash
 # Trên VM microservices
-mc alias set cdn http://172.16.20.94:9000 social_service "$CDN_SECRET_KEY"
+mc alias set cdn http://__INTERNAL_HOST__:9000 social_service "$CDN_SECRET_KEY"
 
 mc mirror --overwrite --preserve \
    /srv/app/social-service/uploads/posts/  cdn/cdn-social-posts/legacy/
@@ -779,7 +779,7 @@ Gỡ `express.static('/uploads')` khỏi `app.js`, xoá thư mục `uploads/` tr
 
 | # | Việc | Nghiệm thu |
 |---|------|------------|
-| 0.1 | Cấp VM 4 vCPU / 8 GB / 50 GB OS + 1 TB NVMe, private `172.16.20.94` | `lsblk` thấy disk |
+| 0.1 | Cấp VM 4 vCPU / 8 GB / 50 GB OS + 1 TB NVMe, private `__INTERNAL_HOST__` | `lsblk` thấy disk |
 | 0.2 | OS Ubuntu 22.04, timezone `Asia/Ho_Chi_Minh`, mount `/data` (XFS, `noatime`) | `df -h /data` |
 | 0.3 | Docker + MinIO (theo mẫu §5 `media-setup-vm1.md`, đổi path/IP) | `curl 127.0.0.1:9000/minio/health/live` → 200 |
 | 0.4 | Tạo 4 bucket, IAM user `social_service`, policy tối thiểu, `anonymous set none` | `mc ls`, `mc anonymous get` |
@@ -874,14 +874,33 @@ Kiểm thử restore mỗi quý — backup chưa restore thử thì chưa phải
 
 Đã có `@wis/observability` trong `social-service` — mở rộng sang VM3:
 
+Cài đặt thực tế: `/opt/cdn/bin/cdn-checks.sh` (phát hiện) + `/opt/cdn/bin/cdn-alert.sh`
+(chống lặp, gửi mail), chạy 5 phút một lần qua `cdn-alert.timer`.
+
 | Chỉ số | Cảnh báo |
 |--------|----------|
-| Disk `/data` | > 75 % → cảnh báo, > 85 % → khẩn |
-| Cache hit rate (`X-Cache-Status`) | < 70 % kéo dài |
-| Tỉ lệ 403/410 | Tăng đột biến ⇒ lệch secret hoặc lệch đồng hồ |
-| p95 latency `/social-*` | > 200 ms |
+| Disk `/data` | > 85 % |
+| Tỉ lệ 403/410 theo từng bucket | ≥ 20 % trên ≥ 30 request ⇒ lệch secret hoặc lệch đồng hồ |
+| Lỗi 5xx từ MinIO | ≥ 10 lỗi trong 15 phút |
+| p95 `$upstream_response_time` | > 2 s trên ≥ 30 request phải lấy từ MinIO |
 | MinIO health | `/minio/health/live` != 200 |
-| Cert hết hạn | < 14 ngày |
+| Cert hết hạn | < 7 ngày |
+| Đồng bộ NTP | Mất đồng bộ |
+
+Mọi cảnh báo đều ở mức CRIT. Một sự cố phải tồn tại **3 chu kỳ liên tiếp** (15 phút)
+mới gửi mail, và phải sạch 3 chu kỳ liên tiếp mới gửi thư báo phục hồi.
+
+> **Vì sao bỏ cảnh báo cache hit rate và p95 theo `$request_time`.** Bản đầu
+> (29/07–03/08/2026) phát WARN cho hai chỉ số này và sinh **100 email trong 24 giờ**,
+> 73 % là cặp WARN/OK lật qua lật lại. `$request_time` tính **cả** thời gian đẩy dữ
+> liệu về máy khách, nên một nhóm người dùng 4G là đủ làm p95 vượt 200 ms rồi chu kỳ
+> sau lại về bình thường — đo băng thông điện thoại chứ không đo CDN. Đo thực tế trên
+> toàn bộ log: `social-chat` p50 = 0,000 s nhưng p95 = 0,810 s; `social-posts` p95 =
+> 0,177 s, nằm ngay mép ngưỡng 0,2 s. Cache hit rate cũng vậy: `student-photos` là
+> danh mục đuôi dài (432 request trên 369 URI riêng biệt) nên trần hit rate chỉ ~15 %,
+> không bao giờ đạt 70 %. Cảnh báo không hành động được thì chỉ dạy người ta bỏ qua
+> hộp thư. Nay latency đo bằng `$upstream_response_time` (cột 6 trong `cdn-log.conf`) —
+> chỉ tính lúc thật sự phải lấy từ MinIO, là thứ ta kiểm soát được.
 
 > **Đồng bộ NTP là bắt buộc.** `secure_link` so sánh timestamp; lệch đồng hồ giữa VM microservices và VM3 quá vài phút sẽ gây 410 hàng loạt. Bật `systemd-timesyncd` trên cả hai và thêm vào checklist Phase 0.
 
@@ -939,21 +958,21 @@ https://cdn.wellspring.edu.vn/<service>-<loại>/<yyyy>/<mm>/<hash2>/<hash>.<ext
 ## Phụ lục A — Checklist Phase 0 (in ra dùng khi dựng VM)
 
 ```
-[ ] VM 4 vCPU / 8 GB / 50 GB OS / 1 TB NVMe, private 172.16.20.94, public IP
+[ ] VM 4 vCPU / 8 GB / 50 GB OS / 1 TB NVMe, private __INTERNAL_HOST__, public IP
 [ ] Ubuntu 22.04, timedatectl set-timezone Asia/Ho_Chi_Minh
 [ ] systemd-timesyncd BẬT và đã sync  (timedatectl status)
 [ ] mkfs.xfs /dev/sdb ; mount /data (noatime) ; ghi /etc/fstab
-[ ] Docker + MinIO container, bind 127.0.0.1:9000 + 172.16.20.94:9000, console 127.0.0.1:9001
+[ ] Docker + MinIO container, bind 127.0.0.1:9000 + __INTERNAL_HOST__:9000, console 127.0.0.1:9001
 [ ] Bucket: cdn-social-posts, cdn-social-chat, cdn-social-avatars, cdn-staging
 [ ] mc anonymous set none cho CẢ 4 bucket (mặc định) — xác nhận bằng mc anonymous get
 [ ] Áp bucket policy aws:SourceIp=127.0.0.1/32 cho 3 bucket phát ra CDN (§3.1)
-    → từ máy KHÁC trong LAN: curl http://172.16.20.94:9000/cdn-social-posts/<key> phải 403
+    → từ máy KHÁC trong LAN: curl http://__INTERNAL_HOST__:9000/cdn-social-posts/<key> phải 403
 [ ] IAM user social_service + policy tối thiểu (không dùng root key cho app)
 [ ] DNS A cdn.wellspring.edu.vn → public IP
 [ ] Nginx + config §8 (thay CHANGE_ME_CDN_LINK_SECRET)
 [ ] certbot --nginx -d cdn.wellspring.edu.vn ; systemctl status certbot.timer
 [ ] mkdir -p /var/cache/nginx/cdn ; chown www-data
-[ ] UFW: 22/80/443 public ; 9000 chỉ 172.16.20.0/24 ; enable
+[ ] UFW: 22/80/443 public ; 9000 chỉ __INTERNAL_HOST__/24 ; enable
 [ ] 5 kiểm chứng bảo mật §8 — TẤT CẢ phải đúng kỳ vọng
 [ ] Snapshot hàng ngày + mc mirror ngoài site đã cấu hình
 [ ] Alert disk / cert / MinIO health đã gắn vào observability

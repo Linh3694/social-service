@@ -52,12 +52,12 @@ async function backfillGuardianLink(userDoc) {
 function verifyJwtFlexible(token) {
   let decoded = null;
   try {
-    decoded = jwt.verify(token, process.env.JWT_SECRET || 'breakpoint');
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
   } catch {
     try {
       decoded = jwt.verify(
         token,
-        process.env.PARENT_PORTAL_JWT_SECRET || process.env.JWT_SECRET || 'breakpoint'
+        process.env.PARENT_PORTAL_JWT_SECRET || process.env.JWT_SECRET
       );
     } catch {
       decoded = null;
