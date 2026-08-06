@@ -165,6 +165,26 @@ function chatRecipientEmails(conversation, senderEmail) {
   return emails;
 }
 
+/**
+ * Người nhận notify khi thả cảm xúc: CHỈ chủ tin (không broadcast cả nhóm).
+ * Ưu tiên senderSnapshot.email; thiếu thì lấy email participant theo message.sender.
+ * Self-react / không có email → [].
+ */
+function chatReactionNotifyEmails(message, conversation, reactorEmail) {
+  const reactorNorm = normalizeEmail(reactorEmail);
+  let raw = String(message?.senderSnapshot?.email || '').trim();
+  if (!raw && conversation && message?.sender) {
+    const sid = String(message.sender);
+    const match = (conversation.participants || []).find(
+      (p) => isActiveParticipant(p) && p.user && String(p.user) === sid && p.email,
+    );
+    if (match) raw = String(match.email).trim();
+  }
+  const authorNorm = normalizeEmail(raw);
+  if (!authorNorm || authorNorm === reactorNorm) return [];
+  return [raw];
+}
+
 /** Gửi notify chat qua notification-service — fire-and-forget. */
 function fireChatToFrappe(eventType, payload) {
   frappeService.sendChatNotification(eventType, payload).catch(() => {});
@@ -3212,18 +3232,26 @@ exports.toggleReaction = async (req, res) => {
 
     const isRemoval = prev && prev.emoji === emoji;
     if (!isRemoval) {
-      fireChatToFrappe('message_reaction', {
-        conversationId: String(conversation._id),
-        conversationType: conversation.type,
-        messageId: String(message._id),
-        senderEmail: req.user.email,
-        senderName: userDisplayName(req.user),
-        senderRole: userRole(req.user),
-        recipientEmails: chatRecipientEmails(conversation, req.user.email),
-        messagePreview: '',
-        hasAttachment: false,
-        timestamp: new Date().toISOString(),
-      });
+      // Chỉ chủ tin — trước đây dùng chatRecipientEmails (cả nhóm) gây spam khi ai đó react.
+      const reactionRecipients = chatReactionNotifyEmails(
+        message,
+        conversation,
+        req.user.email,
+      );
+      if (reactionRecipients.length) {
+        fireChatToFrappe('message_reaction', {
+          conversationId: String(conversation._id),
+          conversationType: conversation.type,
+          messageId: String(message._id),
+          senderEmail: req.user.email,
+          senderName: userDisplayName(req.user),
+          senderRole: userRole(req.user),
+          recipientEmails: reactionRecipients,
+          messagePreview: '',
+          hasAttachment: false,
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
 
     res.json({ success: true, data: { messageId: String(message._id), reactions: serialized } });
@@ -4028,6 +4056,7 @@ exports.pollPendingVoterEmails = pollPendingVoterEmails;
 exports.firePollLifecycleNotify = firePollLifecycleNotify;
 exports.broadcastPollUpdate = broadcastPollUpdate;
 exports.chatRecipientEmails = chatRecipientEmails;
+exports.chatReactionNotifyEmails = chatReactionNotifyEmails;
 exports.canSeePollVoters = canSeePollVoters;
 exports.pollEffectiveClosedAt = pollEffectiveClosedAt;
 exports.buildPollFromRequestBody = buildPollFromRequestBody;
