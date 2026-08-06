@@ -20,6 +20,7 @@ const {
 } = require('../utils/cache');
 const { normalizeUploadFilename } = require('../utils/uploadFilename');
 const { truncatePreview } = require('../utils/textPreview');
+const { removeVietnameseTones } = require('../utils/nameUtils');
 
 const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
 
@@ -163,6 +164,35 @@ function chatRecipientEmails(conversation, senderEmail) {
     emails.push(String(raw).trim());
   }
   return emails;
+}
+
+/**
+ * Người nhận noti reaction = DUY NHẤT tác giả tin nhắn.
+ *
+ * KHÔNG dùng `chatRecipientEmails` ở đây: hàm đó trả về cả nhóm, nên một cái tim trong
+ * nhóm lớp 40 người sinh 39 push cho những người không liên quan (SIS — "quá nhiều thông
+ * báo từ việc thả tim"). Tin mới thì fan-out cả nhóm là đúng; reaction thì không.
+ *
+ * @returns {string[]} rỗng khi tự thả tim tin của mình, hoặc tác giả đã rời nhóm.
+ */
+function chatReactionRecipientEmails(conversation, message, reactorEmail) {
+  const reactorNorm = normalizeEmail(reactorEmail);
+  const authorId = message?.sender ? String(message.sender) : '';
+  const snapshotEmail = normalizeEmail(message?.senderSnapshot?.email);
+
+  const participant = (conversation.participants || []).find((p) => {
+    if (!p) return false;
+    if (authorId && p.user && String(p.user) === authorId) return true;
+    return Boolean(snapshotEmail) && normalizeEmail(p.email) === snapshotEmail;
+  });
+
+  // Đã rời nhóm ⇒ không nhận noti nữa, giống mọi luồng chat khác.
+  if (participant && !isActiveParticipant(participant)) return [];
+
+  const raw = participant?.email || message?.senderSnapshot?.email || '';
+  const authorEmail = normalizeEmail(raw);
+  if (!authorEmail || authorEmail === reactorNorm) return [];
+  return [String(raw).trim()];
 }
 
 /** Gửi notify chat qua notification-service — fire-and-forget. */
@@ -3210,20 +3240,31 @@ exports.toggleReaction = async (req, res) => {
       reactions: serialized,
     });
 
-    const isRemoval = prev && prev.emoji === emoji;
-    if (!isRemoval) {
-      fireChatToFrappe('message_reaction', {
-        conversationId: String(conversation._id),
-        conversationType: conversation.type,
-        messageId: String(message._id),
-        senderEmail: req.user.email,
-        senderName: userDisplayName(req.user),
-        senderRole: userRole(req.user),
-        recipientEmails: chatRecipientEmails(conversation, req.user.email),
-        messagePreview: '',
-        hasAttachment: false,
-        timestamp: new Date().toISOString(),
-      });
+    // Chỉ báo khi user này thả cảm xúc LẦN ĐẦU lên tin nhắn đó.
+    // Gỡ tim (`prev.emoji === emoji`) và đổi emoji (`prev` khác emoji) đều KHÔNG báo lại:
+    // tác giả đã nhận noti ở lần thả đầu, bắn tiếp chỉ là tiếng ồn — và cho phép toggle
+    // liên tục để tạo push vô hạn (dedupKey phía notification-service gắn eventId nên
+    // không gộp được).
+    if (!prev) {
+      const reactionRecipients = chatReactionRecipientEmails(
+        conversation,
+        message,
+        req.user.email,
+      );
+      if (reactionRecipients.length) {
+        fireChatToFrappe('message_reaction', {
+          conversationId: String(conversation._id),
+          conversationType: conversation.type,
+          messageId: String(message._id),
+          senderEmail: req.user.email,
+          senderName: userDisplayName(req.user),
+          senderRole: userRole(req.user),
+          recipientEmails: reactionRecipients,
+          messagePreview: '',
+          hasAttachment: false,
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
 
     res.json({ success: true, data: { messageId: String(message._id), reactions: serialized } });
@@ -3634,23 +3675,80 @@ function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Biến thể CÓ DẤU của từng chữ cái cơ sở — để regex Mongo khớp được cả khi gõ không dấu. */
+const VN_CHAR_CLASS = {
+  a: 'aàáảãạăằắẳẵặâầấẩẫậ',
+  e: 'eèéẻẽẹêềếểễệ',
+  i: 'iìíỉĩị',
+  o: 'oòóỏõọôồốổỗộơờớởỡợ',
+  u: 'uùúủũụưừứửữự',
+  y: 'yỳýỷỹỵ',
+  d: 'dđ',
+};
+
+/**
+ * Regex khớp KHÔNG PHÂN BIỆT DẤU: "quynh" khớp "Quỳnh", "doan" khớp "Đoàn".
+ *
+ * Mongo `$regex` KHÔNG dùng collation nên không thể bỏ dấu ở tầng DB — cách khả thi mà không
+ * phải thêm field chuẩn hoá + backfill là nở từng chữ cái thành character class.
+ */
+function vietnameseInsensitiveRegex(term) {
+  const base = removeVietnameseTones(String(term || '').trim());
+  const pattern = base
+    .split('')
+    .map((ch) => (VN_CHAR_CLASS[ch] ? `[${VN_CHAR_CLASS[ch]}]` : escapeRegExp(ch)))
+    .join('');
+  return new RegExp(pattern, 'i');
+}
+
+/**
+ * Điểm liên quan của một ứng viên với từ khoá — NHỎ HƠN là khớp sát hơn, để sort tăng dần.
+ * Không khớp gì ⇒ `null` (loại khỏi kết quả).
+ */
+function addableMatchRank(candidate, term) {
+  const needle = removeVietnameseTones(term);
+  if (!needle) return 0;
+  const email = normalizeEmail(candidate.email);
+  const name = removeVietnameseTones(candidate.name || '');
+
+  if (email && email === needle) return 0; // gõ đúng nguyên email
+  if (email && email.startsWith(needle)) return 1;
+  if (name && name === needle) return 2;
+  if (name && name.startsWith(needle)) return 3;
+  // Khớp đầu một từ trong tên: "ngoc" khớp "Đoàn Ngọc Quỳnh".
+  if (name && name.split(/\s+/).some((word) => word.startsWith(needle))) return 4;
+  if (name && name.includes(needle)) return 5;
+  if (email && email.includes(needle)) return 6;
+  return null;
+}
+
+/** Sắp ứng viên: khớp sát nhất trước; hoà thì GVBM của lớp trước, rồi theo tên. */
+function compareAddableCandidates(a, b) {
+  if (a.rank !== b.rank) return a.rank - b.rank;
+  if (a.fromClass !== b.fromClass) return a.fromClass ? -1 : 1;
+  return String(a.item.name || '').localeCompare(String(b.item.name || ''), 'vi');
+}
+
 /**
  * Tìm CBNV toàn trường (không riêng GV bộ môn) để GVCN/phó tuỳ ý thêm vào nhóm lớp — vd GV
  * tổ trưởng cần theo dõi lớp. `q` rỗng/quá ngắn ⇒ trả rỗng, tránh dump toàn bộ nhân sự lên UI.
  * Nguồn: Mongo `User` (đã đồng bộ từ Frappe) — không có SIS teacherId nên dùng email làm khoá,
  * khớp với `teacherParticipantMatches` (đã match theo email OR teacherId).
+ *
+ * Trả về ứng viên THÔ kèm `rank`; caller gộp với GVBM của lớp rồi mới sắp và cắt `limit` —
+ * cắt sớm ở đây sẽ làm rớt mất người khớp sát nằm ngoài trang đầu.
  */
-async function searchStaffDirectory(q, { excludeEmails = new Set(), limit = 30 } = {}) {
+async function searchStaffDirectory(q, { excludeEmails = new Set(), poolSize = 200 } = {}) {
   const term = String(q || '').trim();
   if (term.length < 2) return [];
-  const rx = new RegExp(escapeRegExp(term), 'i');
+  const rx = vietnameseInsensitiveRegex(term);
   const rows = await User.find({
     active: true,
     disabled: { $ne: true },
     $or: [{ fullname: rx }, { fullName: rx }, { email: rx }],
   })
     .select(USER_SELECT)
-    .limit(limit * 3)
+    .limit(poolSize)
     .lean();
 
   const out = [];
@@ -3658,14 +3756,16 @@ async function searchStaffDirectory(q, { excludeEmails = new Set(), limit = 30 }
     if (User.isParentPortalAccount(u, u.roles)) continue;
     const email = normalizeEmail(u.email);
     if (!email || excludeEmails.has(email)) continue;
-    out.push({
+    const item = {
       teacherId: email,
       name: u.fullname || u.fullName || email,
       email,
       avatarUrl: userAvatar(u),
       subjects: [],
-    });
-    if (out.length >= limit) break;
+    };
+    const rank = addableMatchRank(item, term);
+    if (rank == null) continue;
+    out.push({ item, rank, fromClass: false });
   }
   return out;
 }
@@ -3715,7 +3815,10 @@ exports.listAddableTeachers = async (req, res) => {
     const active = (conversation.participants || []).filter(isActiveParticipant);
     const excludeEmails = new Set(active.map((p) => normalizeEmail(p.email)).filter(Boolean));
 
-    // GV bộ môn đang phân công với lớp — vẫn liệt kê mặc định (không cần gõ tìm) như trước.
+    const q = String(req.query.q || '').trim();
+    const LIMIT = 30;
+
+    // GV bộ môn đang phân công với lớp — liệt kê mặc định khi chưa gõ tìm.
     const fromSubjects = (scope.subject_teachers || [])
       .map((t) => normalizeTeacherSnapshot(t))
       .filter(Boolean)
@@ -3736,11 +3839,25 @@ exports.listAddableTeachers = async (req, res) => {
       if (email) excludeEmails.add(email);
     });
 
-    // Gõ tìm ⇒ mở rộng ra CBNV toàn trường (vd GV tổ trưởng không dạy lớp này).
-    const q = String(req.query.q || '').trim();
-    const fromDirectory = q ? await searchStaffDirectory(q, { excludeEmails, limit: 30 }) : [];
+    if (!q) {
+      return res.json({ success: true, data: fromSubjects.slice(0, LIMIT) });
+    }
 
-    res.json({ success: true, data: [...fromSubjects, ...fromDirectory] });
+    // Có từ khoá ⇒ GVBM cũng phải KHỚP mới được hiện (trước đây luôn trả đủ và luôn đứng
+    // trước, nên gõ đúng nguyên email vẫn thấy người cần tìm nằm tít cuối danh sách).
+    const matchedSubjects = fromSubjects
+      .map((item) => ({ item, rank: addableMatchRank(item, q), fromClass: true }))
+      .filter((entry) => entry.rank != null);
+
+    // Mở rộng ra CBNV toàn trường (vd GV tổ trưởng không dạy lớp này).
+    const fromDirectory = await searchStaffDirectory(q, { excludeEmails });
+
+    const ranked = [...matchedSubjects, ...fromDirectory]
+      .sort(compareAddableCandidates)
+      .slice(0, LIMIT)
+      .map((entry) => entry.item);
+
+    res.json({ success: true, data: ranked });
   } catch (error) {
     console.error('[Chat] listAddableTeachers error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải danh sách GV' });
