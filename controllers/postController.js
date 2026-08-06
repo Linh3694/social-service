@@ -1187,7 +1187,11 @@ exports.addReaction = async (req, res) => {
       .populate('comments.user', POST_USER_SELECT)
       .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
       .populate('tags', POST_USER_SELECT);
-    if (post.author.toString() !== userId.toString()) {
+    // `idx !== -1` = user này đã từng thả cảm xúc lên bài, giờ chỉ ĐỔI loại.
+    // Tác giả đã nhận noti ở lần thả đầu; bắn lại mỗi lần đổi emoji (hoặc gỡ rồi thả lại)
+    // là nguồn spam "quá nhiều thông báo thả tim" — chỉ báo cho lần thả đầu tiên.
+    const isFirstReaction = idx === -1;
+    if (isFirstReaction && post.author.toString() !== userId.toString()) {
       // Lấy email của post author để gửi notification
       const author = await User.findById(post.author).select('email');
       if (author?.email) {
@@ -1580,8 +1584,12 @@ exports.addCommentReaction = async (req, res) => {
       .populate('comments.reactions.user', POST_REACTION_USER_SELECT)
       .populate('tags', POST_USER_SELECT);
 
+    // Chỉ báo lần thả đầu — đổi emoji (`reactionIdx !== -1`) không bắn lại.
+    // Xem chú thích cùng lý do ở addReaction.
+    const isFirstCommentReaction = reactionIdx === -1;
+
     // Gửi notification cho author của comment
-    if (comment.user.toString() !== userId.toString()) {
+    if (isFirstCommentReaction && comment.user.toString() !== userId.toString()) {
       const commentAuthor = await User.findById(comment.user).select('email fullname');
       console.log(`[CommentReact][Notify] post=${postId} comment=${commentId} → author._id=${comment.user} email=${commentAuthor?.email || '(missing)'} reactor=${req.user.email}`);
       if (commentAuthor?.email) {
