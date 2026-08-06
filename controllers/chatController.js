@@ -4016,6 +4016,7 @@ exports.participantIdentityKey = participantIdentityKey;
 exports.teacherSnapshotKey = teacherSnapshotKey;
 exports.guardianSnapshotKey = guardianSnapshotKey;
 exports.mergeSnapshotFields = mergeSnapshotFields;
+exports.normalizeHomeroomRole = normalizeHomeroomRole;
 exports.unionByKey = unionByKey;
 exports.parentPortalEmailFromGuardianId = parentPortalEmailFromGuardianId;
 exports.portalGuardianIdFromEmail = portalGuardianIdFromEmail;

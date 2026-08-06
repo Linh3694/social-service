@@ -17,6 +17,7 @@ const {
   buildConversationPayload,
   upsertMergedConversationFromPayload,
   invalidateConversationParticipantsListCaches,
+  normalizeHomeroomRole,
   parentPortalEmailFromGuardianId,
   portalGuardianIdFromEmail,
 } = require('../controllers/chatController');
@@ -118,10 +119,11 @@ function deleteMapKey(conversation, field, key) {
 
 /**
  * Reconcile MỘT conversation class_general với scope authoritative.
- * @returns {{ added: number, removed: number, reactivated: number, guard: string|null }}
+ * @returns {{ added: number, removed: number, reactivated: number, rolesRefreshed: number,
+ *   guard: string|null }}
  */
 async function reconcileClassConversation(conversationRef, scope, { dryRun = false, activeStaffEmails } = {}) {
-  const stats = { added: 0, removed: 0, reactivated: 0, created: false, guard: null };
+  const stats = { added: 0, removed: 0, reactivated: 0, rolesRefreshed: 0, created: false, guard: null };
 
   // Target có thể chưa có nhóm trong Mongo (lớp enumerate từ Frappe, chưa ai mở chat)
   // → upsert sẽ TẠO mới thay vì chỉ merge.
@@ -160,6 +162,51 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
     // dryRun không ghi gì — chỉ báo sẽ tạo nhóm mới.
     stats.guard = 'DRY_RUN_WOULD_CREATE';
     return stats;
+  }
+
+  // ===== BƯỚC 1b: làm mới vai trò CN/phó trên snapshot GV.
+  // `payload.teachers` chỉ gồm GVCN/phó nên GV bộ môn KHÔNG bao giờ đi qua mergeSnapshotFields
+  // (unionByKey giữ nguyên bản ghi chỉ có ở bên cũ). Hệ quả: GV từng làm phó CN rồi thôi vai
+  // trò sẽ đeo nhãn "Phó GVCN" vĩnh viễn — nhãn hiển thị đọc thẳng `homeroomRole`. Scope ở đây
+  // authoritative nên đối chiếu lại được; chỉ chạy khi scope có CN thật, vì scope rỗng mà xoá
+  // thì bay luôn nhãn GVCN đúng (cùng lý do guard SCOPE_ZERO_TEACHERS bên dưới).
+  if (scope.scopeComplete === true && (scope.teachers || []).length) {
+    const roleByKey = new Map();
+    for (const t of scope.teachers) {
+      const role = normalizeHomeroomRole(t.homeroom_role || t.homeroomRole);
+      if (!role) continue;
+      const email = normalizeEmail(t.email);
+      if (email) roleByKey.set(email, role);
+      const tid = normalizeId(t.teacherId || t.name).toLowerCase();
+      if (tid) roleByKey.set(tid, role);
+    }
+    const stale = [];
+    for (const snap of conversation.teachers || []) {
+      const email = normalizeEmail(snap.email);
+      const tid = normalizeId(snap.teacherId).toLowerCase();
+      const nextRole = (email && roleByKey.get(email)) || (tid && roleByKey.get(tid)) || '';
+      if (normalizeHomeroomRole(snap.homeroomRole) === nextRole) continue;
+      stale.push({
+        teacher: snap.name || email || tid,
+        from: snap.homeroomRole || '',
+        to: nextRole,
+      });
+      snap.homeroomRole = nextRole;
+    }
+    if (stale.length) {
+      stats.rolesRefreshed = stale.length;
+      console.info('[ChatMembershipSync] refresh homeroomRole', {
+        conversationId: String(conversation._id),
+        classId: conversation.classId,
+        dryRun,
+        changes: stale,
+      });
+      if (!dryRun) {
+        conversation.markModified('teachers');
+        await conversation.save();
+        invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+      }
+    }
   }
 
   // ===== BƯỚC 2: diff — active participant không còn hợp lệ ⇒ candidate revoke.
@@ -393,6 +440,7 @@ async function runFullMembershipSync({ classId, schoolYearId, dryRun = false } =
     added: 0,
     removed: 0,
     reactivated: 0,
+    rolesRefreshed: 0,
     created: 0,
     guards: {},
     scopeErrors: 0,
@@ -413,6 +461,7 @@ async function runFullMembershipSync({ classId, schoolYearId, dryRun = false } =
         added: 0,
         removed: 0,
         reactivated: 0,
+        rolesRefreshed: 0,
         guard: null,
       };
       try {
@@ -471,6 +520,7 @@ async function runFullMembershipSync({ classId, schoolYearId, dryRun = false } =
       summary.added += line.added;
       summary.removed += line.removed;
       summary.reactivated += line.reactivated;
+      summary.rolesRefreshed += line.rolesRefreshed || 0;
       if (line.created) summary.created += 1;
       if (line.guard) summary.guards[line.guard] = (summary.guards[line.guard] || 0) + 1;
       summary.results.push(line);
@@ -488,6 +538,7 @@ async function runFullMembershipSync({ classId, schoolYearId, dryRun = false } =
     added: summary.added,
     removed: summary.removed,
     reactivated: summary.reactivated,
+    rolesRefreshed: summary.rolesRefreshed,
     created: summary.created,
     guards: summary.guards,
     scopeErrors: summary.scopeErrors,
