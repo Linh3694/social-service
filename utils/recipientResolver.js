@@ -40,12 +40,16 @@ async function resolveClassRecipients(classId, schoolYearId, bearerToken) {
 
   /** @type {Array<{email?: string, portalEmail?: string}>} */
   let guardians = [];
+  /** @type {Array<{email?: string}>} */
+  let scopeTeachers = [];
 
   // Ưu tiên method whitelist (chat_scope) — không cần Resource permission như /api/resource.
   if (hdr) {
     try {
       const scope = await frappeService.getClassChatScope(cid, sy || undefined, hdr);
       if (Array.isArray(scope?.guardians)) guardians = scope.guardians;
+      // GVCN + phó ở `teachers`; GVBM ở `subject_teachers` — không gộp GVBM.
+      if (Array.isArray(scope?.teachers)) scopeTeachers = scope.teachers;
     } catch (e) {
       console.warn('[recipientResolver] getClassChatScope (teacher) lỗi:', e?.response?.status || e.message);
     }
@@ -78,11 +82,17 @@ async function resolveClassRecipients(classId, schoolYearId, bearerToken) {
     seen.add(e);
     emails.push(e);
   }
+  for (const t of scopeTeachers) {
+    const e = oneEmail(t?.email);
+    if (!e || seen.has(e)) continue;
+    seen.add(e);
+    emails.push(e);
+  }
 
   if (emails.length > 0) {
     await cacheSetJSON(cacheKey, emails, TTL_NOTIFY_RECIPIENTS_SEC);
   } else {
-    console.warn(`[recipientResolver] class ${cid} (${sy || '_'}): không resolve được PH nào`);
+    console.warn(`[recipientResolver] class ${cid} (${sy || '_'}): không resolve được PH/GVCN nào`);
   }
   return emails;
 }

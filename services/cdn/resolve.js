@@ -9,6 +9,49 @@
 const { config } = require('./config');
 const { CDN_SCHEME } = require('./sign');
 
+/** Prefix object path được phép lấy từ URL công khai media.* */
+const MEDIA_PATH_RE = /^\/(social-posts|social-chat|social-avatars)\/(.+)$/;
+
+/**
+ * Bóc object path từ URL đã ký của media.wellspring.edu.vn.
+ * Host khác hoặc path lạ → null (giữ nguyên, không ký nhầm).
+ */
+function pathFromMediaPublicUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const host = (config.publicUrl && (() => {
+    try { return new URL(config.publicUrl).host; } catch { return ''; }
+  })()) || 'media.wellspring.edu.vn';
+  if (parsed.host !== host) return null;
+  const pathname = decodeURIComponent(parsed.pathname || '');
+  const m = pathname.match(MEDIA_PATH_RE);
+  if (!m) return null;
+  const rest = m[2];
+  if (!rest || rest.includes('..')) return null;
+  return `/${m[1]}/${rest}`;
+}
+
+/**
+ * Chuẩn hoá giá trị media về khoá `cdn://…` trước khi ghi DB.
+ * Nhận cdn://, URL media đã ký, hoặc để null nếu không phải media CDN.
+ */
+function toStoredKey(stored) {
+  if (typeof stored !== 'string') return null;
+  const v = stored.trim();
+  if (!v) return null;
+  if (v.startsWith(CDN_SCHEME)) {
+    const key = v.slice(CDN_SCHEME.length).replace(/^\/+/, '').split('?')[0];
+    return key && !key.includes('..') ? `${CDN_SCHEME}${key}` : null;
+  }
+  const path = pathFromMediaPublicUrl(v);
+  if (!path) return null;
+  return `${CDN_SCHEME}${path.slice(1)}`;
+}
+
 /**
  * @param {unknown} stored
  * @returns {string|null} đường dẫn bắt đầu bằng "/", hoặc null nếu không ánh xạ được
@@ -24,8 +67,11 @@ function toObjectPath(stored) {
     return key ? `/${key}` : null;
   }
 
-  // URL tuyệt đối (ảnh ngoài) — để nguyên
-  if (v.startsWith('http://') || v.startsWith('https://')) return null;
+  // URL đã ký của chính CDN (lỡ bị ghi vào DB khi client edit/echo).
+  // Bóc path → ký lại mỗi response; URL host khác vẫn để nguyên.
+  if (v.startsWith('http://') || v.startsWith('https://')) {
+    return pathFromMediaPublicUrl(v);
+  }
 
   // Avatar của Frappe: `/files/Avatar/<tên>.<ext>` → `<prefix>/<tên>.webp`
   //
@@ -62,4 +108,4 @@ function toObjectPath(stored) {
   return null;
 }
 
-module.exports = { toObjectPath };
+module.exports = { toObjectPath, toStoredKey, pathFromMediaPublicUrl };
