@@ -60,15 +60,14 @@ function formatFrappeUser(frappeUser) {
   const isEnabled = frappeUser.docstatus === 0 || 
     (frappeUser.docstatus === undefined && frappeUser.enabled !== false && frappeUser.disabled !== true);
 
-  // Normalize fullname
-  const fullName = frappeUser.full_name || frappeUser.fullname || frappeUser.fullName ||
-    [frappeUser.first_name, frappeUser.middle_name, frappeUser.last_name].filter(Boolean).join(' ') ||
-    frappeUser.name;
+  // Tên hiển thị: dùng chung luật với updateFromFrappe. Ghi thẳng full_name của Frappe ở đây
+  // sẽ đảo ngược lại tên GV mà lần login đã chuẩn hoá (SIS-170).
+  const fullName = User.resolveFrappeDisplayName(frappeUser, roles);
 
   // Lấy email
   const userEmail = frappeUser.email || frappeUser.name || '';
 
-  return {
+  const userData = {
     email: userEmail,
     fullname: fullName,
     fullName: fullName,
@@ -90,6 +89,14 @@ function formatFrappeUser(frappeUser) {
     phone: frappeUser.phone,
     mobileNo: frappeUser.mobile_no,
   };
+
+  // Payload không có tên nào ⇒ giữ tên hiện có, không ghi đè thành rỗng.
+  if (!fullName) {
+    delete userData.fullname;
+    delete userData.fullName;
+  }
+
+  return userData;
 }
 
 /**
@@ -343,12 +350,16 @@ const webhookUserChanged = async (req, res) => {
       
       // Get existing user để preserve fields
       const existingUser = await User.findOne({ email: doc.email });
-      
+
+      // Tên hiển thị: cùng luật với updateFromFrappe (SIS-170) — full_name của Frappe bị đảo
+      // họ tên với dữ liệu SSO nên không ghi thẳng.
+      const displayName = User.resolveFrappeDisplayName(doc, frappe_roles);
+
       // Build update object
       const userData = {
         email: doc.email,
-        fullname: doc.full_name || doc.name,
-        fullName: doc.full_name || doc.name,
+        fullname: displayName,
+        fullName: displayName,
         provider: 'frappe',
         disabled: false,
         active: true,
@@ -356,7 +367,13 @@ const webhookUserChanged = async (req, res) => {
         role: frappe_roles.length > 0 ? frappe_roles[0].toLowerCase() : 'user',
         updatedAt: new Date()
       };
-      
+
+      // Payload không có tên nào ⇒ giữ tên hiện có, không ghi đè thành rỗng.
+      if (!displayName) {
+        delete userData.fullname;
+        delete userData.fullName;
+      }
+
       // Conditional updates
       if (doc.user_image) {
         userData.avatarUrl = doc.user_image;

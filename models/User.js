@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { formatVietnameseName } = require('../utils/nameUtils');
+const { formatVietnameseNameFromParts } = require('../utils/nameUtils');
 
 /**
  * 🧑‍💼 Social Service - User Model
@@ -89,6 +89,49 @@ userSchema.statics.isParentPortalAccount = function isParentPortalAccountStatic(
 };
 
 /**
+ * Tên hiển thị chuẩn cho MỌI đường sync Frappe → Mongo.
+ *
+ * BẮT BUỘC dùng hàm này ở mọi chỗ ghi `fullname`. Trước đây chỉ updateFromFrappe chuẩn hoá,
+ * còn cron sync toàn bộ user và webhook (controllers/userController.js) ghi thẳng
+ * `full_name` của Frappe, nên cứ sau mỗi lần cron chạy là tên GV lại bị đảo ngược trở lại
+ * ('Hà Nguyễn Thị Việt') và hiện ra trên thông báo Wislife — vì Wislife lấy thẳng
+ * `user.fullname` lúc gửi, không format lại (services/wislifeStreamNotify.js).
+ *
+ * Chỉ chuẩn hoá account GV/CBNV: account đồng bộ AD/Microsoft mới bị đảo họ tên, còn tên
+ * PHHS do ERP nhập sẵn đúng thứ tự VN nên đảo lại là làm sai (SIS-170).
+ *
+ * @param {Object} frappeUser Payload user từ Frappe (DocType User hoặc dạng đã map).
+ * @param {string[]} [roles] Roles đã normalize; thiếu thì suy từ chính payload.
+ * @returns {string} Tên hiển thị, có thể là chuỗi rỗng nếu payload không có tên nào.
+ */
+function resolveFrappeDisplayName(frappeUser, roles) {
+  if (!frappeUser || typeof frappeUser !== 'object') return '';
+
+  const rawFullName =
+    frappeUser.full_name ||
+    frappeUser.fullname ||
+    frappeUser.fullName ||
+    [frappeUser.first_name, frappeUser.middle_name, frappeUser.last_name].filter(Boolean).join(' ') ||
+    frappeUser.name;
+
+  if (isParentPortalAccount(frappeUser, roles)) {
+    return String(rawFullName || '').trim();
+  }
+
+  return formatVietnameseNameFromParts(
+    frappeUser.first_name,
+    frappeUser.middle_name,
+    frappeUser.last_name,
+    rawFullName
+  );
+}
+
+/** Cho các luồng sync ngoài model (controllers/userController.js) dùng cùng một luật. */
+userSchema.statics.resolveFrappeDisplayName = function resolveFrappeDisplayNameStatic(frappeUser, roles) {
+  return resolveFrappeDisplayName(frappeUser, roles);
+};
+
+/**
  * Giữ nguyên roles của account PHHS khi payload KHÔNG đến từ luồng parent portal.
  *
  * Account PH (`{guardian_id}@parent.wellspring.edu.vn`) phải mang roles ['Parent Portal User']
@@ -145,17 +188,8 @@ userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser
     ? frappeUser.roles_list
     : [];
 
-  // Normalize fullname với nhiều fallback options
-  const rawFullName = frappeUser.full_name || frappeUser.fullname || frappeUser.fullName ||
-    [frappeUser.first_name, frappeUser.middle_name, frappeUser.last_name].filter(Boolean).join(' ') ||
-    frappeUser.name;
-
-  // Format tên theo chuẩn Việt Nam (Họ + Đệm + Tên) — CHỈ cho account GV/CBNV, vì chỉ
-  // account đồng bộ AD/Microsoft mới bị đảo họ tên. Tên PHHS do ERP nhập sẵn đúng thứ tự
-  // VN nên đảo lại là làm sai (SIS-170).
-  const fullName = isParentPortalAccount(frappeUser, roles)
-    ? String(rawFullName || '').trim()
-    : formatVietnameseName(rawFullName);
+  // Tên hiển thị: một luật duy nhất cho mọi đường sync (xem resolveFrappeDisplayName).
+  const fullName = resolveFrappeDisplayName(frappeUser, roles);
 
   // Xác định enabled status: ưu tiên docstatus, fallback về enabled/disabled fields
   const isEnabled = frappeUser.docstatus === 0 || 

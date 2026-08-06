@@ -221,8 +221,49 @@ function formatVietnameseName(fullName) {
 }
 
 /**
+ * Chuẩn hoá tên từ HAI CỘT first_name / last_name của Frappe (ưu tiên hơn đoán từ chuỗi).
+ *
+ * Frappe ghép `full_name = first_name + last_name` kiểu Tây, trong khi dữ liệu SSO của trường
+ * lưu TÊN GỌI ở `first_name` và HỌ + ĐỆM ở `last_name`, nên full_name luôn bị ngược:
+ *
+ *     first_name='Hà', last_name='Nguyễn Thị Việt'  → full_name 'Hà Nguyễn Thị Việt'
+ *     đúng ra phải là                                 'Nguyễn Thị Việt Hà'
+ *
+ * Dựng lại từ hai cột có cấu trúc thì không phải đoán, nên chắc hơn formatVietnameseName()
+ * (hàm đó phải suy vị trí họ trong chuỗi). Đồng bộ với format_person_display_name() bên ERP
+ * (apps/erp/erp/api/utils.py).
+ *
+ * Thiếu cột, hoặc có middle_name (không biết nó thuộc nhóm họ-đệm hay tên gọi) ⇒ nhường lại
+ * cho heuristic trên chuỗi đầy đủ.
+ *
+ * @param {string} firstName
+ * @param {string} middleName
+ * @param {string} lastName
+ * @param {string} fallbackFullName Chuỗi tên đầy đủ dùng khi không dựng được từ hai cột.
+ * @returns {string}
+ *
+ * @example
+ * formatVietnameseNameFromParts('Hà', '', 'Nguyễn Thị Việt') // → 'Nguyễn Thị Việt Hà'
+ * formatVietnameseNameFromParts('John', '', 'Smith')         // → 'John Smith' (giữ nguyên)
+ */
+function formatVietnameseNameFromParts(firstName, middleName, lastName, fallbackFullName) {
+  const first = String(firstName || '').trim();
+  const middle = String(middleName || '').trim();
+  const last = String(lastName || '').trim();
+  const joined = [first, middle, last].filter(Boolean).join(' ');
+  const fallback = String(fallbackFullName || '').trim() || joined;
+
+  if (!first || !last || middle) {
+    return formatVietnameseName(fallback);
+  }
+
+  // Chỉ đảo khi từ đầu của last_name đúng là một họ Việt Nam — tên nước ngoài giữ nguyên.
+  return isVietnameseSurname(last.split(/\s+/)[0]) ? `${last} ${first}` : `${first} ${last}`;
+}
+
+/**
  * Chuẩn hóa tên với title case
- * @param {string} fullName 
+ * @param {string} fullName
  * @returns {string}
  */
 function formatVietnameseNameWithTitleCase(fullName) {
@@ -256,6 +297,7 @@ function isVietnameseName(fullName) {
 
 module.exports = {
   formatVietnameseName,
+  formatVietnameseNameFromParts,
   formatVietnameseNameWithTitleCase,
   isVietnameseName,
   isVietnameseSurname,

@@ -3382,13 +3382,54 @@ exports.recallMessage = async (req, res) => {
   }
 };
 
-// ===== Quản lý GVBM trong nhóm lớp (GVCN/phó add/gỡ; GVBM không auto-join) =====
+// ===== Quản lý GV trong nhóm lớp (GVCN/phó add/gỡ; GV không auto-join). GVCN được tuỳ ý
+// thêm bất kỳ CBNV active nào, không riêng GV bộ môn của lớp (vd GV tổ trưởng). =====
 
 /** Match participant GV với (email chuẩn hoá, teacherId lowercase). */
 function teacherParticipantMatches(participant, { email, teacherId }) {
   const pEmail = normalizeEmail(participant.email);
   const pTid = normalizeId(participant.teacherId).toLowerCase();
   return Boolean((email && pEmail === email) || (teacherId && pTid === teacherId));
+}
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Tìm CBNV toàn trường (không riêng GV bộ môn) để GVCN/phó tuỳ ý thêm vào nhóm lớp — vd GV
+ * tổ trưởng cần theo dõi lớp. `q` rỗng/quá ngắn ⇒ trả rỗng, tránh dump toàn bộ nhân sự lên UI.
+ * Nguồn: Mongo `User` (đã đồng bộ từ Frappe) — không có SIS teacherId nên dùng email làm khoá,
+ * khớp với `teacherParticipantMatches` (đã match theo email OR teacherId).
+ */
+async function searchStaffDirectory(q, { excludeEmails = new Set(), limit = 30 } = {}) {
+  const term = String(q || '').trim();
+  if (term.length < 2) return [];
+  const rx = new RegExp(escapeRegExp(term), 'i');
+  const rows = await User.find({
+    active: true,
+    disabled: { $ne: true },
+    $or: [{ fullname: rx }, { fullName: rx }, { email: rx }],
+  })
+    .select(USER_SELECT)
+    .limit(limit * 3)
+    .lean();
+
+  const out = [];
+  for (const u of rows) {
+    if (User.isParentPortalAccount(u, u.roles)) continue;
+    const email = normalizeEmail(u.email);
+    if (!email || excludeEmails.has(email)) continue;
+    out.push({
+      teacherId: email,
+      name: u.fullname || u.fullName || email,
+      email,
+      avatarUrl: userAvatar(u),
+      subjects: [],
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 /**
@@ -3421,7 +3462,10 @@ async function requireHomeroomCaller(conversation, req) {
   return scope;
 }
 
-/** GET /conversations/:conversationId/members/addable — GVBM của lớp chưa trong nhóm. */
+/**
+ * GET /conversations/:conversationId/members/addable?q= — GVBM của lớp chưa trong nhóm
+ * (mặc định), cộng thêm CBNV toàn trường khớp `q` nếu có gõ tìm.
+ */
 exports.listAddableTeachers = async (req, res) => {
   try {
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
@@ -3431,7 +3475,10 @@ exports.listAddableTeachers = async (req, res) => {
     const scope = await requireHomeroomCaller(conversation, req);
 
     const active = (conversation.participants || []).filter(isActiveParticipant);
-    const addable = (scope.subject_teachers || [])
+    const excludeEmails = new Set(active.map((p) => normalizeEmail(p.email)).filter(Boolean));
+
+    // GV bộ môn đang phân công với lớp — vẫn liệt kê mặc định (không cần gõ tìm) như trước.
+    const fromSubjects = (scope.subject_teachers || [])
       .map((t) => normalizeTeacherSnapshot(t))
       .filter(Boolean)
       .filter((t) => {
@@ -3446,15 +3493,27 @@ exports.listAddableTeachers = async (req, res) => {
         avatarUrl: t.avatarUrl || '',
         subjects: compactSubjectSnapshots(t.subjects),
       }));
+    fromSubjects.forEach((t) => {
+      const email = normalizeEmail(t.email);
+      if (email) excludeEmails.add(email);
+    });
 
-    res.json({ success: true, data: addable });
+    // Gõ tìm ⇒ mở rộng ra CBNV toàn trường (vd GV tổ trưởng không dạy lớp này).
+    const q = String(req.query.q || '').trim();
+    const fromDirectory = q ? await searchStaffDirectory(q, { excludeEmails, limit: 30 }) : [];
+
+    res.json({ success: true, data: [...fromSubjects, ...fromDirectory] });
   } catch (error) {
     console.error('[Chat] listAddableTeachers error:', describeError(error));
-    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải danh sách GV bộ môn' });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể tải danh sách GV' });
   }
 };
 
-/** POST /conversations/:conversationId/members { teacherId } — GVCN/phó add GVBM vào nhóm. */
+/**
+ * POST /conversations/:conversationId/members { teacherId } — GVCN/phó add GV vào nhóm.
+ * `teacherId` là SIS teacherId (GV bộ môn của lớp) hoặc email (CBNV bất kỳ, xem
+ * searchStaffDirectory) — tuỳ nguồn trả về từ GET .../members/addable.
+ */
 exports.addConversationTeacher = async (req, res) => {
   try {
     const conversation = await getConversationForUser(req.params.conversationId, req.user);
@@ -3467,14 +3526,29 @@ exports.addConversationTeacher = async (req, res) => {
     if (!teacherId) {
       return res.status(400).json({ success: false, message: 'Thiếu teacherId' });
     }
-    const target = (scope.subject_teachers || []).find(
+    let target = (scope.subject_teachers || []).find(
       (t) => normalizeId(t.teacherId || t.name) === teacherId,
     );
     if (!target) {
-      return res.status(400).json({
-        success: false,
-        message: 'Chỉ thêm được GV bộ môn đang có phân công giảng dạy với lớp',
-      });
+      // Không phải GV bộ môn của lớp — cho GVCN/phó tự chọn CBNV bất kỳ đang active (vd tổ
+      // trưởng). teacherId lúc này chính là email (xem searchStaffDirectory ở listAddableTeachers).
+      const email = normalizeEmail(teacherId);
+      const staffUser = email
+        ? await User.findOne({ email, active: true, disabled: { $ne: true } }).select(USER_SELECT).lean()
+        : null;
+      if (!staffUser || User.isParentPortalAccount(staffUser, staffUser.roles)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Không tìm thấy GV hợp lệ để thêm',
+        });
+      }
+      target = {
+        teacherId: staffUser.email,
+        email: staffUser.email,
+        name: staffUser.fullname || staffUser.fullName || staffUser.email,
+        avatarUrl: userAvatar(staffUser),
+        subjects: [],
+      };
     }
 
     const snap = normalizeTeacherSnapshot(target);
@@ -3533,7 +3607,7 @@ exports.addConversationTeacher = async (req, res) => {
     invalidateConversationParticipantsListCaches(conversation).catch(() => {});
     if (mongoUser) cacheDelByPattern(`chat:conv:${String(mongoUser._id)}:*`).catch(() => {});
 
-    console.info('[Chat] GVBM added to class group', {
+    console.info('[Chat] GV added to class group', {
       conversationId: String(conversation._id),
       teacherId: snap.teacherId,
       email,
@@ -3543,11 +3617,11 @@ exports.addConversationTeacher = async (req, res) => {
     res.json({ success: true, data: serializeConversation(conversation, req.user) });
   } catch (error) {
     console.error('[Chat] addConversationTeacher error:', describeError(error));
-    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể thêm GV bộ môn' });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể thêm GV' });
   }
 };
 
-/** DELETE /conversations/:conversationId/members/:teacherId — GVCN/phó gỡ GVBM khỏi nhóm. */
+/** DELETE /conversations/:conversationId/members/:teacherId — GVCN/phó gỡ GV khỏi nhóm. */
 exports.removeConversationTeacher = async (req, res) => {
   try {
     const conversation = await getConversationForUser(req.params.conversationId, req.user);

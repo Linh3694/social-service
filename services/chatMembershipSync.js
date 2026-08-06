@@ -11,6 +11,7 @@
  */
 
 const ChatConversation = require('../models/ChatConversation');
+const User = require('../models/User');
 const frappeService = require('./frappeService');
 const {
   buildConversationPayload,
@@ -119,7 +120,7 @@ function deleteMapKey(conversation, field, key) {
  * Reconcile MỘT conversation class_general với scope authoritative.
  * @returns {{ added: number, removed: number, reactivated: number, guard: string|null }}
  */
-async function reconcileClassConversation(conversationRef, scope, { dryRun = false } = {}) {
+async function reconcileClassConversation(conversationRef, scope, { dryRun = false, activeStaffEmails } = {}) {
   const stats = { added: 0, removed: 0, reactivated: 0, created: false, guard: null };
 
   // Target có thể chưa có nhóm trong Mongo (lớp enumerate từ Frappe, chưa ai mở chat)
@@ -162,8 +163,11 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
   }
 
   // ===== BƯỚC 2: diff — active participant không còn hợp lệ ⇒ candidate revoke.
-  // GV giữ lại khi: là GVCN/phó theo roster, HOẶC là GVBM được add thủ công (manualAdd)
-  // và VẪN còn phân công giảng dạy. GVBM không manualAdd (legacy auto-add) ⇒ gỡ.
+  // GV giữ lại khi: là GVCN/phó theo roster, HOẶC được GVCN add thủ công (manualAdd) và tài
+  // khoản CBNV đó vẫn active — KHÔNG còn đòi hỏi vẫn phân công giảng dạy lớp này (GVCN được
+  // tuỳ ý thêm GV tổ trưởng/CBNV khác không dạy lớp). Thiếu activeStaffEmails (caller không
+  // truyền) ⇒ fallback luật cũ (còn phân công) để không nới lỏng ngoài ý muốn.
+  // GVBM không manualAdd (legacy auto-add) ⇒ gỡ.
   const homeroomKeys = buildTeacherKeySets(scope.teachers);
   const subjectKeys = buildTeacherKeySets(scope.subject_teachers);
   const guardianKeys = buildGuardianKeySets(scope);
@@ -172,7 +176,13 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
   const toRemove = activeNow.filter((p) => {
     if (p.role !== 'teacher') return !guardianStillInScope(p, guardianKeys);
     if (teacherStillInScope(p, homeroomKeys)) return false;
-    if (p.manualAdd && teacherStillInScope(p, subjectKeys)) return false;
+    if (p.manualAdd) {
+      if (activeStaffEmails) {
+        const email = normalizeEmail(p.email);
+        return !(email && activeStaffEmails.has(email));
+      }
+      return !teacherStillInScope(p, subjectKeys);
+    }
     return true;
   });
 
@@ -307,6 +317,29 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
 }
 
 /**
+ * Tập email CBNV đang active (không phải PHHS) — dùng để quyết định giữ/gỡ participant
+ * `manualAdd` không còn phân công giảng dạy lớp (vd GV tổ trưởng). Lỗi đọc Mongo ⇒ trả
+ * `null`, caller fallback về luật cũ (còn phân công lớp) thay vì gỡ nhầm hàng loạt.
+ */
+async function buildActiveStaffEmailSet() {
+  try {
+    const rows = await User.find({ active: true, disabled: { $ne: true } })
+      .select('email roles guardian_id')
+      .lean();
+    const emails = new Set();
+    for (const u of rows) {
+      if (User.isParentPortalAccount(u, u.roles)) continue;
+      const email = normalizeEmail(u.email);
+      if (email) emails.add(email);
+    }
+    return emails;
+  } catch (e) {
+    console.warn('[ChatMembershipSync] buildActiveStaffEmailSet lỗi — fallback luật cũ:', e.message);
+    return null;
+  }
+}
+
+/**
  * Sync toàn bộ (hoặc một lớp) — enumerate class_general trong Mongo, mỗi lớp lấy scope
  * sync từ Frappe. Lỗi đọc scope ⇒ skip lớp đó (lỗi đọc ≠ roster rỗng), KHÔNG revoke.
  */
@@ -366,6 +399,9 @@ async function runFullMembershipSync({ classId, schoolYearId, dryRun = false } =
     results: [],
   };
 
+  // Lấy 1 lần cho cả batch — dùng để quyết định giữ/gỡ participant manualAdd không còn dạy lớp.
+  const activeStaffEmails = await buildActiveStaffEmailSet();
+
   let cursor = 0;
   const worker = async () => {
     while (cursor < targets.length) {
@@ -388,7 +424,7 @@ async function runFullMembershipSync({ classId, schoolYearId, dryRun = false } =
           line.guard = 'SCOPE_NOT_FOUND';
           summary.scopeErrors += 1;
         } else {
-          const stats = await reconcileClassConversation(target, scope, { dryRun });
+          const stats = await reconcileClassConversation(target, scope, { dryRun, activeStaffEmails });
           Object.assign(line, stats);
         }
       } catch (e) {
