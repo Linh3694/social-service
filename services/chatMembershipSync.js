@@ -248,11 +248,26 @@ async function reconcileClassConversation(conversationRef, scope, { dryRun = fal
   // ===== BƯỚC 3: GUARDS — fail bất kỳ ⇒ chỉ ADD (đã làm ở bước 1), KHÔNG revoke.
   // ZERO_TEACHERS xét theo GVCN/phó (scope.teachers) — lớp thật luôn có CN;
   // lớp không CN mà chỉ có GVBM cũng không được revoke (dữ liệu bất thường).
+  //
+  // EMPTY_ROSTER: chuyển HẾT học sinh sang lớp khác là lớp rỗng THẬT, không phải scope lỗi
+  // — guard cũ chặn cả hai nên PH kẹt lại nhóm lớp cũ vĩnh viễn (cron chạy bao nhiêu lần
+  // cũng chỉ ADD). Phân biệt bằng `scope.studentCount` — Frappe đếm từ chính query roster
+  // (erp/api/erp_sis/chat_scope.py::_build_class_chat_scope). studentCount === 0 + scope
+  // authoritative ⇒ tin là lớp không còn HS ⇒ được phép gỡ PH. Backend cũ chưa gửi marker
+  // ⇒ `null` ⇒ giữ nguyên guard cũ (không nới lỏng ngoài ý muốn).
+  const declaredStudentCount = Number.isFinite(Number(scope.studentCount))
+    ? Number(scope.studentCount)
+    : null;
+  const rosterEmptyIsSuspicious =
+    !(scope.students || []).length
+    && !(scope.guardians || []).length
+    && declaredStudentCount !== 0;
+
   if (scope.scopeComplete !== true) {
     stats.guard = 'SCOPE_NOT_AUTHORITATIVE';
   } else if (!(scope.teachers || []).length) {
     stats.guard = 'SCOPE_ZERO_TEACHERS';
-  } else if (!(scope.students || []).length && !(scope.guardians || []).length) {
+  } else if (rosterEmptyIsSuspicious) {
     stats.guard = 'SCOPE_EMPTY_ROSTER';
   } else if (conversation.status === 'locked' || scope.isActive === false) {
     // Lớp/năm học cũ: giữ nguyên membership để xem lại lịch sử.
