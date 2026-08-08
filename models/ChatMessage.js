@@ -99,6 +99,27 @@ const pollSchema = new mongoose.Schema({
   rev: { type: Number, default: 0 },
 }, { _id: false });
 
+/**
+ * Một lượt nhắc tên trong tin (SIS-179).
+ *
+ * `content` vẫn là TEXT THUẦN ("@Nguyễn Văn A xem giúp") — mảng này chỉ neo vị trí để client
+ * mới tô đậm, nên client cũ chưa cập nhật vẫn đọc tin bình thường và không phải migrate tin cũ.
+ * `type: 'segment'` gom mọi kiểu tag cả nhóm con (`segment: 'teachers' | 'guardians'`) để thêm
+ * phân loại thành viên mới về sau không phải đổi enum.
+ */
+const mentionSchema = new mongoose.Schema({
+  type: { type: String, enum: ['user', 'segment', 'everyone'], required: true },
+  /** Chỉ có với `type: 'segment'`. */
+  segment: { type: String, trim: true },
+  /** Chỉ có với `type: 'user'` — neo theo id/email nên hai người trùng tên vẫn phân biệt được. */
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  email: { type: String, trim: true, lowercase: true },
+  /** Tên đúng như đã gõ trong `content` (không kèm '@') — để kiểm tra lại offset. */
+  name: { type: String, trim: true, required: true },
+  start: { type: Number, required: true },
+  length: { type: Number, required: true },
+}, { _id: false });
+
 const chatMessageSchema = new mongoose.Schema({
   conversation: {
     type: mongoose.Schema.Types.ObjectId,
@@ -115,6 +136,8 @@ const chatMessageSchema = new mongoose.Schema({
     default: [],
   },
   replyTo: replySnapshotSchema,
+  /** Nhắc tên (@) — rỗng với tin không tag ai. */
+  mentions: { type: [mentionSchema], default: [] },
   readBy: [readReceiptSchema],
   reactions: [reactionSchema],
   /** Tin bình chọn — null với tin thường. `content` vẫn giữ "[Bình chọn] <câu hỏi>" để suy biến. */

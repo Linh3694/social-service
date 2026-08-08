@@ -21,6 +21,15 @@ const {
 const { normalizeUploadFilename } = require('../utils/uploadFilename');
 const { truncatePreview } = require('../utils/textPreview');
 const { removeVietnameseTones } = require('../utils/nameUtils');
+const {
+  conversationSegments,
+  normalizeMentionPolicy,
+  mergeMentionPolicy,
+  resolveConversationAdmin,
+  viewerMentionPermissions,
+  sanitizeMentions,
+  mentionRecipientEmails,
+} = require('../utils/chatMentions');
 
 const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
 
@@ -61,6 +70,21 @@ function messagePayloadForApi(doc, viewer, conversation) {
   };
   if (m.poll) m.poll = pollPayloadForViewer(m.poll, viewer);
   else delete m.poll;
+  // Mongo lưu `user` (ObjectId); client dùng `userId` dạng chuỗi — quy về một tên duy nhất
+  // để 4 app không phải mỗi nơi tự đoán. Tin không tag ai thì bỏ hẳn field cho nhẹ payload.
+  if (Array.isArray(m.mentions) && m.mentions.length) {
+    m.mentions = m.mentions.map((mention) => ({
+      type: mention.type,
+      ...(mention.segment ? { segment: mention.segment } : {}),
+      ...(mention.user ? { userId: String(mention.user) } : {}),
+      ...(mention.email ? { email: mention.email } : {}),
+      name: mention.name,
+      start: mention.start,
+      length: mention.length,
+    }));
+  } else {
+    delete m.mentions;
+  }
   // Broadcast (viewer null) hoặc PH / BOD observer → ẩn readBy.
   if (!canSeeReadReceipts(viewer, conversation)) {
     delete m.readBy;
@@ -164,6 +188,68 @@ function chatRecipientEmails(conversation, senderEmail) {
     emails.push(String(raw).trim());
   }
   return emails;
+}
+
+/**
+ * Danh tính người dùng dưới góc nhìn một hội thoại — đầu vào chuẩn cho `utils/chatMentions`.
+ * Không kèm `teacherId` vì token không mang: khớp GVCN/phó theo email snapshot là đủ, và
+ * nhóm tự tạo sau này dùng `participants[].groupRole` chứ không dò roster.
+ */
+function conversationIdentity(user) {
+  return {
+    userId: String(user?._id || ''),
+    email: normalizeEmail(user?.email),
+    role: userRole(user),
+  };
+}
+
+/** Thành viên đang active dưới dạng phẳng — `utils/chatMentions` không biết schema Mongo. */
+function activeConversationMembers(conversation) {
+  return (conversation?.participants || [])
+    .filter(isActiveParticipant)
+    .map((p) => ({
+      userId: p.user ? String(p.user) : '',
+      email: p.email || '',
+      role: p.role,
+    }));
+}
+
+/** `mentions` từ body — chấp nhận cả chuỗi JSON (client gửi qua form-data). */
+function parseIncomingMentions(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      return [];
+    }
+  }
+  return [];
+}
+
+/** Quyền tag cả nhóm của một người xem. Server tính, client chỉ vẽ theo (SIS-179). */
+function conversationMentionPermissions(conversation, user) {
+  return viewerMentionPermissions(conversation, conversationIdentity(user));
+}
+
+/**
+ * Người được tag phải ĐANG là thành viên nhóm — chặn tag người ngoài / người đã rời nhóm.
+ * Khớp theo Mongo user id trước, rồi tới email (client cũ có thể chỉ gửi email).
+ */
+function findMentionMember(conversation, item) {
+  const wantId = String(item?.userId || '').trim();
+  const wantEmail = normalizeEmail(item?.email);
+  if (!wantId && !wantEmail) return null;
+  for (const p of conversation?.participants || []) {
+    if (!isActiveParticipant(p)) continue;
+    const hit = (wantId && p.user && String(p.user) === wantId)
+      || (wantEmail && normalizeEmail(p.email) === wantEmail);
+    if (hit) {
+      return { userId: p.user ? String(p.user) : '', email: p.email || '', role: p.role };
+    }
+  }
+  return null;
 }
 
 /**
@@ -1511,6 +1597,16 @@ function serializeConversation(conversation, user) {
   // ra đúng số `unreadCount` ngay trên — không client nào đọc map thô.
   // `participants` thì GIỮ: web GV còn dùng để biết viewer là thành viên hay chỉ-xem (BOD).
   delete base.unreadCounts;
+
+  // Nhắc tên (SIS-179). `mentionPolicy`/`mentionSegments` giống nhau với mọi người xem;
+  // `viewerMentionPermissions` thì KHÔNG — payload broadcast phải xoá nó đi (xem chat:message).
+  base.mentionPolicy = normalizeMentionPolicy(plain.mentionPolicy);
+  base.mentionSegments = conversationSegments(plain);
+  if (user) {
+    base.viewerMentionPermissions = conversationMentionPermissions(plain, user);
+  } else {
+    delete base.viewerMentionPermissions;
+  }
   return base;
 }
 
@@ -1870,6 +1966,34 @@ function pollDistinctVoterCount(poll) {
   return new Set((poll?.votes || []).map((v) => String(v.user))).size;
 }
 
+/**
+ * Số người đang chọn TỪ 2 PHƯƠNG ÁN trở lên — cổng chặn khi GV muốn đổi bình chọn nhiều
+ * lựa chọn về chọn một. Còn người như vậy mà đổi thì phiếu của họ thành không hợp lệ.
+ */
+function pollMultiChoiceVoterCount(poll) {
+  const byUser = new Map();
+  for (const v of poll?.votes || []) {
+    const uid = String(v.user);
+    byUser.set(uid, (byUser.get(uid) || 0) + 1);
+  }
+  let count = 0;
+  for (const n of byUser.values()) if (n > 1) count += 1;
+  return count;
+}
+
+/**
+ * Id kế tiếp cho phương án thêm sau: max hậu tố số hiện có + 1.
+ * KHÔNG tái dùng id đã từng cấp — phiếu cũ trỏ theo id, tái dùng là gán nhầm phiếu.
+ */
+function pollNextOptionIndex(options) {
+  let max = 0;
+  for (const o of options || []) {
+    const n = Number(String(o?.id || '').replace(/^o/, ''));
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return max + 1;
+}
+
 /** Danh sách người bầu theo từng phương án — chỉ dùng cho payload được phép lộ danh tính. */
 function pollVotersByOption(poll) {
   return (poll?.options || []).map((o) => ({
@@ -1904,6 +2028,8 @@ function pollPayloadForViewer(poll, viewer) {
     anonymous: Boolean(plain.anonymous),
     closesAt: plain.closesAt ? new Date(plain.closesAt).toISOString() : null,
     closedAt: closedAt ? closedAt.toISOString() : null,
+    // Cần cho form SỬA bình chọn nạp lại đúng tuỳ chọn "nhắc trước N phút" (không nhạy cảm).
+    remindBeforeMinutes: plain.remindBeforeMinutes ?? null,
     isClosed: Boolean(pollEffectiveClosedAt(plain)),
     totalVoters: pollDistinctVoterCount(plain),
     canSeeVoters: showVoters,
@@ -1943,22 +2069,71 @@ function pollTeacherOnlyRooms(conversation) {
   return [...rooms];
 }
 
-/** Email thành viên active CHƯA bỏ phiếu — dùng cho nhắc trước hạn. */
-function pollPendingVoterEmails(conversation, poll) {
+/**
+ * Participant active CHƯA bỏ phiếu, đã bỏ trùng theo email.
+ * Nguồn dùng chung cho nhắc trước hạn (chỉ cần email) và danh sách "chưa bình chọn" của GV.
+ */
+function pollPendingParticipants(conversation, poll, { excludeUserId = '' } = {}) {
   const voted = new Set((poll?.votes || []).map((v) => String(v.user)));
+  const skip = String(excludeUserId || '');
   const seen = new Set();
-  const emails = [];
+  const rows = [];
   for (const p of conversation?.participants || []) {
     if (!isActiveParticipant(p)) continue;
     if (p.user && voted.has(String(p.user))) continue;
+    if (skip && p.user && String(p.user) === skip) continue;
     const raw = p.email;
     if (!raw) continue;
     const n = normalizeEmail(raw);
     if (!n || seen.has(n)) continue;
     seen.add(n);
-    emails.push(String(raw).trim());
+    rows.push(p);
   }
-  return emails;
+  return rows;
+}
+
+/** Email thành viên active CHƯA bỏ phiếu — dùng cho nhắc trước hạn. */
+function pollPendingVoterEmails(conversation, poll) {
+  return pollPendingParticipants(conversation, poll).map((p) => String(p.email).trim());
+}
+
+/** Tổng thành viên active (bỏ trùng theo email) — mẫu số "M/N chưa bình chọn". */
+function pollParticipantCount(conversation, { excludeUserId = '' } = {}) {
+  const skip = String(excludeUserId || '');
+  const seen = new Set();
+  for (const p of conversation?.participants || []) {
+    if (!isActiveParticipant(p)) continue;
+    if (skip && p.user && String(p.user) === skip) continue;
+    const n = normalizeEmail(p.email);
+    if (!n) continue;
+    seen.add(n);
+  }
+  return seen.size;
+}
+
+/**
+ * Danh sách người chưa bình chọn để GV rà — tên PH kèm tên học sinh ("… (PHHS Bé A)"),
+ * phụ huynh xếp trước giáo viên. CHỈ trả cho giáo viên (gate ở getPollVoters).
+ */
+function pollPendingVotersForDisplay(conversation, poll, { excludeUserId = '' } = {}) {
+  const rows = pollPendingParticipants(conversation, poll, { excludeUserId }).map((p) => {
+    // Participant chưa map được User (mới thêm theo email) thì readerDisplayFromConversation
+    // không tra được — dùng thẳng snapshot participant thay vì bỏ sót người.
+    const base = p.user
+      ? readerDisplayFromConversation(conversation, p.user)
+      : {
+        userId: '',
+        name: String(p.name || p.email || '').trim(),
+        role: p.role === 'teacher' ? 'teacher' : 'guardian',
+        email: normalizeEmail(p.email),
+        studentNames: [],
+      };
+    return { ...base, avatarUrl: p.avatarUrl || '' };
+  });
+  return rows.sort((a, b) => {
+    if (a.role !== b.role) return a.role === 'guardian' ? -1 : 1;
+    return String(a.name || '').localeCompare(String(b.name || ''), 'vi');
+  });
 }
 
 /**
@@ -2027,90 +2202,98 @@ async function loadPollForWrite(req, res) {
   return { message, conversation };
 }
 
-/** Chuẩn hoá + kiểm tra body tạo bình chọn. Ném Error kèm statusCode khi sai. */
-function buildPollFromRequestBody(body) {
-  const question = String(body?.question || '').trim();
-  if (!question) {
-    const err = new Error('Câu hỏi bình chọn là bắt buộc');
-    err.statusCode = 400;
-    throw err;
-  }
-  if (question.length > 500) {
-    const err = new Error('Câu hỏi tối đa 500 ký tự');
-    err.statusCode = 400;
-    throw err;
-  }
+function pollError(message, statusCode = 400) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
 
+/** Câu hỏi đã chuẩn hoá. Dùng chung cho tạo mới và sửa. */
+function normalizePollQuestion(raw) {
+  const question = String(raw || '').trim();
+  if (!question) throw pollError('Câu hỏi bình chọn là bắt buộc');
+  if (question.length > 500) throw pollError('Câu hỏi tối đa 500 ký tự');
+  return question;
+}
+
+/**
+ * Chuẩn hoá danh sách phương án gửi lên thành `[{ id, text }]` giữ nguyên thứ tự.
+ * Nhận cả chuỗi (tạo mới) lẫn object `{ id?, text }` (sửa — `id` rỗng = phương án mới).
+ * `onDuplicate`: 'drop' (tạo mới, giữ hành vi cũ) hoặc 'error' (sửa — báo rõ để GV biết vì sao
+ * số phương án không khớp thay vì nhận thông báo "không xoá được phương án").
+ */
+function normalizePollOptionEntries(raw, { onDuplicate = 'drop' } = {}) {
   const seen = new Set();
-  const texts = [];
-  for (const raw of Array.isArray(body?.options) ? body.options : []) {
-    const text = String(raw || '').trim().slice(0, 200);
+  const entries = [];
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const isObject = item && typeof item === 'object';
+    const text = String((isObject ? item.text : item) || '').trim().slice(0, 200);
     if (!text) continue;
     const key = text.toLowerCase();
-    if (seen.has(key)) continue;
+    if (seen.has(key)) {
+      if (onDuplicate === 'error') throw pollError(`Phương án "${text}" bị trùng`);
+      continue;
+    }
     seen.add(key);
-    texts.push(text);
+    entries.push({ id: isObject ? String(item.id || '').trim() : '', text });
   }
-  if (texts.length < POLL_MIN_OPTIONS || texts.length > POLL_MAX_OPTIONS) {
-    const err = new Error(`Bình chọn cần ${POLL_MIN_OPTIONS}–${POLL_MAX_OPTIONS} phương án khác nhau`);
-    err.statusCode = 400;
-    throw err;
+  if (entries.length < POLL_MIN_OPTIONS || entries.length > POLL_MAX_OPTIONS) {
+    throw pollError(`Bình chọn cần ${POLL_MIN_OPTIONS}–${POLL_MAX_OPTIONS} phương án khác nhau`);
   }
+  return entries;
+}
 
-  const remindRaw = body?.remindBeforeMinutes;
+/**
+ * Tính bộ ba mốc thời gian từ hạn + số phút nhắc trước.
+ * Mốc nhắc tính sẵn để scheduler quét bằng index. Nếu mốc đã ở quá khứ (hạn quá gần) thì bỏ
+ * nhắc luôn thay vì bắn ngay lập tức — bắn cùng lúc tạo/sửa poll chỉ gây nhiễu.
+ */
+function buildPollSchedule(closesAtRaw, remindRaw, { skipFutureCheck = false } = {}) {
   const remindBeforeMinutes = remindRaw == null || remindRaw === '' ? null : Number(remindRaw);
   if (remindBeforeMinutes != null
     && (!Number.isFinite(remindBeforeMinutes) || remindBeforeMinutes <= 0 || remindBeforeMinutes > POLL_MAX_REMIND_MINUTES)) {
-    const err = new Error(`Thời điểm nhắc phải trong khoảng 1–${POLL_MAX_REMIND_MINUTES} phút trước hạn`);
-    err.statusCode = 400;
-    throw err;
+    throw pollError(`Thời điểm nhắc phải trong khoảng 1–${POLL_MAX_REMIND_MINUTES} phút trước hạn`);
   }
-  if (remindBeforeMinutes != null && !body?.closesAt) {
-    const err = new Error('Muốn nhắc trước thì phải đặt thời hạn cho bình chọn');
-    err.statusCode = 400;
-    throw err;
+  if (remindBeforeMinutes != null && !closesAtRaw) {
+    throw pollError('Muốn nhắc trước thì phải đặt thời hạn cho bình chọn');
   }
 
   let closesAt = null;
-  if (body?.closesAt) {
-    const at = new Date(body.closesAt);
-    if (Number.isNaN(at.getTime())) {
-      const err = new Error('Thời hạn không hợp lệ');
-      err.statusCode = 400;
-      throw err;
-    }
+  if (closesAtRaw) {
+    const at = closesAtRaw instanceof Date ? new Date(closesAtRaw.getTime()) : new Date(closesAtRaw);
+    if (Number.isNaN(at.getTime())) throw pollError('Thời hạn không hợp lệ');
     const maxAt = Date.now() + POLL_MAX_DEADLINE_DAYS * 24 * 60 * 60 * 1000;
-    if (at.getTime() <= Date.now()) {
-      const err = new Error('Thời hạn phải ở tương lai');
-      err.statusCode = 400;
-      throw err;
-    }
-    if (at.getTime() > maxAt) {
-      const err = new Error(`Thời hạn tối đa ${POLL_MAX_DEADLINE_DAYS} ngày`);
-      err.statusCode = 400;
-      throw err;
-    }
+    // Bỏ qua khi giữ nguyên hạn cũ đã trôi qua (GV chỉ sửa thứ khác trên bình chọn hết hạn).
+    if (!skipFutureCheck && at.getTime() <= Date.now()) throw pollError('Thời hạn phải ở tương lai');
+    if (at.getTime() > maxAt) throw pollError(`Thời hạn tối đa ${POLL_MAX_DEADLINE_DAYS} ngày`);
     closesAt = at;
   }
 
-  // Mốc nhắc tính sẵn để scheduler quét bằng index. Nếu mốc đã ở quá khứ (hạn quá gần) thì
-  // bỏ nhắc luôn thay vì bắn ngay lập tức — bắn cùng lúc tạo poll chỉ gây nhiễu.
   let remindAt = null;
   if (remindBeforeMinutes != null && closesAt) {
     const at = new Date(closesAt.getTime() - remindBeforeMinutes * 60 * 1000);
     if (at.getTime() > Date.now()) remindAt = at;
   }
 
+  return { closesAt, remindBeforeMinutes: remindAt ? remindBeforeMinutes : null, remindAt };
+}
+
+/** Chuẩn hoá + kiểm tra body tạo bình chọn. Ném Error kèm statusCode khi sai. */
+function buildPollFromRequestBody(body) {
+  const question = normalizePollQuestion(body?.question);
+  const entries = normalizePollOptionEntries(body?.options);
+  const schedule = buildPollSchedule(body?.closesAt, body?.remindBeforeMinutes);
+
   return {
     question,
-    options: texts.map((text, i) => ({ id: `o${i + 1}`, text })),
+    options: entries.map((entry, i) => ({ id: `o${i + 1}`, text: entry.text })),
     allowMultiple: Boolean(body?.allowMultiple),
     anonymous: Boolean(body?.anonymous),
-    closesAt,
+    closesAt: schedule.closesAt,
     closedAt: null,
     closedBy: null,
-    remindBeforeMinutes: remindAt ? remindBeforeMinutes : null,
-    remindAt,
+    remindBeforeMinutes: schedule.remindBeforeMinutes,
+    remindAt: schedule.remindAt,
     remindedAt: null,
     closeNotifiedAt: null,
     votes: [],
@@ -2259,6 +2442,7 @@ async function appendMessageToConversation(conversation, req, {
   attachments = [],
   replyToId,
   poll = null,
+  mentions = [],
 }) {
   if (conversation.status === 'locked') {
     const err = new Error('Nhóm chat năm học cũ chỉ cho xem lại lịch sử');
@@ -2279,6 +2463,18 @@ async function appendMessageToConversation(conversation, req, {
     err.statusCode = 400;
     throw err;
   }
+
+  /**
+   * Nhắc tên: xác thực lại ở server, KHÔNG tin client. Offset được đối chiếu với `content` đã
+   * trim (client tính trên chuỗi chưa trim thì lệch), người được tag phải đang trong nhóm, và
+   * tag cả nhóm phải đúng quyền — vượt quyền thì ném 403 chứ không âm thầm bỏ, để người gửi
+   * biết tin của mình KHÔNG nhắc được cả nhóm.
+   */
+  const mentionList = sanitizeMentions(mentions, c, {
+    segments: conversationSegments(conversation),
+    permissions: conversationMentionPermissions(conversation, req.user),
+    findMember: (item) => findMentionMember(conversation, item),
+  });
 
   let replyTo;
   if (replyToId) {
@@ -2309,6 +2505,15 @@ async function appendMessageToConversation(conversation, req, {
     attachments: att,
     replyTo,
     poll: poll || null,
+    mentions: mentionList.map((m) => ({
+      type: m.type,
+      segment: m.segment,
+      user: m.userId && mongoose.Types.ObjectId.isValid(m.userId) ? m.userId : undefined,
+      email: m.email,
+      name: m.name,
+      start: m.start,
+      length: m.length,
+    })),
     readBy: [{ user: req.user._id, readAt: new Date() }],
   });
 
@@ -2342,24 +2547,47 @@ async function appendMessageToConversation(conversation, req, {
 
   // Hai payload khác nhau: broadcast KHÔNG được mang gì gắn với người xem (myVote/voters ẩn danh / readBy).
   const payloadMsg = messagePayloadForApi(message, req.user, conversation);
+  const broadcastConversation = serializeConversation(conversation, req.user);
+  // Quyền tag nhóm tính theo NGƯỜI GỬI — gửi kèm broadcast là phát nhầm quyền cho cả nhóm.
+  delete broadcastConversation.viewerMentionPermissions;
   await emitToConversation(conversation, 'chat:message', {
-    conversation: serializeConversation(conversation, req.user),
+    conversation: broadcastConversation,
     message: messagePayloadForApi(message, null, conversation),
   });
 
-  fireChatToFrappe('new_message', {
+  /**
+   * Người được nhắc tên nhận thông báo RIÊNG ("đã nhắc đến bạn") và bị loại khỏi thông báo
+   * tin nhắn thường — nếu không họ nhận hai push cho cùng một tin.
+   */
+  const notifyPreview = truncatePreview(lastPreview || c || '', NOTIFY_PREVIEW_MAX);
+  const mentionEmails = mentionRecipientEmails(
+    activeConversationMembers(conversation),
+    mentionList,
+    req.user.email,
+  );
+  const mentionEmailSet = new Set(mentionEmails.map((e) => normalizeEmail(e)));
+  const plainRecipients = chatRecipientEmails(conversation, req.user.email)
+    .filter((email) => !mentionEmailSet.has(normalizeEmail(email)));
+
+  const notifyBase = {
     conversationId: String(conversation._id),
     conversationType: conversation.type,
     messageId: String(message._id),
     senderEmail: req.user.email,
     senderName: message.senderSnapshot.name,
     senderRole: message.senderSnapshot.role,
-    recipientEmails: chatRecipientEmails(conversation, req.user.email),
-    messagePreview: truncatePreview(lastPreview || c || '', NOTIFY_PREVIEW_MAX),
+    messagePreview: notifyPreview,
     hasAttachment: att.length > 0,
     messageKind: poll ? 'poll' : 'text',
     timestamp: new Date().toISOString(),
-  });
+  };
+
+  if (plainRecipients.length) {
+    fireChatToFrappe('new_message', { ...notifyBase, recipientEmails: plainRecipients });
+  }
+  if (mentionEmails.length) {
+    fireChatToFrappe('message_mention', { ...notifyBase, recipientEmails: mentionEmails });
+  }
 
   return { message: payloadMsg, conversation: serializeConversation(conversation, req.user) };
 }
@@ -2694,6 +2922,7 @@ exports.sendTeacherGuardianMessage = async (req, res) => {
       content,
       attachments: attSan,
       replyToId: req.body.replyTo,
+      mentions: parseIncomingMentions(req.body.mentions),
     });
 
     res.status(201).json({ success: true, data });
@@ -3099,6 +3328,7 @@ exports.sendMessage = async (req, res) => {
       content,
       attachments,
       replyToId: req.body.replyTo,
+      mentions: parseIncomingMentions(req.body.mentions),
     });
 
     res.status(201).json({ success: true, data });
@@ -3309,6 +3539,197 @@ exports.createPoll = async (req, res) => {
 };
 
 /**
+ * PATCH /messages/:messageId/poll — sửa (cài đặt lại) bình chọn. Người tạo hoặc GVCN/Phó.
+ *
+ * Field KHÔNG gửi lên = giữ nguyên. Bộ quy tắc phụ thuộc đã có phiếu hay chưa:
+ *  - Chưa ai bầu ⇒ sửa được tất cả (kể cả đổi câu hỏi, sửa/xoá phương án).
+ *  - Đã có phiếu ⇒ chỉ được THÊM phương án, đổi thời hạn/nhắc, đổi ẩn danh, và đổi chọn-một →
+ *    chọn-nhiều; chiều ngược lại chỉ khi chưa ai chọn từ 2 phương án. Đổi câu hỏi hay sửa/xoá
+ *    phương án cũ bị chặn — phiếu đã bỏ sẽ không còn đúng với thứ người ta đã chọn.
+ *
+ * Đổi hạn sang tương lai trên bình chọn đã kết thúc = MỞ LẠI, phiếu cũ giữ nguyên.
+ * KHÔNG bắn push khi sửa (tránh dội thông báo); realtime đi qua broadcastPollUpdate như bỏ phiếu.
+ */
+exports.updatePoll = async (req, res) => {
+  try {
+    const loaded = await loadPollForWrite(req, res);
+    if (!loaded) return;
+    const { message, conversation } = loaded;
+
+    if (String(message.sender) !== String(req.user._id)) {
+      await requireHomeroomCaller(conversation, req);
+    }
+
+    const body = req.body || {};
+    const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
+    const poll = message.poll;
+    const hasVotes = (poll.votes || []).length > 0;
+    const set = {};
+
+    if (has('question')) {
+      const question = normalizePollQuestion(body.question);
+      if (question !== poll.question) {
+        if (hasVotes) throw pollError('Đã có người bình chọn nên không sửa được câu hỏi');
+        set['poll.question'] = question;
+        // Giữ tiền tố "[Bình chọn]" trong `content`: preview hội thoại, trích dẫn trả lời, ghim,
+        // body push và client bản cũ đều đọc chuỗi này.
+        set.content = `${POLL_CONTENT_PREFIX} ${question}`;
+      }
+    }
+
+    if (has('options')) {
+      const entries = normalizePollOptionEntries(body.options, { onDuplicate: 'error' });
+      const current = (poll.options || []).map((o) => ({ id: o.id, text: o.text }));
+      if (hasVotes) {
+        if (entries.length < current.length) {
+          throw pollError('Đã có người bình chọn nên không xoá được phương án');
+        }
+        for (let i = 0; i < current.length; i += 1) {
+          const entry = entries[i];
+          const sameOption = entry
+            && (!entry.id || entry.id === current[i].id)
+            && entry.text === current[i].text;
+          if (!sameOption) {
+            throw pollError('Đã có người bình chọn nên chỉ được thêm phương án mới, không sửa/xoá phương án cũ');
+          }
+        }
+        let nextIndex = pollNextOptionIndex(current);
+        const added = entries.slice(current.length).map((entry) => ({ id: `o${nextIndex++}`, text: entry.text }));
+        if (added.length) set['poll.options'] = [...current, ...added];
+      } else {
+        const rebuilt = entries.map((entry, i) => ({ id: `o${i + 1}`, text: entry.text }));
+        const changed = rebuilt.length !== current.length
+          || rebuilt.some((o, i) => o.text !== current[i].text);
+        if (changed) set['poll.options'] = rebuilt;
+      }
+    }
+
+    if (has('allowMultiple')) {
+      const allowMultiple = Boolean(body.allowMultiple);
+      if (allowMultiple !== Boolean(poll.allowMultiple)) {
+        if (!allowMultiple) {
+          const multi = pollMultiChoiceVoterCount(poll);
+          if (multi > 0) {
+            throw pollError(`Đang có ${multi} người chọn từ 2 phương án — hãy giữ "chọn nhiều" hoặc đợi họ chọn lại`);
+          }
+        }
+        set['poll.allowMultiple'] = allowMultiple;
+      }
+    }
+
+    // Ẩn danh đổi được cả hai chiều kể cả khi đã có phiếu. Tắt ẩn danh sẽ để lộ danh tính những
+    // người đã bầu lúc còn ẩn danh — cảnh báo ở FE, backend không chặn (quyết định nghiệp vụ).
+    if (has('anonymous')) {
+      const anonymous = Boolean(body.anonymous);
+      if (anonymous !== Boolean(poll.anonymous)) set['poll.anonymous'] = anonymous;
+    }
+
+    if (has('closesAt') || has('remindBeforeMinutes')) {
+      const currentClosesAt = poll.closesAt ? new Date(poll.closesAt) : null;
+      const rawClosesAt = has('closesAt') ? body.closesAt : currentClosesAt;
+      const asDate = rawClosesAt ? new Date(rawClosesAt) : null;
+      // Giữ nguyên hạn cũ (dù đã trôi qua) khi GV chỉ sửa thứ khác trên bình chọn hết hạn ⇒
+      // không bắt buộc "phải ở tương lai", nếu không mọi thao tác sửa khác đều bị chặn oan.
+      const keepsOldDeadline = Boolean(
+        asDate && currentClosesAt && !Number.isNaN(asDate.getTime())
+        && asDate.getTime() === currentClosesAt.getTime(),
+      );
+      const schedule = buildPollSchedule(
+        rawClosesAt,
+        has('remindBeforeMinutes') ? body.remindBeforeMinutes : poll.remindBeforeMinutes,
+        { skipFutureCheck: keepsOldDeadline },
+      );
+
+      const nextClosesAtMs = schedule.closesAt ? schedule.closesAt.getTime() : null;
+      const prevClosesAtMs = currentClosesAt ? currentClosesAt.getTime() : null;
+      const nextRemindAtMs = schedule.remindAt ? schedule.remindAt.getTime() : null;
+      const prevRemindAtMs = poll.remindAt ? new Date(poll.remindAt).getTime() : null;
+
+      if (prevClosesAtMs !== nextClosesAtMs) set['poll.closesAt'] = schedule.closesAt;
+      if ((poll.remindBeforeMinutes ?? null) !== schedule.remindBeforeMinutes) {
+        set['poll.remindBeforeMinutes'] = schedule.remindBeforeMinutes;
+      }
+      if (prevRemindAtMs !== nextRemindAtMs) {
+        set['poll.remindAt'] = schedule.remindAt;
+        // Mốc nhắc đổi ⇒ mở lại quyền nhắc, nếu không scheduler thấy `remindedAt` cũ và bỏ qua.
+        set['poll.remindedAt'] = null;
+      }
+      // Dời hạn sang tương lai trên bình chọn đã kết thúc (đóng tay hoặc hết hạn) = mở lại.
+      if (pollEffectiveClosedAt(poll) && nextClosesAtMs && nextClosesAtMs > Date.now()) {
+        set['poll.closedAt'] = null;
+        set['poll.closedBy'] = null;
+        // Xoá để tới hạn MỚI scheduler còn báo "đã kết thúc" một lần nữa.
+        set['poll.closeNotifiedAt'] = null;
+        set['poll.remindedAt'] = null;
+      }
+    }
+
+    if (!Object.keys(set).length) {
+      return res.json({
+        success: true,
+        data: { messageId: String(message._id), poll: pollPayloadForViewer(poll, req.user) },
+      });
+    }
+
+    // Đánh số lại id phương án chỉ an toàn khi CHƯA có phiếu ⇒ chốt điều kiện đó ngay trong
+    // filter để lượt bỏ phiếu chen ngang giữa lúc đọc và ghi không bị gán nhầm phương án.
+    const renumbering = !hasVotes && Boolean(set['poll.options']);
+    const filter = { _id: message._id };
+    if (renumbering) filter['poll.votes'] = { $size: 0 };
+
+    const updated = await ChatMessage.findOneAndUpdate(
+      filter,
+      { $set: set, $inc: { 'poll.rev': 1 } },
+      { new: true },
+    );
+    if (!updated?.poll) {
+      return res.status(renumbering ? 409 : 404).json({
+        success: false,
+        code: renumbering ? 'POLL_CHANGED' : undefined,
+        message: renumbering
+          ? 'Vừa có người bình chọn — hãy mở lại và sửa tiếp'
+          : 'Không tìm thấy bình chọn',
+      });
+    }
+
+    // Câu hỏi đổi ⇒ preview ở danh sách hội thoại và tin ghim phải đổi theo (mẫu recallMessage).
+    if (set.content) {
+      let needConvSave = false;
+      if (conversation.lastMessage?.messageId
+        && String(conversation.lastMessage.messageId) === String(message._id)) {
+        conversation.lastMessage.content = set.content;
+        conversation.markModified('lastMessage');
+        needConvSave = true;
+      }
+      if (conversation.pinnedMessage?.messageId
+        && String(conversation.pinnedMessage.messageId) === String(message._id)) {
+        conversation.pinnedMessage.contentPreview = String(messageSnippetForReply(updated) || '').slice(0, 140);
+        conversation.markModified('pinnedMessage');
+        needConvSave = true;
+      }
+      if (needConvSave) {
+        await conversation.save();
+        invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+      }
+    }
+
+    await broadcastPollUpdate(conversation, updated);
+
+    res.json({
+      success: true,
+      data: { messageId: String(updated._id), poll: pollPayloadForViewer(updated.poll, req.user) },
+    });
+  } catch (error) {
+    console.error('[Chat] updatePoll error:', describeError(error));
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code,
+      message: error.message || 'Không thể sửa bình chọn',
+    });
+  }
+};
+
+/**
  * POST /messages/:messageId/poll/vote — bỏ/đổi/rút phiếu. `optionIds: []` = rút phiếu.
  * KHÔNG đụng unreadCounts / lastMessage / notify (tránh spam push mỗi lần bấm).
  */
@@ -3438,10 +3859,14 @@ exports.closePoll = async (req, res) => {
   }
 };
 
-/** GET /messages/:messageId/poll/voters — danh sách người bầu; 403 với PH khi bình chọn ẩn danh. */
+/**
+ * GET /messages/:messageId/poll/voters — danh sách người bầu; 403 với PH khi bình chọn ẩn danh.
+ * Riêng GIÁO VIÊN được kèm `pending` (ai chưa bình chọn) + `participantCount` để rà và nhắn nhắc;
+ * PH không bao giờ thấy hai trường này.
+ */
 exports.getPollVoters = async (req, res) => {
   try {
-    const { message } = await loadMessageWithAccess(req.params.messageId, req.user);
+    const { message, conversation } = await loadMessageWithAccess(req.params.messageId, req.user);
     if (!message.poll) {
       return res.status(400).json({ success: false, message: 'Tin nhắn không phải bình chọn' });
     }
@@ -3453,15 +3878,21 @@ exports.getPollVoters = async (req, res) => {
       });
     }
 
-    res.json({
-      success: true,
-      data: {
-        messageId: String(message._id),
-        rev: message.poll.rev || 0,
-        totalVoters: pollDistinctVoterCount(message.poll),
-        options: pollVotersByOption(message.poll),
-      },
-    });
+    const data = {
+      messageId: String(message._id),
+      rev: message.poll.rev || 0,
+      totalVoters: pollDistinctVoterCount(message.poll),
+      options: pollVotersByOption(message.poll),
+    };
+
+    if (userRole(req.user) === 'teacher') {
+      // Người tạo bình chọn không nằm trong danh sách phải rà (giống getMessageReaders bỏ người gửi).
+      const excludeUserId = String(message.sender || '');
+      data.pending = pollPendingVotersForDisplay(conversation, message.poll, { excludeUserId });
+      data.participantCount = pollParticipantCount(conversation, { excludeUserId });
+    }
+
+    res.json({ success: true, data });
   } catch (error) {
     console.error('[Chat] getPollVoters error:', describeError(error));
     res.status(error.statusCode || 500).json({
@@ -4055,6 +4486,106 @@ exports.removeConversationTeacher = async (req, res) => {
   } catch (error) {
     console.error('[Chat] removeConversationTeacher error:', describeError(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Không thể gỡ GV bộ môn' });
+  }
+};
+
+// ===== Quyền nhắc tên cả nhóm (SIS-179) =====
+
+/** Hội thoại đã tự khai vai trò quản trị trên participant (nhóm tự tạo) hay chưa. */
+function conversationHasExplicitGroupRoles(conversation) {
+  return (conversation?.participants || []).some((p) => (
+    isActiveParticipant(p) && String(p.groupRole || '').trim()
+  ));
+}
+
+/** Chat 1-1 GV↔PH — không có khái niệm quản trị nhóm nên không cấu hình được. */
+function isDirectConversation(conversation) {
+  return String(conversation?.type || '').startsWith('teacher_guardian:');
+}
+
+/**
+ * Caller phải là quản trị nhóm (Trưởng/Phó nhóm). Throw 403 nếu không.
+ *
+ * Nhóm tự tạo (đã ghi `participants[].groupRole`) thì xác nhận ngay trên snapshot; nhóm lớp
+ * chưa có field đó nên vẫn hỏi scope Frappe như luồng quản lý GVBM — snapshot roster có thể
+ * cũ hơn phân công thật, mà đây là đường GHI nên phải lấy nguồn sự thật.
+ */
+async function requireConversationAdmin(conversation, req) {
+  if (conversationHasExplicitGroupRoles(conversation)) {
+    if (!resolveConversationAdmin(conversation, conversationIdentity(req.user))) {
+      const err = new Error('Chỉ Trưởng/Phó nhóm được đổi cấu hình nhóm');
+      err.statusCode = 403;
+      throw err;
+    }
+    return null;
+  }
+  // Chặn sớm PH: `requireHomeroomCaller` cũng loại, nhưng tránh gọi Frappe bằng token PH.
+  if (userRole(req.user) !== 'teacher') {
+    const err = new Error('Chỉ Trưởng/Phó nhóm được đổi cấu hình nhóm');
+    err.statusCode = 403;
+    throw err;
+  }
+  return requireHomeroomCaller(conversation, req);
+}
+
+/**
+ * PATCH /conversations/:conversationId/mention-policy { mentionPolicy }
+ *
+ * Nhận cập nhật TỪNG PHẦN: `{ guardian: { teachers: false } }` chỉ tắt đúng ô đó, các ô khác
+ * giữ nguyên — client không phải gửi lại cả ma trận và hai người sửa song song không xoá của nhau.
+ */
+exports.setConversationMentionPolicy = async (req, res) => {
+  try {
+    const patch = (req.body || {}).mentionPolicy;
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+      return res.status(400).json({ success: false, message: 'mentionPolicy không hợp lệ' });
+    }
+
+    const conversation = await getConversationForUser(req.params.conversationId, req.user);
+    if (isDirectConversation(conversation)) {
+      return res.status(400).json({ success: false, message: 'Chỉ áp dụng cho nhóm nhiều thành viên' });
+    }
+    if (conversation.status === 'locked') {
+      return res.status(423).json({ success: false, message: 'Nhóm chat năm học cũ chỉ cho xem lại lịch sử' });
+    }
+    await requireConversationAdmin(conversation, req);
+
+    const merged = mergeMentionPolicy(conversation.mentionPolicy, patch);
+    if (!Object.keys(merged).length) {
+      return res.status(400).json({ success: false, message: 'mentionPolicy không hợp lệ' });
+    }
+
+    const by = normalizeEmail(req.user.email);
+    const changedAt = new Date();
+    conversation.mentionPolicy = merged;
+    // `Mixed` không tự phát hiện thay đổi lồng nhau ⇒ không markModified là save() bỏ qua im lặng.
+    conversation.markModified('mentionPolicy');
+    conversation.mentionPolicyBy = by;
+    conversation.mentionPolicyAt = changedAt;
+    await conversation.save();
+
+    invalidateConversationParticipantsListCaches(conversation).catch(() => {});
+
+    await emitToConversation(conversation, 'chat:conversation:mention_policy', {
+      conversationId: String(conversation._id),
+      mentionPolicy: merged,
+      mentionPolicyBy: by,
+      mentionPolicyAt: changedAt.toISOString(),
+    });
+
+    console.info('[Chat] conversation mentionPolicy changed', {
+      conversationId: String(conversation._id),
+      mentionPolicy: merged,
+      by,
+    });
+
+    res.json({ success: true, data: serializeConversation(conversation, req.user) });
+  } catch (error) {
+    console.error('[Chat] setConversationMentionPolicy error:', describeError(error));
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Không thể đổi quyền nhắc tên của nhóm',
+    });
   }
 };
 

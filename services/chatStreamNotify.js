@@ -74,6 +74,31 @@ function buildChatParts(eventType, eventData) {
         },
       };
     }
+    case 'message_mention': {
+      const preview = truncatePreview(d.messagePreview, PREVIEW_MAX);
+      const body = preview
+        ? `${senderName} đã nhắc đến bạn: ${preview}`
+        : `${senderName} đã nhắc đến bạn`;
+      return {
+        recipients: emails,
+        title: 'Trò chuyện',
+        body,
+        data: {
+          // Giá trị mới ⇒ đã thêm vào map kênh Android "chat" ở
+          // erp/api/erp_sis/mobile_push_notification.py, nếu không push rơi về kênh default.
+          type: 'chat_mention',
+          action: 'open_chat',
+          conversationId,
+          conversationType,
+          messageId,
+          senderName,
+          senderRole: d.senderRole,
+          hasAttachment: Boolean(d.hasAttachment),
+          messageKind: d.messageKind || 'text',
+          timestamp: d.timestamp,
+        },
+      };
+    }
     case 'message_reaction': {
       const body = `${senderName} đã thả cảm xúc về tin nhắn`;
       return {

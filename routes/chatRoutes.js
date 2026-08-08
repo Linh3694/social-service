@@ -132,6 +132,8 @@ router.post('/messages/:messageId/recall', authenticate, chatController.recallMe
 router.post('/messages/:messageId/poll/vote', authenticate, chatController.votePoll);
 router.post('/messages/:messageId/poll/close', authenticate, chatController.closePoll);
 router.get('/messages/:messageId/poll/voters', authenticate, chatController.getPollVoters);
+// Sửa bình chọn — người tạo hoặc GVCN/Phó (check trong controller).
+router.patch('/messages/:messageId/poll', authenticate, chatController.updatePoll);
 router.get('/conversations/:conversationId/messages', authenticate, chatController.getMessages);
 // Danh sách người đã đọc một tin — chỉ GV (check trong controller).
 router.get(
@@ -170,6 +172,12 @@ router.patch(
   '/conversations/:conversationId/write-mode',
   authenticate,
   chatController.setConversationWriteMode,
+);
+// Quyền nhắc tên cả nhóm (@Tất cả / @Giáo viên / @Phụ huynh) — chỉ Trưởng/Phó nhóm.
+router.patch(
+  '/conversations/:conversationId/mention-policy',
+  authenticate,
+  chatController.setConversationMentionPolicy,
 );
 // Quản lý GVBM trong nhóm lớp — chỉ GVCN/Phó GVCN (check trong controller theo scope Frappe).
 router.get(

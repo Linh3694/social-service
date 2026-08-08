@@ -21,6 +21,12 @@ const participantSchema = new mongoose.Schema({
    */
   manualAdd: { type: Boolean, default: false },
   addedBy: { type: String, trim: true, lowercase: true }, // email GVCN/phó đã add
+  /**
+   * Vai trò QUẢN TRỊ trong nhóm (Trưởng/Phó nhóm), dùng cho nhóm chat tự tạo sau này.
+   * Nhóm lớp KHÔNG ghi field này: quản trị được suy ra từ `teachers[].homeroomRole`
+   * (GVCN/Phó GVCN) trong `utils/chatMentions.resolveConversationAdmin` ⇒ không phải backfill.
+   */
+  groupRole: { type: String, enum: ['owner', 'admin', 'member', ''], default: '' },
 }, { _id: false });
 
 const memberSnapshotSchema = new mongoose.Schema({
@@ -105,6 +111,21 @@ const chatConversationSchema = new mongoose.Schema({
   writeMode: { type: String, enum: ['all', 'teachers_only'], default: 'all' },
   writeModeBy: { type: String, trim: true, lowercase: true },
   writeModeAt: { type: Date },
+  /**
+   * Quyền tag CẢ NHÓM (`@Tất cả` / `@Giáo viên` / `@Phụ huynh`) của thành viên thường —
+   * quản trị nhóm (GVCN/Phó GVCN) luôn được nên không có mặt trong bảng này.
+   *
+   *   { teacher: { teachers: true, guardians: false }, guardian: { teachers: false, … } }
+   *
+   * CỐ Ý để `Mixed` (ma trận theo key) thay vì 4 field cứng: thêm phân loại thành viên hay
+   * vai trò mới về sau chỉ là thêm key, không phải đổi schema và không phải migrate.
+   * Key thiếu ⇒ hiểu là ĐƯỢC PHÉP (xem `utils/chatMentions.isSegmentMentionAllowed`), nên
+   * mọi nhóm đang có giữ nguyên hành vi mở. Sửa xong phải `markModified('mentionPolicy')`.
+   * KHÔNG nằm trong `$set` của `upsertMergedConversationFromPayload` ⇒ sống sót qua sync roster.
+   */
+  mentionPolicy: { type: mongoose.Schema.Types.Mixed, default: undefined },
+  mentionPolicyBy: { type: String, trim: true, lowercase: true },
+  mentionPolicyAt: { type: Date },
   participants: [participantSchema],
   studentIds: [{ type: String, trim: true, index: true }],
   guardians: [memberSnapshotSchema],
