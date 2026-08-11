@@ -76,8 +76,19 @@ async function resolveClassRecipients(classId, schoolYearId, bearerToken) {
   const seen = new Set();
   const emails = [];
   for (const g of guardians) {
-    const raw = g?.email || g?.portalEmail;
-    const e = oneEmail(raw);
+    // `portalEmail` TRƯỚC, không phải `email`.
+    //
+    // `g.email` là cột `CRM Guardian.email` — bên ERP nó đóng vai trò ĐỊNH DANH cho
+    // matchKeys/participant matching, KHÔNG đảm bảo là email hợp lệ và KHÔNG phải tài
+    // khoản đăng nhập (xem comment tại erp/api/erp_sis/family.py::build_guardians_by_student_ids).
+    // Trên prod đã gặp giá trị '32'. Thứ tự cũ `g.email || g.portalEmail` lấy phải giá trị
+    // rác đó vì nó truthy, `oneEmail()` loại vì thiếu '@', guardian bị bỏ IM LẶNG (nhánh
+    // này không log), và `portalEmail` đúng đắn không bao giờ được xét.
+    //
+    // Nặng hơn: guardian nào có email CÁ NHÂN thật thì thông báo được gửi tới địa chỉ đó
+    // thay vì tài khoản portal — tức gửi vào một danh tính không ai đăng nhập, im lặng.
+    // Đích nhận thông báo luôn là tài khoản portal, nên nó phải đứng đầu.
+    const e = oneEmail(g?.portalEmail) || oneEmail(g?.email);
     if (!e || seen.has(e)) continue;
     seen.add(e);
     emails.push(e);
