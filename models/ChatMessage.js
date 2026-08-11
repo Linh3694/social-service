@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { CHAT_TEXT_COLOR_TOKENS } = require('../utils/chatFormats');
 
 const senderSnapshotSchema = new mongoose.Schema({
   name: { type: String, trim: true },
@@ -120,6 +121,29 @@ const mentionSchema = new mongoose.Schema({
   length: { type: Number, required: true },
 }, { _id: false });
 
+/**
+ * Một dải chữ được định dạng (SIS — yêu cầu Marcom: nhấn mạnh thông tin quan trọng).
+ *
+ * Cùng mô hình với `mentions`: `content` VẪN là TEXT THUẦN, mảng này chỉ neo vị trí. Nhờ vậy
+ * offset của mention không lệch, preview/push/reply/tìm kiếm không phải sửa gì, và client cũ
+ * chưa cập nhật vẫn đọc tin bình thường (thấy text thuần) — không phải migrate tin cũ.
+ *
+ * Các dải server ghi xuống LUÔN rời nhau và sắp theo `start` (xem utils/chatFormats.js),
+ * nên client chỉ việc cắt chuỗi theo offset.
+ */
+const formatSchema = new mongoose.Schema({
+  start: { type: Number, required: true },
+  length: { type: Number, required: true },
+  bold: { type: Boolean, default: false },
+  italic: { type: Boolean, default: false },
+  underline: { type: Boolean, default: false },
+  /**
+   * TOKEN màu, KHÔNG phải hex: nền bong bóng mỗi app một khác (cam GV web / teal GV app /
+   * navy PH) nên mỗi client tự map token sang màu đọc được trên nền của mình.
+   */
+  color: { type: String, enum: CHAT_TEXT_COLOR_TOKENS, default: undefined },
+}, { _id: false });
+
 const chatMessageSchema = new mongoose.Schema({
   conversation: {
     type: mongoose.Schema.Types.ObjectId,
@@ -138,6 +162,8 @@ const chatMessageSchema = new mongoose.Schema({
   replyTo: replySnapshotSchema,
   /** Nhắc tên (@) — rỗng với tin không tag ai. */
   mentions: { type: [mentionSchema], default: [] },
+  /** Định dạng chữ (đậm/nghiêng/gạch chân/màu) — rỗng với tin không định dạng. */
+  formats: { type: [formatSchema], default: [] },
   readBy: [readReceiptSchema],
   reactions: [reactionSchema],
   /** Tin bình chọn — null với tin thường. `content` vẫn giữ "[Bình chọn] <câu hỏi>" để suy biến. */

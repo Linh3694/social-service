@@ -7,6 +7,7 @@
     "start": "node app.js",
     "dev": "nodemon app.js",
     "sync-indexes": "node scripts/sync-social-indexes.js",
+    "test:formats": "node scripts/test-chat-formats.js",
     "test:cdn": "node scripts/test-cdn-phase1.js && node scripts/test-cdn-wiring.js && node scripts/test-cdn-phase3.js && node scripts/test-cdn-phase4.js",
     "test:cdn:unit": "node scripts/test-cdn-phase1.js",
     "test:cdn:wiring": "node scripts/test-cdn-wiring.js",

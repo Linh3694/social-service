@@ -30,6 +30,7 @@ const {
   sanitizeMentions,
   mentionRecipientEmails,
 } = require('../utils/chatMentions');
+const { sanitizeFormats, parseIncomingFormats } = require('../utils/chatFormats');
 
 const USER_SELECT = 'fullname fullName email avatarUrl user_image sis_photo guardian_image guardian_id roles role';
 
@@ -84,6 +85,20 @@ function messagePayloadForApi(doc, viewer, conversation) {
     }));
   } else {
     delete m.mentions;
+  }
+  // Định dạng chữ: cùng quy ước với mentions — tin không định dạng thì bỏ hẳn field cho nhẹ
+  // payload, client cũ không biết field này vẫn hiển thị `content` text thuần như trước.
+  if (Array.isArray(m.formats) && m.formats.length) {
+    m.formats = m.formats.map((f) => ({
+      start: f.start,
+      length: f.length,
+      ...(f.bold ? { bold: true } : {}),
+      ...(f.italic ? { italic: true } : {}),
+      ...(f.underline ? { underline: true } : {}),
+      ...(f.color ? { color: f.color } : {}),
+    }));
+  } else {
+    delete m.formats;
   }
   // Broadcast (viewer null) hoặc PH / BOD observer → ẩn readBy.
   if (!canSeeReadReceipts(viewer, conversation)) {
@@ -2477,6 +2492,7 @@ async function appendMessageToConversation(conversation, req, {
   replyToId,
   poll = null,
   mentions = [],
+  formats = [],
 }) {
   if (conversation.status === 'locked') {
     const err = new Error('Nhóm chat năm học cũ chỉ cho xem lại lịch sử');
@@ -2509,6 +2525,12 @@ async function appendMessageToConversation(conversation, req, {
     permissions: conversationMentionPermissions(conversation, req.user),
     findMember: (item) => findMentionMember(conversation, item),
   });
+
+  /**
+   * Định dạng chữ: cũng đối chiếu với `content` ĐÃ trim như mention. Khác mention ở chỗ dải sai
+   * chỉ bị cắt/bỏ chứ không ném lỗi — mất một đoạn in đậm không đáng để tin nhắn gửi thất bại.
+   */
+  const formatList = sanitizeFormats(formats, c);
 
   let replyTo;
   if (replyToId) {
@@ -2548,6 +2570,7 @@ async function appendMessageToConversation(conversation, req, {
       start: m.start,
       length: m.length,
     })),
+    formats: formatList,
     readBy: [{ user: req.user._id, readAt: new Date() }],
   });
 
@@ -2957,6 +2980,7 @@ exports.sendTeacherGuardianMessage = async (req, res) => {
       attachments: attSan,
       replyToId: req.body.replyTo,
       mentions: parseIncomingMentions(req.body.mentions),
+      formats: parseIncomingFormats(req.body.formats),
     });
 
     res.status(201).json({ success: true, data });
@@ -3363,6 +3387,7 @@ exports.sendMessage = async (req, res) => {
       attachments,
       replyToId: req.body.replyTo,
       mentions: parseIncomingMentions(req.body.mentions),
+      formats: parseIncomingFormats(req.body.formats),
     });
 
     res.status(201).json({ success: true, data });
