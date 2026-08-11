@@ -728,13 +728,17 @@ exports.createPost = async (req, res) => {
       });
     }
 
-    // Bảng tin toàn trường: chỉ BOD/IT, không gửi khi audienceType = class
-    const authorRoles = req.user.roles || [];
-    const isBODorAdmin = authorRoles.some(role =>
-      role === 'Mobile BOD' || role === 'Mobile IT'
-    );
-
-    if (audienceType !== 'class' && isBODorAdmin) {
+    // Bảng tin toàn trường: MỌI tác giả đều bắn thông báo (không gửi khi audienceType = class).
+    //
+    // Trước 11/08/2026 chỗ này chặn theo role Mobile BOD/Mobile IT, trong khi KHÂU ĐĂNG lại
+    // không chặn gì (POST /posts chỉ qua `authenticate`, và CreatePostModal bên workspace-mobile
+    // cũng không giấu lựa chọn nào). Hệ quả: bài của giáo viên lên feed của cả trường nhưng
+    // không ai được báo — web trống vì Frappe không được gọi, app trống vì notification-service
+    // cũng không được gọi. Quyền nằm một nơi, thông báo nằm nơi khác chính là lỗi đó.
+    //
+    // ⚠️ Muốn siết lại thì đặt quyền ở createPost (như `requireClassPosterCaller` của bài lớp),
+    // ĐỪNG đặt lại điều kiện ở đây — tách hai nơi là tái phát đúng lỗi vừa sửa.
+    if (audienceType !== 'class') {
       notify('new_post_broadcast', {
         postId: post._id.toString(),
         authorEmail: req.user.email,
@@ -744,8 +748,6 @@ exports.createPost = async (req, res) => {
         type: type,
         ...wislifePayloadExtra(post),
       });
-    } else if (audienceType !== 'class') {
-      console.log(`[CreatePost] ⏭️ Skip school-wide broadcast (not BOD/IT)`);
     }
 
     res.status(201).json({ success: true, message: 'Tạo bài viết thành công', data: populatedPost });
