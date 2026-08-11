@@ -298,6 +298,33 @@ function parentPortalEmailFromGuardianId(guardianId) {
   return normalized ? `${normalized}${PARENT_PORTAL_EMAIL_SUFFIX}` : '';
 }
 
+/**
+ * Email ĐỊNH DANH của một phụ huynh trong `participants` — KHÔNG phải email hiển thị.
+ *
+ * Ưu tiên portal email suy từ `guardian_id`, vì đó mới là tài khoản người ta đăng nhập:
+ * JWT, `notifications.recipient_email` và `device.userEmail` của notification-service đều
+ * khoá theo nó. Ghi giá trị khác vào đây là thông báo gửi tới một danh tính không ai mở.
+ *
+ * KHÔNG dùng `guardian.email` làm ưu tiên: đó là cột `CRM Guardian.email` bên Frappe, một ô
+ * nhập liệu tự do mà bên ERP ghi rõ chỉ đóng vai trò định danh nội bộ (`contact_email` mới là
+ * email liên lạc). Trên prod đã gặp giá trị '32' — nó bị đóng dấu vào participant lúc tạo
+ * phòng, `chatRecipientEmails()` lọc ra rỗng, và phụ huynh đó im lặng mất thông báo chat
+ * trong khi vẫn thấy tin nhắn và vẫn là thành viên. Ai để trống cột đó thì chạy đúng — đó là
+ * lý do triệu chứng trông như "người có người không".
+ *
+ * Email hiển thị nằm ở `guardianSnapshots` (`email` + `contactEmail`), đọc thẳng từ Frappe và
+ * KHÔNG bị hàm này đụng tới — panel thành viên vẫn hiện đúng thứ nhập trong CRM.
+ */
+function guardianParticipantEmail(guardian, mongoUser) {
+  return (
+    normalizeEmail(parentPortalEmailFromGuardianId(guardian?.guardianId)) ||
+    normalizeEmail(mongoUser?.email) ||
+    normalizeEmail(guardian?.email) ||
+    guardian?.email ||
+    ''
+  );
+}
+
 function portalGuardianIdFromEmail(email) {
   const normalized = normalizeEmail(email);
   return normalized.endsWith(PARENT_PORTAL_EMAIL_SUFFIX)
@@ -758,7 +785,8 @@ async function buildSubsetConversationPayload(scope, type, requestUser, {
       : byEmail.get(normalizeEmail(guardian.email)) || byGuardianId.get(normalizeId(guardian.guardianId));
     return {
       user: mongoUser?._id,
-      email: normalizeEmail(mongoUser?.email) || guardian.email,
+      // ĐỊNH DANH, không phải email hiển thị — xem ghi chú ở guardianParticipantEmail().
+      email: guardianParticipantEmail(guardian, mongoUser),
       name: guardian.name,
       role: 'guardian',
       guardianId: guardian.guardianId || mongoUser?.guardian_id || portalGuardianIdFromEmail(mongoUser?.email),
@@ -883,7 +911,8 @@ async function buildConversationPayload(scope, type, requestUser, targetStudent)
       : byEmail.get(normalizeEmail(guardian.email)) || byGuardianId.get(normalizeId(guardian.guardianId));
     return {
       user: user?._id,
-      email: normalizeEmail(user?.email) || guardian.email,
+      // ĐỊNH DANH, không phải email hiển thị — xem ghi chú ở guardianParticipantEmail().
+      email: guardianParticipantEmail(guardian, user),
       name: guardian.name,
       role: 'guardian',
       guardianId: guardian.guardianId || user?.guardian_id || portalGuardianIdFromEmail(user?.email),
@@ -934,10 +963,15 @@ function participantIdentityKey(p) {
   if (!p) return '';
   const role = p.role || '';
   if (p.user) return `${role}|user:${String(p.user).toLowerCase()}`;
+  // PHHS khớp bằng `guardianId` TRƯỚC email — email chỉ là giá trị dẫn xuất, đổi được;
+  // `guardian_id` thì không. Thứ tự cũ (email trước) làm `unionByKey` coi participant cũ
+  // (email cũ) và participant mới (email đã sửa) là HAI người: entry cũ không bị xoá theo
+  // thiết kế của unionByKey ⇒ phòng chat đẻ thành viên ma vĩnh viễn. Đảo thứ tự cũng khiến
+  // lần sync kế tiếp TỰ CHỮA email sai trong dữ liệu cũ, vì merge ghi đè field truthy.
+  if (role === 'guardian' && p.guardianId) return `guardian|gid:${normalizeId(p.guardianId).toLowerCase()}`;
   const email = normalizeEmail(p.email);
   if (email) return `${role}|email:${email}`;
   if (role === 'teacher' && p.teacherId) return `teacher|tid:${normalizeId(p.teacherId).toLowerCase()}`;
-  if (role === 'guardian' && p.guardianId) return `guardian|gid:${normalizeId(p.guardianId).toLowerCase()}`;
   return `${role}|name:${normalizeId(p.name).toLowerCase()}`;
 }
 

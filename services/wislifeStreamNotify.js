@@ -72,7 +72,7 @@ function buildParts(eventType, eventData) {
       const notification_message = `${userLabel} đã bày tỏ cảm xúc về bài viết của bạn`;
       return {
         recipients: emails,
-        title: 'Wislife',
+        title: 'Bảng tin',
         body: notification_message,
         notificationBodyKey: notification_message,
         data: {
@@ -91,7 +91,7 @@ function buildParts(eventType, eventData) {
       const notification_message = `${userLabel} đã bình luận bài viết của bạn`;
       return {
         recipients: emails,
-        title: 'Wislife',
+        title: 'Bảng tin',
         body: notification_message,
         notificationBodyKey: notification_message,
         data: {
@@ -109,7 +109,7 @@ function buildParts(eventType, eventData) {
       const notification_message = `${userLabel} đã bày tỏ cảm xúc về bình luận của bạn`;
       return {
         recipients: emails,
-        title: 'Wislife',
+        title: 'Bảng tin',
         body: notification_message,
         notificationBodyKey: notification_message,
         data: {
@@ -129,7 +129,7 @@ function buildParts(eventType, eventData) {
       const notification_message = `${userLabel} đã trả lời bình luận của bạn`;
       return {
         recipients: emails,
-        title: 'Wislife',
+        title: 'Bảng tin',
         body: notification_message,
         notificationBodyKey: notification_message,
         data: {
@@ -148,7 +148,7 @@ function buildParts(eventType, eventData) {
       const notification_message = `${userLabel} đã nhắc đến bạn trong một bình luận`;
       return {
         recipients: emails,
-        title: 'Wislife',
+        title: 'Bảng tin',
         body: notification_message,
         notificationBodyKey: notification_message,
         data: {
@@ -168,7 +168,7 @@ function buildParts(eventType, eventData) {
       const notification_message = `${authorName} đã tag bạn trong một bài viết`;
       return {
         recipients: emails,
-        title: 'Wislife',
+        title: 'Bảng tin',
         body: notification_message,
         notificationBodyKey: notification_message,
         data: {
@@ -191,7 +191,7 @@ function buildParts(eventType, eventData) {
         : `${authorName} đã đăng Nhật ký lớp ${classTitle}`;
       return {
         recipients: emails,
-        title: 'Wislife',
+        title: 'Bảng tin',
         body: notification_message,
         notificationBodyKey: notification_message,
         data: {
@@ -216,7 +216,7 @@ function buildParts(eventType, eventData) {
         : `${authorName} đã đăng tin tức mới`;
       return {
         recipients: emails,
-        title: 'Wislife',
+        title: 'Bảng tin',
         body: notification_message,
         notificationBodyKey: notification_message,
         data: {
