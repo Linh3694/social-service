@@ -96,6 +96,7 @@ function messagePayloadForApi(doc, viewer, conversation) {
       ...(f.italic ? { italic: true } : {}),
       ...(f.underline ? { underline: true } : {}),
       ...(f.color ? { color: f.color } : {}),
+      ...(f.highlight ? { highlight: f.highlight } : {}),
     }));
   } else {
     delete m.formats;

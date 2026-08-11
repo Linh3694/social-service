@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { CHAT_TEXT_COLOR_TOKENS } = require('../utils/chatFormats');
+const { CHAT_TEXT_COLOR_TOKENS, CHAT_HIGHLIGHT_TOKENS } = require('../utils/chatFormats');
 
 const senderSnapshotSchema = new mongoose.Schema({
   name: { type: String, trim: true },
@@ -138,10 +138,15 @@ const formatSchema = new mongoose.Schema({
   italic: { type: Boolean, default: false },
   underline: { type: Boolean, default: false },
   /**
-   * TOKEN màu, KHÔNG phải hex: nền bong bóng mỗi app một khác (cam GV web / teal GV app /
-   * navy PH) nên mỗi client tự map token sang màu đọc được trên nền của mình.
+   * TOKEN màu CHỮ (tên màu Wellspring), KHÔNG phải hex — đổi hex sau này chỉ sửa bảng map ở
+   * client, không phải migrate dữ liệu. Chỉ nhận màu đủ đậm để đọc trên nền bong bóng sáng.
    */
   color: { type: String, enum: CHAT_TEXT_COLOR_TOKENS, default: undefined },
+  /**
+   * TOKEN nền TÔ SÁNG, chữ tối đè lên. Dành cho nhóm màu tươi của Wellspring (Amber/Lime/Honey)
+   * — làm màu chữ thì không đọc được, làm nền thì tương phản rất tốt.
+   */
+  highlight: { type: String, enum: CHAT_HIGHLIGHT_TOKENS, default: undefined },
 }, { _id: false });
 
 const chatMessageSchema = new mongoose.Schema({

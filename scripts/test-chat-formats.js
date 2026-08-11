@@ -39,12 +39,12 @@ check('dải đơn giữ nguyên',
 check('chồng lấn một phần → 3 run rời nhau',
   sanitizeFormats([
     { start: 0, length: 10, bold: true },
-    { start: 5, length: 10, color: 'red' },
+    { start: 5, length: 10, color: 'oxford-blue' },
   ], text),
   [
     { start: 0, length: 5, bold: true },
-    { start: 5, length: 5, bold: true, color: 'red' },
-    { start: 10, length: 5, color: 'red' },
+    { start: 5, length: 5, bold: true, color: 'oxford-blue' },
+    { start: 10, length: 5, color: 'oxford-blue' },
   ]);
 
 check('lồng nhau → mark cộng dồn ở đoạn giữa',
@@ -113,10 +113,41 @@ check('dải không mang mark nào → bỏ',
 
 check('hai màu chồng nhau → dải khai báo sau thắng',
   sanitizeFormats([
-    { start: 0, length: 5, color: 'red' },
-    { start: 0, length: 5, color: 'blue' },
+    { start: 0, length: 5, color: 'oxford-blue' },
+    { start: 0, length: 5, color: 'teal' },
   ], text),
-  [{ start: 0, length: 5, color: 'blue' }]);
+  [{ start: 0, length: 5, color: 'teal' }]);
+
+check('highlight hợp lệ được giữ',
+  sanitizeFormats([{ start: 0, length: 4, highlight: 'amber' }], text),
+  [{ start: 0, length: 4, highlight: 'amber' }]);
+
+check('màu chữ + highlight cùng đoạn',
+  sanitizeFormats([
+    { start: 0, length: 4, color: 'oxford-blue' },
+    { start: 0, length: 4, highlight: 'lime' },
+  ], text),
+  [{ start: 0, length: 4, color: 'oxford-blue', highlight: 'lime' }]);
+
+// Amber/Lime/Honey CHỈ hợp lệ ở vai highlight — đưa vào `color` là chữ không đọc được trên nền sáng.
+check('màu tươi đặt nhầm vào color → bị loại',
+  sanitizeFormats([{ start: 0, length: 4, color: 'amber', bold: true }], text),
+  [{ start: 0, length: 4, bold: true }]);
+
+// Ngược lại: màu chữ đậm không phải token highlight.
+check('màu chữ đặt nhầm vào highlight → bị loại',
+  sanitizeFormats([{ start: 0, length: 4, highlight: 'oxford-blue', bold: true }], text),
+  [{ start: 0, length: 4, bold: true }]);
+
+check('highlight khác nhau không bị gộp',
+  sanitizeFormats([
+    { start: 0, length: 3, highlight: 'amber' },
+    { start: 3, length: 3, highlight: 'lime' },
+  ], text),
+  [
+    { start: 0, length: 3, highlight: 'amber' },
+    { start: 3, length: 3, highlight: 'lime' },
+  ]);
 
 check('số dạng chuỗi (form-data) vẫn đọc được',
   sanitizeFormats([{ start: '2', length: '4', underline: true }], text),

@@ -10,12 +10,24 @@
  *   - client cũ chưa cập nhật bỏ qua field lạ ⇒ hiển thị text thuần, không phải migrate tin cũ;
  *   - không có HTML do người dùng nhập ⇒ không mở bề mặt XSS mới, mobile không cần renderer HTML.
  *
- * Màu lưu bằng TOKEN chứ không phải hex: nền bong bóng mỗi app một khác (cam / teal / navy /
- * xám), nên client phải tự map token sang màu đọc được trên nền của mình.
+ * Màu lưu bằng TOKEN (tên màu trong bộ nhận diện Wellspring) chứ không phải hex: đổi hex sau này
+ * chỉ sửa bảng map ở client, không phải migrate dữ liệu cũ.
+ *
+ * HAI VAI TRÒ, vì bộ Wellspring chia làm hai nhóm độ sáng rõ rệt:
+ *   - `color`     — màu CHỮ. Chỉ những màu đủ đậm mới vào đây (Oxford Blue 13.3:1, Teal 5.8:1
+ *                   trên nền bong bóng sáng).
+ *   - `highlight` — nền TÔ SÁNG, chữ tối đè lên. Dành cho nhóm màu tươi (Amber / Lime / Honey):
+ *                   làm màu chữ thì chỉ đạt 1.36–1.79:1 (không đọc được), nhưng làm nền thì
+ *                   7.9–10.5:1. Nhờ vậy giữ NGUYÊN hex thương hiệu mà vẫn đạt WCAG AA.
+ * Red Orange (#F05023) và Persian Green (#009483) CỐ Ý không có mặt: kẹt giữa hai vai (3.2–4.4:1
+ * ở cả hai chiều), riêng Red Orange còn trùng luôn màu bong bóng tin gửi đi nên nhấn cũng không nổi.
  */
 
-/** Token màu chữ hợp lệ. Thêm token mới ⇒ nhớ bổ sung bảng map ở cả 5 client. */
-const CHAT_TEXT_COLOR_TOKENS = ['red', 'orange', 'green', 'blue', 'purple', 'gray'];
+/** Token màu CHỮ hợp lệ. Thêm token mới ⇒ nhớ bổ sung bảng map ở cả 5 client. */
+const CHAT_TEXT_COLOR_TOKENS = ['oxford-blue', 'teal'];
+
+/** Token nền TÔ SÁNG hợp lệ. */
+const CHAT_HIGHLIGHT_TOKENS = ['amber', 'lime', 'honey'];
 
 /** Các mark boolean — liệt kê một chỗ để thêm mark mới không phải sửa rải rác. */
 const CHAT_FORMAT_FLAGS = ['bold', 'italic', 'underline'];
@@ -27,15 +39,17 @@ const MAX_FORMATS_PER_MESSAGE = 50;
 const MAX_INCOMING_FORMATS = 500;
 
 const COLOR_TOKEN_SET = new Set(CHAT_TEXT_COLOR_TOKENS);
+const HIGHLIGHT_TOKEN_SET = new Set(CHAT_HIGHLIGHT_TOKENS);
 
 /** Khoá so sánh hai dải có cùng bộ mark hay không (để gộp đoạn liền kề). */
 function marksKey(mark) {
-  return `${CHAT_FORMAT_FLAGS.map((f) => (mark[f] ? '1' : '0')).join('')}|${mark.color || ''}`;
+  const flags = CHAT_FORMAT_FLAGS.map((f) => (mark[f] ? '1' : '0')).join('');
+  return `${flags}|${mark.color || ''}|${mark.highlight || ''}`;
 }
 
 /** Dải không mang mark nào thì vô nghĩa — bỏ để khỏi tốn payload. */
 function isEmptyMark(mark) {
-  return !mark.color && CHAT_FORMAT_FLAGS.every((f) => !mark[f]);
+  return !mark.color && !mark.highlight && CHAT_FORMAT_FLAGS.every((f) => !mark[f]);
 }
 
 /**
@@ -63,10 +77,12 @@ function readIncoming(item, contentLength) {
   for (const flag of CHAT_FORMAT_FLAGS) {
     if (item[flag] === true) mark[flag] = true;
   }
-  // Màu sai token thì bỏ RIÊNG field màu, giữ các mark còn lại — người gửi mất màu
-  // nhưng không mất luôn phần in đậm.
+  // Token sai thì bỏ RIÊNG field đó, giữ các mark còn lại — người gửi mất màu nhưng không
+  // mất luôn phần in đậm.
   const color = typeof item.color === 'string' ? item.color.trim().toLowerCase() : '';
   if (color && COLOR_TOKEN_SET.has(color)) mark.color = color;
+  const highlight = typeof item.highlight === 'string' ? item.highlight.trim().toLowerCase() : '';
+  if (highlight && HIGHLIGHT_TOKEN_SET.has(highlight)) mark.highlight = highlight;
 
   if (isEmptyMark(mark)) return null;
   return { start, end, ...mark };
@@ -119,6 +135,7 @@ function sanitizeFormats(raw, content) {
       }
       // Chồng màu: dải khai báo SAU thắng — client gửi theo thứ tự người dùng thao tác.
       if (item.color) mark.color = item.color;
+      if (item.highlight) mark.highlight = item.highlight;
     }
     if (isEmptyMark(mark)) continue;
 
@@ -154,6 +171,7 @@ function parseIncomingFormats(raw) {
 
 module.exports = {
   CHAT_TEXT_COLOR_TOKENS,
+  CHAT_HIGHLIGHT_TOKENS,
   CHAT_FORMAT_FLAGS,
   MAX_FORMATS_PER_MESSAGE,
   sanitizeFormats,
