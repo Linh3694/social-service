@@ -13,8 +13,8 @@ const { CDN_SCHEME } = require('./sign');
 const MEDIA_PATH_RE = /^\/(social-posts|social-chat|social-avatars)\/(.+)$/;
 
 /**
- * Bóc object path từ URL đã ký của media.wellspring.edu.vn.
- * Host khác hoặc path lạ → null (giữ nguyên, không ký nhầm).
+ * Bóc object path từ URL đã ký của đúng host `CDN_PUBLIC_URL`.
+ * Thiếu conf, host khác, hoặc path lạ → null (không fallback Wellspring).
  */
 function pathFromMediaPublicUrl(url) {
   let parsed;
@@ -23,10 +23,11 @@ function pathFromMediaPublicUrl(url) {
   } catch {
     return null;
   }
-  const host = (config.publicUrl && (() => {
-    try { return new URL(config.publicUrl).host; } catch { return ''; }
-  })()) || 'media.wellspring.edu.vn';
-  if (parsed.host !== host) return null;
+  let host = '';
+  if (config.publicUrl) {
+    try { host = new URL(config.publicUrl).host; } catch { host = ''; }
+  }
+  if (!host || parsed.host !== host) return null;
   const pathname = decodeURIComponent(parsed.pathname || '');
   const m = pathname.match(MEDIA_PATH_RE);
   if (!m) return null;
