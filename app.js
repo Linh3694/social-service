@@ -86,20 +86,15 @@ io.use(async (socket, next) => {
   } catch (e) { console.warn('[Social Service] Redis adapter not available:', e.message); }
 })();
 
-// CORS Configuration
-// Hỗ trợ: WIS frontend, Parent Portal, Workspace Mobile (via nginx proxy)
+// CORS: bắt buộc ALLOWED_ORIGINS trên tenant. Không default portal Wellspring.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
 const corsOptions = {
-  origin: (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean).length ? 
-    (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean) : 
-    [
-      'http://localhost:3000',
-      'http://localhost:5173',
-      'https://wis.wellspring.edu.vn',
-      'https://wis-staging.wellspring.edu.vn',
-      'https://parentportal.wellspring.edu.vn',
-      'https://parentportal-staging.wellspring.edu.vn',
-      'https://admin.sis.wellspring.edu.vn'
-    ],
+  origin: allowedOrigins.length
+    ? allowedOrigins
+    : ['http://localhost:3000', 'http://localhost:5173'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   // X-Client-Platform: parent-portal-web/mobile gắn trên mọi request (api.ts)
