@@ -96,6 +96,9 @@ function formatFrappeUser(frappeUser) {
     delete userData.fullName;
   }
 
+  // Payload thiếu child table Has Role ⇒ giữ roles hiện có (xem models/User.js).
+  User.preserveRolesWhenPayloadEmpty(userData);
+
   return userData;
 }
 
@@ -150,14 +153,9 @@ const syncUsersManual = async (req, res) => {
       const batchResults = await Promise.allSettled(
         batch.map(async (frappeUser) => {
           const userEmail = frappeUser.email || frappeUser.name;
+          // formatFrappeUser đã chốt chặn roles rỗng (models/User.preserveRolesWhenPayloadEmpty)
+          // — cùng một luật với luồng sync theo email và webhook.
           const userData = formatFrappeUser(frappeUser);
-
-          // Phòng thủ: payload không mang roles (endpoint cũ/thiếu) ⇒ GIỮ roles hiện có
-          // trong Mongo thay vì ghi đè thành [] (sẽ làm mất quyền như SIS BOD).
-          if (!userData.roles || userData.roles.length === 0) {
-            delete userData.roles;
-            delete userData.role;
-          }
 
           // Không hạ account PHHS: payload ở đây là DocType User của Frappe (roles
           // ['Parent','Guardian'], không có guardian_id) nên sẽ xoá dấu vết parent portal.
@@ -405,6 +403,10 @@ const webhookUserChanged = async (req, res) => {
         userData.microsoftId = doc.microsoft_id;
       }
       
+      // Webhook dựng payload từ `tabHas Role` bên Frappe (erp/common/user_hooks.py) và nuốt
+      // exception khi query lỗi ⇒ `doc.roles` về rỗng dù user vẫn còn quyền. Không chặn thì
+      // mỗi lần IT bấm Lưu là một lần đánh cược xoá trắng roles của user đó.
+      User.preserveRolesWhenPayloadEmpty(userData);
       User.preserveParentPortalRoles(userData, doc.email);
 
       const result = await User.findOneAndUpdate(

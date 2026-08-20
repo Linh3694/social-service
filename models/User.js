@@ -164,6 +164,32 @@ userSchema.statics.preserveParentPortalRoles = function (update, email) {
 };
 
 /**
+ * Giữ roles hiện có khi payload KHÔNG mang roles.
+ *
+ * BẮT BUỘC gọi ở MỌI đường sync Frappe → Mongo trước khi ghi. Payload thiếu child table
+ * `Has Role` — token không đủ quyền đọc, endpoint cũ, hay query roles ném lỗi rồi bị nuốt —
+ * sẽ ghi `roles: []` và user mất SẠCH quyền. Giữ bản cũ chậm vài giờ là thiệt hại nhỏ hơn
+ * nhiều so với việc xoá trắng, và cron 6:00 sẽ chữa lại.
+ *
+ * Đã từng mất role SIS BOD đúng theo cách này, nhưng lần đó chỉ vá cho luồng sync bulk.
+ *
+ * @param {Object} update Object update sẽ đưa vào $set — bị sửa trực tiếp.
+ * @returns {Object} chính `update`, cho tiện chaining.
+ */
+function preserveRolesWhenPayloadEmpty(update) {
+  if (!update) return update;
+  if (Array.isArray(update.roles) && update.roles.length > 0) return update;
+  delete update.roles;
+  delete update.role;
+  return update;
+}
+
+/** Cho các luồng sync ngoài model dùng cùng một luật (webhook, sync theo email). */
+userSchema.statics.preserveRolesWhenPayloadEmpty = function (update) {
+  return preserveRolesWhenPayloadEmpty(update);
+};
+
+/**
  * 🔄 Cập nhật/đồng bộ user từ Frappe
  * Pattern giống ticket-service để đảm bảo nhất quán
  * @param {Object} frappeUser - User object từ Frappe API
@@ -228,13 +254,7 @@ userSchema.statics.updateFromFrappe = async function updateFromFrappe(frappeUser
     delete update.fullName;
   }
 
-  // Payload không mang roles (nguồn gọi thiếu child table Has Role) ⇒ giữ roles hiện có,
-  // không ghi đè thành [] làm mất quyền (vd SIS BOD).
-  if (!roles.length) {
-    delete update.roles;
-    delete update.role;
-  }
-
+  preserveRolesWhenPayloadEmpty(update);
   preserveParentPortalRoles(update, email);
 
   const query = { email: email.toLowerCase() };
